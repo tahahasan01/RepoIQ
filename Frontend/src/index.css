@@ -1,0 +1,322 @@
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 190 95% 55%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 187 85% 43%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --success: 152 69% 40%;
+    --success-foreground: 210 40% 98%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 222 47% 11%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 187 85% 43%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 222 47% 11%;
+    --sidebar-primary: 187 85% 43%;
+    --sidebar-primary-foreground: 210 40% 98%;
+    --sidebar-accent: 210 40% 96%;
+    --sidebar-accent-foreground: 222 47% 11%;
+    --sidebar-border: 214 32% 91%;
+    --sidebar-ring: 187 85% 43%;
+
+    /* Custom gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(190 100% 60%) 0%, hsl(210 85% 65%) 40%, hsl(250 75% 65%) 100%);
+    --gradient-hero: radial-gradient(1000px 500px at 15% 25%, rgba(6,182,212,0.18) 0%, transparent 50%), radial-gradient(900px 450px at 85% 75%, rgba(168,85,247,0.12) 0%, transparent 50%), linear-gradient(180deg, hsl(220 25% 8%) 0%, hsl(222 35% 10%) 50%, hsl(230 30% 12%) 100%);
+    --gradient-card: linear-gradient(135deg, hsla(0 0% 100% / 0.98) 0%, hsla(210 20% 98% / 0.92) 100%);
+    --gradient-glow: radial-gradient(ellipse at center, hsla(190 100% 60% / 0.35) 0%, hsla(250 75% 65% / 0.15) 50%, transparent 70%);
+
+    /* Glassmorphism */
+    --glass-bg: hsla(0 0% 100% / 0.85);
+    --glass-border: hsla(190 100% 60% / 0.2);
+    --glass-shadow: 0 12px 40px hsla(190 100% 60% / 0.15), 0 4px 12px hsla(222 47% 11% / 0.1);
+  }
+
+  .dark {
+    --background: 222 47% 6%;
+    --foreground: 210 40% 98%;
+
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 47% 8%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 190 95% 62%;
+    --primary-foreground: 222 47% 6%;
+
+    --secondary: 217 33% 15%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217 33% 15%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 187 85% 53%;
+    --accent-foreground: 222 47% 6%;
+
+    --destructive: 0 63% 45%;
+    --destructive-foreground: 210 40% 98%;
+
+    --success: 152 69% 45%;
+    --success-foreground: 222 47% 6%;
+
+    --warning: 38 92% 55%;
+    --warning-foreground: 222 47% 6%;
+
+    --border: 217 33% 18%;
+    --input: 217 33% 18%;
+    --ring: 187 85% 53%;
+
+    --sidebar-background: 222 47% 7%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 187 85% 53%;
+    --sidebar-primary-foreground: 222 47% 6%;
+    --sidebar-accent: 217 33% 15%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 217 33% 18%;
+    --sidebar-ring: 187 85% 53%;
+
+    /* Dark mode gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(190 100% 65%) 0%, hsl(210 90% 68%) 40%, hsl(250 80% 68%) 100%);
+    --gradient-hero: radial-gradient(1000px 500px at 15% 25%, rgba(6,182,212,0.25) 0%, transparent 50%), radial-gradient(900px 450px at 85% 75%, rgba(168,85,247,0.18) 0%, transparent 50%), linear-gradient(180deg, hsl(222 47% 5%) 0%, hsl(222 47% 8%) 50%, hsl(230 40% 11%) 100%);
+    --gradient-card: linear-gradient(135deg, hsla(222 47% 14% / 0.98) 0%, hsla(230 40% 12% / 0.92) 100%);
+    --gradient-glow: radial-gradient(ellipse at center, hsla(190 100% 65% / 0.28) 0%, hsla(250 80% 68% / 0.14) 50%, transparent 70%);
+
+    /* Dark glassmorphism */
+    --glass-bg: hsla(222 47% 10% / 0.85);
+    --glass-border: hsla(190 100% 65% / 0.25);
+    --glass-shadow: 0 12px 40px hsla(190 100% 65% / 0.2), 0 4px 12px hsla(0 0% 0% / 0.5);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-muted/50;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-muted-foreground/20 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/40;
+  }
+}
+
+@layer components {
+  /* Glassmorphism panel */
+  .glass-panel {
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+  }
+
+  /* Decorative modal wrapper with gradient border */
+  .modal-gradient-wrap {
+    position: relative;
+    border-radius: 1rem;
+    padding: 1px; /* shows the gradient border */
+    background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  }
+
+  .modal-gradient-wrap::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    margin: -1px;
+    z-index: -1;
+    border-radius: inherit;
+    background: var(--gradient-primary);
+    filter: blur(20px) saturate(140%);
+    opacity: 0.8;
+    animation: pulse-glow 4s ease-in-out infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { opacity: 0.7; filter: blur(20px) saturate(140%); }
+    50% { opacity: 0.9; filter: blur(24px) saturate(160%); }
+  }
+
+  /* Gradient text */
+  .gradient-text {
+    background: var(--gradient-primary);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Enhanced hero gradient glow */
+  .hero-glow {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: var(--gradient-glow);
+    mix-blend-mode: screen;
+    opacity: 0.9;
+  }
+
+  /* Glow effects */
+  .glow-primary {
+    box-shadow: 0 0 30px hsla(190 100% 60% / 0.4), 0 0 60px hsla(190 100% 60% / 0.2), 0 4px 20px hsla(190 100% 60% / 0.3);
+  }
+
+  .glow-primary-subtle {
+    box-shadow: 0 0 20px hsla(190 100% 60% / 0.25), 0 4px 12px hsla(190 100% 60% / 0.15);
+  }
+
+  /* Code styling */
+  .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  /* Hero background */
+  .hero-gradient {
+    background: var(--gradient-hero);
+  }
+
+  /* Card gradient */
+  .card-gradient {
+    background: var(--gradient-card);
+  }
+
+  /* Animated gradient border */
+  .gradient-border {
+    position: relative;
+    background: var(--glass-bg);
+  }
+
+  .gradient-border::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    background: var(--gradient-primary);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+
+  /* Severity badges */
+  .severity-critical {
+    @apply bg-destructive/20 text-destructive border-destructive/30;
+  }
+
+  .severity-high {
+    @apply bg-orange-500/20 text-orange-500 border-orange-500/30;
+  }
+
+  .severity-medium {
+    @apply bg-warning/20 text-warning border-warning/30;
+  }
+
+  .severity-low {
+    @apply bg-success/20 text-success border-success/30;
+  }
+
+  /* Score colors */
+  .score-excellent {
+    color: hsl(var(--success));
+  }
+
+  .score-good {
+    color: hsl(152 69% 50%);
+  }
+
+  .score-fair {
+    color: hsl(var(--warning));
+  }
+
+  .score-poor {
+    color: hsl(var(--destructive));
+  }
+}
+
+@layer utilities {
+  .animate-glow {
+    animation: glow 2s ease-in-out infinite alternate;
+  }
+
+  @keyframes glow {
+    from {
+      box-shadow: 0 0 20px hsla(187 85% 53% / 0.2);
+    }
+    to {
+      box-shadow: 0 0 40px hsla(187 85% 53% / 0.4);
+    }
+  }
+
+  .animate-float {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% {
+      transform: translateY(0px);
+    }
+    50% {
+      transform: translateY(-10px);
+    }
+  }
+
+  .animate-pulse-slow {
+    animation: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+}
