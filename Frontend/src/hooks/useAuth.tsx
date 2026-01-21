@@ -30,11 +30,12 @@ export function useAuth() {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  function login(u: User, token?: string) {
+  function login(u: User, token?: string, refreshToken?: string) {
     setUser(u);
     try {
       localStorage.setItem("user", JSON.stringify(u));
       if (token) localStorage.setItem("token", token);
+      if (refreshToken) localStorage.setItem("refresh_token", refreshToken);
     } catch {}
   }
 
@@ -43,6 +44,7 @@ export function useAuth() {
     try {
       localStorage.removeItem("user");
       localStorage.removeItem("token");
+      localStorage.removeItem("refresh_token");
     } catch {}
   }
 

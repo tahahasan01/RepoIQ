@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional
 from openai import OpenAI
+import httpx
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
@@ -10,7 +11,12 @@ logger = get_logger(__name__)
 
 class BaseAgent(ABC):
     def __init__(self):
-        self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        # Create httpx client without proxy support to avoid compatibility issues
+        http_client = httpx.Client(proxy=None)
+        self.client = OpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            http_client=http_client
+        )
         self.model = "gpt-4-turbo-preview"
         self.temperature = 0.7
         self.max_tokens = 4000

@@ -25,7 +25,7 @@ async def send_chat_message(
     
     try:
         response = await chat_service.send_message(
-            repo_id=repo_id,
+            repo_id=repo["id"],
             user_id=current_user["id"],
             message=message_data.message,
             context_files=message_data.context_files
@@ -55,7 +55,7 @@ async def get_chat_history(
         )
     
     try:
-        history = await chat_service.get_chat_history(repo_id, current_user["id"])
+        history = await chat_service.get_chat_history(repo["id"], current_user["id"])
         return {"messages": history}
     except Exception as e:
         raise HTTPException(
@@ -79,7 +79,7 @@ async def clear_chat_history(
             detail="Repository not found"
         )
     
-    success = await chat_service.clear_chat_history(repo_id, current_user["id"])
+    success = await chat_service.clear_chat_history(repo["id"], current_user["id"])
     
     if not success:
         raise HTTPException(

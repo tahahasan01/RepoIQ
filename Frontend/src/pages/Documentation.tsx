@@ -1,5 +1,8 @@
 import { motion } from "framer-motion";
 import { useState, useEffect } from "react";
+import { useParams } from "react-router-dom";
+import apiClient from "@/lib/api";
+import ReactMarkdown from 'react-markdown';
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import {
@@ -115,6 +118,10 @@ export default function Documentation() {
   const [readmePrompt, setReadmePrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedReadme, setGeneratedReadme] = useState(mockReadme);
+  const [isLoadingReadme, setIsLoadingReadme] = useState(true);
+  const params = useParams();
+  const repoId = (params as any).repoId;
+  const [architecture, setArchitecture] = useState(architectureDiagram);
 
   useEffect(() => {
     setBugReports(bugReportStorage.getReports());
@@ -124,8 +131,34 @@ export default function Documentation() {
       setBugReports((prev) => [newReport, ...prev]);
       setActiveTab("bugreport");
     };
-    return () => { try { delete (window as any).__addBugReport; } catch {} };
-  }, []);
+    let mounted = true;
+
+    async function loadReadme() {
+      setIsLoadingReadme(true);
+      try {
+        console.log('[Documentation] Loading README.md for repo:', repoId);
+        const res = await apiClient.getFileContent(repoId as string, "README.md").catch(() => null);
+        if (!mounted) return;
+        if (res && typeof res === "string") {
+          console.log('[Documentation] Loaded README (string):', res.substring(0, 100));
+          setGeneratedReadme(res);
+        } else if (res && res.content) {
+          console.log('[Documentation] Loaded README (object):', res.content.substring(0, 100));
+          setGeneratedReadme(res.content);
+        } else {
+          console.log('[Documentation] No README found, using mock');
+        }
+      } catch (err) {
+        console.error('[Documentation] Failed to load README:', err);
+      } finally {
+        if (mounted) setIsLoadingReadme(false);
+      }
+    }
+
+    loadReadme();
+
+    return () => { try { delete (window as any).__addBugReport; } catch {} finally { mounted = false } };
+  }, [repoId]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(generatedReadme);
@@ -185,7 +218,47 @@ export default function Documentation() {
               </div>
 
               <div className="p-6">
-                <div className="prose prose-sm dark:prose-invert max-w-none"><pre className="text-sm whitespace-pre-wrap font-sans">{generatedReadme}</pre></div>
+                {isLoadingReadme ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2" />
+                    <p className="text-sm">Loading README.md...</p>
+                  </div>
+                ) : (
+                  <div className="prose prose-sm dark:prose-invert max-w-none">
+                    <ReactMarkdown
+                      components={{
+                        code: ({node, className, children, ...props}: any) => {
+                          const match = /language-(\w+)/.exec(className || '');
+                          const inline = !className;
+                          return !inline ? (
+                            <pre className="bg-muted p-4 rounded-lg overflow-x-auto">
+                              <code className={className} {...props}>
+                                {children}
+                              </code>
+                            </pre>
+                          ) : (
+                            <code className="bg-muted px-1.5 py-0.5 rounded text-sm" {...props}>
+                              {children}
+                            </code>
+                          );
+                        },
+                        table: ({node, ...props}: any) => (
+                          <div className="overflow-x-auto my-4">
+                            <table className="min-w-full border border-border" {...props} />
+                          </div>
+                        ),
+                        th: ({node, ...props}: any) => (
+                          <th className="border border-border px-4 py-2 bg-muted font-semibold" {...props} />
+                        ),
+                        td: ({node, ...props}: any) => (
+                          <td className="border border-border px-4 py-2" {...props} />
+                        ),
+                      }}
+                    >
+                      {generatedReadme}
+                    </ReactMarkdown>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -222,7 +295,36 @@ export default function Documentation() {
                   {bugReports.length > 0 ? (
                     <div className="space-y-2 mb-4">
                       <h4 className="text-sm font-medium">Reports from last scan</h4>
-                      <div className="space-y-2">{bugReports.map((r) => (<div key={r.id} className="p-3 bg-muted/20 rounded border border-border/50"><div className="flex items-center justify-between mb-2"><div className="flex items-center gap-2"><span className="text-xs font-mono px-2 py-0.5 bg-primary/10 text-primary rounded">#{r.id}</span><span className="text-xs px-2 py-0.5 bg-muted rounded flex items-center gap-1"><GitBranch className="h-3 w-3" />{r.repoName}</span></div><span className="text-xs text-muted-foreground">{new Date(r.timestamp).toLocaleString()}</span></div><strong className="text-sm">{r.title}</strong><p className="text-sm text-muted-foreground mt-2 whitespace-pre-wrap">{r.details}</p></div>))}</div>
+                      <div className="space-y-3">
+                        {bugReports.map((r) => {
+                          const severity = r.severity || "medium";
+                          const status = r.status || "open";
+                          return (
+                            <div key={r.id} className="p-4 bg-muted/30 rounded-lg border border-border/60">
+                              <div className="flex items-start justify-between gap-3 mb-3">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-xs font-mono px-2 py-0.5 bg-primary/10 text-primary rounded">#{r.id}</span>
+                                  <span className="text-xs px-2 py-0.5 bg-muted rounded flex items-center gap-1">
+                                    <GitBranch className="h-3 w-3" />
+                                    {r.repoName}
+                                  </span>
+                                  <span className="text-xs px-2 py-0.5 rounded-full border border-border capitalize">
+                                    {status.replace("_", " ")}
+                                  </span>
+                                  <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${severity === "critical" ? "bg-destructive/15 text-destructive" : severity === "high" ? "bg-orange-500/15 text-orange-500" : severity === "medium" ? "bg-amber-500/15 text-amber-600" : "bg-emerald-500/15 text-emerald-600"}`}>
+                                    {severity}
+                                  </span>
+                                </div>
+                                <span className="text-xs text-muted-foreground whitespace-nowrap">
+                                  {new Date(r.timestamp).toLocaleString()}
+                                </span>
+                              </div>
+                              <strong className="text-sm">{r.title}</strong>
+                              <p className="text-sm text-muted-foreground mt-2 whitespace-pre-wrap">{r.details}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   ) : (
                     <div className="p-4 text-sm text-muted-foreground">Bug reports are generated automatically by scans and will appear here.</div>

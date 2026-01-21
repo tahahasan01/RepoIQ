@@ -1,5 +1,7 @@
 import { motion } from "framer-motion";
 import { useState, useEffect } from "react";
+import { useParams } from "react-router-dom";
+import apiClient from "@/lib/api";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,23 +35,60 @@ export default function Issues() {
   const [issues, setIssues] = useState<ScanIssue[]>([]);
   // owner-only app: no role checks
 
+  const params = useParams();
+  // routes may provide :id or :repoId depending on the router setup
+  const repoId = (params as any).id || (params as any).repoId;
+
   useEffect(() => {
-    // Load latest scan on mount
-    const latestScan = scanStorage.getLatestScan();
-    if (latestScan) {
-      setIssues(latestScan.issues);
+    let mounted = true;
+
+    async function load() {
+      try {
+        if (!repoId) {
+          console.warn('[Issues] No repoId in URL params');
+          return;
+        }
+        // Fetch analysis results which includes issues
+        const results = await apiClient.getAnalysisResults(repoId as string).catch(() => null);
+        if (!mounted) return;
+        
+        let issuesList: any[] = [];
+        if (results && results.issues) {
+          // Backend returns issues with different field names - map them to frontend format
+          issuesList = results.issues.map((issue: any) => ({
+            id: issue.id,
+            file: issue.file_path || issue.file || '',
+            line: issue.line_number || issue.line || 0,
+            severity: issue.severity || 'low',
+            type: issue.category || issue.type || 'unknown',
+            description: issue.description || '',
+            details: issue.suggestion || issue.details || '',
+            fix: issue.suggestion || issue.fix || 'No fix available',
+          }));
+        } else if (!results) {
+          // Fallback to local storage
+          const latestScan = scanStorage.getLatestScan();
+          issuesList = latestScan ? latestScan.issues : [];
+        }
+
+        setIssues(issuesList);
+      } catch (err) {
+        console.error("Failed to load issues", err);
+      }
     }
 
-    // Listen for new scans
-    const handleScanCompleted = (event: CustomEvent) => {
-      setIssues(event.detail.issues);
+    load();
+
+    const handleScanCompleted = async (event: CustomEvent) => {
+      await load();
     };
 
     window.addEventListener("scanCompleted", handleScanCompleted as EventListener);
     return () => {
+      mounted = false;
       window.removeEventListener("scanCompleted", handleScanCompleted as EventListener);
     };
-  }, []);
+  }, [repoId]);
 
   const severityOptions = ["critical", "high", "medium", "low"];
   const typeOptions = Array.from(new Set(issues.map((i) => i.type))).sort();

@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,98 +13,45 @@ import {
   Info,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useParams } from "react-router-dom";
+import apiClient from "@/lib/api";
 
-// Mock file tree
-const fileTree = [
-  {
-    name: "src",
-    type: "folder",
-    children: [
-      {
-        name: "api",
-        type: "folder",
-        children: [
-          { name: "auth.ts", type: "file", issues: 2 },
-          { name: "users.ts", type: "file", issues: 0 },
-          { name: "data.ts", type: "file", issues: 1 },
-        ],
-      },
-      {
-        name: "components",
-        type: "folder",
-        children: [
-          { name: "Form.tsx", type: "file", issues: 1 },
-          { name: "Button.tsx", type: "file", issues: 0 },
-          { name: "Modal.tsx", type: "file", issues: 0 },
-        ],
-      },
-      {
-        name: "hooks",
-        type: "folder",
-        children: [
-          { name: "useAuth.ts", type: "file", issues: 1 },
-          { name: "useData.ts", type: "file", issues: 0 },
-        ],
-      },
-      {
-        name: "utils",
-        type: "folder",
-        children: [
-          { name: "helpers.ts", type: "file", issues: 1 },
-          { name: "constants.ts", type: "file", issues: 0 },
-        ],
-      },
-    ],
-  },
-  { name: "package.json", type: "file", issues: 0 },
-  { name: "tsconfig.json", type: "file", issues: 0 },
-  { name: "README.md", type: "file", issues: 0 },
-];
-
-// Mock file content
-const mockFileContent = `import { db } from '../db';
-import { User } from '../types';
-
-export async function authenticateUser(
-  email: string, 
-  password: string
-): Promise<User | null> {
-  // TODO: Add rate limiting
+// Helper function to build a file tree from a flat list of file paths
+function buildFileTree(files: any[]): any[] {
+  const tree: any = {};
   
-  // WARNING: Potential SQL injection vulnerability
-  const query = "SELECT * FROM users WHERE email = '" + email + "'";
+  files.forEach((file) => {
+    const path = typeof file === 'string' ? file : (file.path || file.name);
+    if (!path) return;
+    
+    const parts = path.split('/');
+    let current = tree;
+    
+    parts.forEach((part, index) => {
+      if (!current[part]) {
+        current[part] = {
+          name: part,
+          path: parts.slice(0, index + 1).join('/'),
+          type: index === parts.length - 1 ? 'file' : 'folder',
+          children: {},
+        };
+      }
+      if (index < parts.length - 1) {
+        current = current[part].children;
+      }
+    });
+  });
   
-  const result = await db.query(query);
-  
-  if (result.rows.length === 0) {
-    return null;
+  // Convert tree object to array
+  function objectToArray(obj: any): any[] {
+    return Object.values(obj).map((item: any) => ({
+      ...item,
+      children: item.type === 'folder' ? objectToArray(item.children) : undefined,
+    }));
   }
   
-  const user = result.rows[0];
-  
-  // Verify password
-  const isValid = await bcrypt.compare(password, user.password_hash);
-  
-  if (!isValid) {
-    // WARNING: Logging sensitive data
-    console.log("Failed login attempt:", { email, password });
-    return null;
-  }
-  
-  return {
-    id: user.id,
-    email: user.email,
-    name: user.name,
-    role: user.role
-  };
+  return objectToArray(tree);
 }
-
-export async function getUserById(userId: string): Promise<User | null> {
-  const query = "SELECT * FROM users WHERE id = $1";
-  const result = await db.query(query, [userId]);
-  
-  return result.rows[0] || null;
-}`;
 
 const codeAnalysis = [
   {
@@ -132,8 +79,9 @@ const codeAnalysis = [
 interface FileTreeItemProps {
   item: any;
   depth?: number;
-  onSelect: (name: string) => void;
+  onSelect: (path: string) => void;
   selectedFile: string | null;
+  issuesByFile: Record<string, number>;
 }
 
 function FileTreeItem({
@@ -141,10 +89,12 @@ function FileTreeItem({
   depth = 0,
   onSelect,
   selectedFile,
+  issuesByFile,
 }: FileTreeItemProps) {
   const [isOpen, setIsOpen] = useState(depth === 0);
   const isFolder = item.type === "folder";
-  const isSelected = selectedFile === item.name;
+  const isSelected = selectedFile === item.path || selectedFile === item.name;
+  const issueCount = issuesByFile[item.path] || 0;
 
   return (
     <div>
@@ -153,7 +103,7 @@ function FileTreeItem({
           if (isFolder) {
             setIsOpen(!isOpen);
           } else {
-            onSelect(item.name);
+            onSelect(item.path || item.name);
           }
         }}
         className={cn(
@@ -184,9 +134,9 @@ function FileTreeItem({
           </>
         )}
         <span className="text-sm flex-1">{item.name}</span>
-        {!isFolder && item.issues > 0 && (
+        {!isFolder && issueCount > 0 && (
           <span className="text-xs px-1.5 py-0.5 rounded-full bg-destructive/10 text-destructive">
-            {item.issues}
+            {issueCount}
           </span>
         )}
       </div>
@@ -199,6 +149,7 @@ function FileTreeItem({
               depth={depth + 1}
               onSelect={onSelect}
               selectedFile={selectedFile}
+              issuesByFile={issuesByFile}
             />
           ))}
         </div>
@@ -208,9 +159,115 @@ function FileTreeItem({
 }
 
 export default function Files() {
-  const [selectedFile, setSelectedFile] = useState<string | null>("auth.ts");
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [fileContent, setFileContent] = useState<string>('');
+  const [filesList, setFilesList] = useState<any[] | null>(null);
+  const [fileTree, setFileTree] = useState<any[]>([]);
+  const [issuesByFile, setIssuesByFile] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState(true);
+  const params = useParams();
+  // routes may provide :id or :repoId depending on the router setup
+  const repoId = (params as any).id || (params as any).repoId;
 
-  const lines = mockFileContent.split("\n");
+  useEffect(() => {
+    let mounted = true;
+    async function loadFilesAndIssues() {
+      if (!repoId) {
+        console.warn('[Files] No repoId in URL params');
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      try {
+        console.log('[Files] Loading files for repo:', repoId);
+        
+        // Load files from repository
+        const filesRes = await apiClient.getRepositoryFiles(repoId as string).catch((err) => {
+          console.log('[Files] Failed to fetch files:', err?.message || err);
+          return null;
+        });
+        
+        // Load issues from analysis to build file list from issues if files endpoint fails
+        const analysisRes = await apiClient.getAnalysisResults(repoId as string).catch(() => null);
+        
+        if (!mounted) return;
+        
+        // Process files
+        let files: any[] = [];
+        if (filesRes && Array.isArray(filesRes)) {
+          files = filesRes;
+          console.log('[Files] Loaded', files.length, 'files from API');
+        } else if (filesRes && filesRes.files) {
+          files = filesRes.files;
+          console.log('[Files] Loaded', files.length, 'files from API');
+        } else if (analysisRes && analysisRes.issues) {
+          // Fallback: extract unique file paths from issues
+          const uniqueFiles = new Set<string>();
+          analysisRes.issues.forEach((issue: any) => {
+            const filePath = issue.file_path || issue.file;
+            if (filePath) uniqueFiles.add(filePath);
+          });
+          files = Array.from(uniqueFiles).map(path => ({ path, name: path.split('/').pop() }));
+          console.log('[Files] Extracted', files.length, 'files from issues');
+        }
+        
+        if (files.length > 0) {
+          setFilesList(files);
+          setSelectedFile(files[0]?.path || files[0]?.name || files[0]);
+          
+          // Build file tree from flat list
+          const tree = buildFileTree(files);
+          setFileTree(tree);
+        } else {
+          console.log('[Files] No files found');
+        }
+        
+        // Process issues by file
+        if (analysisRes && analysisRes.issues) {
+          const issueCount: Record<string, number> = {};
+          analysisRes.issues.forEach((issue: any) => {
+            const filePath = issue.file_path || issue.file;
+            if (filePath) {
+              issueCount[filePath] = (issueCount[filePath] || 0) + 1;
+            }
+          });
+          setIssuesByFile(issueCount);
+          console.log('[Files] Issue counts by file:', issueCount);
+        }
+      } catch (err) {
+        console.error('[Files] Failed to load files/issues:', err);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+
+    loadFilesAndIssues();
+    return () => { mounted = false };
+  }, [repoId]);
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadContent() {
+      if (!selectedFile) return;
+      try {
+        console.log('[Files] Loading content for:', selectedFile);
+        const res = await apiClient.getFileContent(repoId as string, selectedFile).catch(() => null);
+        if (!mounted) return;
+        if (res && typeof res === 'string') {
+          setFileContent(res);
+        } else if (res && res.content) {
+          setFileContent(res.content);
+        }
+      } catch (err) {
+        // keep mock
+      }
+    }
+
+    loadContent();
+    return () => { mounted = false };
+  }, [selectedFile, repoId]);
+
+  const lines = fileContent.split("\n");
 
   return (
     <DashboardLayout>
@@ -225,14 +282,25 @@ export default function Files() {
             <h3 className="font-semibold text-sm">Files</h3>
           </div>
           <div className="flex-1 overflow-auto p-2">
-            {fileTree.map((item, index) => (
-              <FileTreeItem
-                key={index}
-                item={item}
-                onSelect={setSelectedFile}
-                selectedFile={selectedFile}
-              />
-            ))}
+            {loading ? (
+              <div className="text-center text-muted-foreground py-8">
+                <p className="text-sm">Loading files...</p>
+              </div>
+            ) : fileTree.length > 0 ? (
+              fileTree.map((item, index) => (
+                <FileTreeItem
+                  key={index}
+                  item={item}
+                  onSelect={setSelectedFile}
+                  selectedFile={selectedFile}
+                  issuesByFile={issuesByFile}
+                />
+              ))
+            ) : (
+              <div className="text-center text-muted-foreground py-8">
+                <p className="text-sm">No files found</p>
+              </div>
+            )}
           </div>
         </motion.div>
 

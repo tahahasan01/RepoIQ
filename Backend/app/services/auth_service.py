@@ -91,10 +91,12 @@ class AuthService:
                 )
                 
                 token_data = token_response.json()
+                logger.info(f"GitHub token response status: {token_response.status_code}")
+                logger.debug(f"GitHub token response body: {token_response.text}")
                 access_token = token_data.get("access_token")
-                
+
                 if not access_token:
-                    raise Exception("Failed to get GitHub access token")
+                    raise Exception(f"Failed to get GitHub access token: {token_data}")
                 
                 user_response = await client.get(
                     "https://api.github.com/user",
@@ -122,16 +124,21 @@ class AuthService:
                         "github_username": github_user.get("login"),
                         "github_access_token": access_token,
                         "github_connected": True,
-                        "avatar_url": github_user.get("avatar_url")
+                        "avatar_url": github_user.get("avatar_url"),
+                        "full_name": github_user.get("name") or user.get("full_name")
                     }).eq("id", user["id"]).execute()
+                    
+                    # Update user dict with latest data
+                    user["github_username"] = github_user.get("login")
+                    user["avatar_url"] = github_user.get("avatar_url")
+                    user["full_name"] = github_user.get("name") or user.get("full_name")
                 else:
-                    auth_response = self.db.auth.sign_up({
-                        "email": email,
-                        "password": f"github_{github_user['id']}_{access_token[:10]}"
-                    })
+                    # Create user directly without Supabase auth signup (faster)
+                    import uuid
+                    user_id = str(uuid.uuid4())
                     
                     user_data = {
-                        "id": auth_response.user.id,
+                        "id": user_id,
                         "email": email,
                         "full_name": github_user.get("name"),
                         "bio": github_user.get("bio"),

@@ -1,65 +1,160 @@
 import { motion } from "framer-motion";
-import { Eye, EyeOff, Loader2, Github, X } from "lucide-react";
+import { Eye, EyeOff, Loader2, Github, X, Quote } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link, useNavigate } from "react-router-dom";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import apiClient from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { useRole } from "@/hooks/useRole";
-import { Logo } from "@/components/Logo";
+
+const codingQuotes = [
+  { text: "Make it work, make it right, make it fast.", author: "Kent Beck" },
+  { text: "Simplicity is prerequisite for reliability.", author: "Edsger Dijkstra" },
+  { text: "Clean code always looks like it was written by someone who cares.", author: "Robert C. Martin" },
+  { text: "Before software can be reusable it first has to be usable.", author: "Ralph Johnson" },
+];
 
 export default function SignUp() {
   const [isLoading, setIsLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [quoteIndex, setQuoteIndex] = useState(0);
   const { toast } = useToast();
   const navigate = useNavigate();
   const { setRole } = useRole();
+  const auth = useAuth();
+
+  useEffect(() => {
+    const id = setInterval(() => setQuoteIndex((i) => (i + 1) % codingQuotes.length), 4000);
+    return () => clearInterval(id);
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    try {
-      setRole("owner");
-      localStorage.setItem("demo_user_email", email);
-      toast({ title: "Account created", description: "Signed up successfully." });
-      navigate("/dashboard");
-    } catch (err) {
+    setIsLoading(true);
+    apiClient.signup(email, password, "").then((res) => {
+      if (res?.access_token && res?.user) {
+        auth.login(res.user, res.access_token);
+        setRole("owner");
+        toast({ title: "Account created", description: "Signed up successfully." });
+        navigate("/dashboard");
+      }
+    }).catch((err) => {
       toast({ title: "Error", description: "Unable to sign up." });
-    }
+    }).finally(() => setIsLoading(false));
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#0f172a] via-[#071034] to-[#021024] p-6">
-      <div className="modal-gradient-wrap p-1 rounded-2xl">
-        <Card className="w-[420px]">
-          <CardHeader>
+    <div className="min-h-screen grid md:grid-cols-2 bg-background">
+      <div className="relative overflow-hidden bg-gradient-to-br from-primary/10 via-cyan-500/10 to-background hidden md:flex items-center justify-center">
+        <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_top_left,#06b6d4,transparent_45%),radial-gradient(circle_at_bottom_right,#8b5cf6,transparent_45%)]" />
+        <motion.div
+          key={quoteIndex}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="relative max-w-xl p-10 text-left glass-panel border"
+        >
+          <div className="flex items-center gap-3 text-primary mb-4">
+            <Quote className="h-5 w-5" />
+            <span className="text-xs uppercase tracking-wide">Build better</span>
+          </div>
+          <p className="text-2xl font-semibold leading-snug text-foreground">
+            “{codingQuotes[quoteIndex].text}”
+          </p>
+          <p className="mt-4 text-sm text-muted-foreground">— {codingQuotes[quoteIndex].author}</p>
+        </motion.div>
+      </div>
+
+      <div className="flex items-center justify-center px-6 py-12">
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="w-full max-w-md"
+        >
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-3xl font-bold">Create account</h2>
+            <button
+              onClick={() => navigate("/")}
+              aria-label="Close"
+              className="rounded-full p-2 hover:bg-muted/40"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            <Button
+              variant="github"
+              size="lg"
+              className="w-full gap-3"
+              onClick={handleGitHubLogin}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  Connecting...
+                </>
+              ) : (
+                <>
+                  <Github className="h-5 w-5" />
+                  Continue with GitHub
+                </>
+              )}
+            </Button>
+
             <div className="flex items-center gap-3">
-              <Logo />
-              <CardTitle>Create your account</CardTitle>
+              <div className="flex-1 h-px bg-border" />
+              <span className="text-xs text-muted-foreground">or</span>
+              <div className="flex-1 h-px bg-border" />
             </div>
-          </CardHeader>
-          <CardContent>
+
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="text-sm text-muted-foreground">Email</label>
+                <label className="text-sm font-medium block mb-2">Email</label>
                 <Input value={email} onChange={(e) => setEmail(e.target.value)} required />
               </div>
               <div>
-                <label className="text-sm text-muted-foreground">Password</label>
-                <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+                <label className="text-sm font-medium block mb-2">Password</label>
+                <div className="relative">
+                  <Input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((s) => !s)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
 
-              <div className="flex items-center justify-between">
-                <Button type="submit">Create account</Button>
-                <Link to="/login" className="text-sm text-muted-foreground">
-                  Already have an account?
-                </Link>
-              </div>
+              <Button type="submit" className="w-full" disabled={isLoading}>
+                {isLoading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  "Create account"
+                )}
+              </Button>
             </form>
-          </CardContent>
-        </Card>
+
+            <div className="text-center text-sm text-muted-foreground">
+              Already have an account? <Link to="/login" className="text-primary hover:underline">Log in</Link>
+            </div>
+          </div>
+        </motion.div>
       </div>
     </div>
   );

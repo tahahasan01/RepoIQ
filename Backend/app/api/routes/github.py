@@ -4,6 +4,7 @@ from app.schemas import GitHubRepo, RepositoryResponse
 from app.services.repository_service import RepositoryService
 from app.services.github_service import create_github_service
 from app.api.dependencies import get_current_user, get_github_token
+from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/github", tags=["GitHub"])
 
@@ -129,6 +130,26 @@ async def get_github_user_info(
         github_service = create_github_service(github_token)
         user_info = github_service.get_user_info()
         return user_info
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.post("/disconnect")
+async def disconnect_github(
+    current_user: dict = Depends(get_current_user)
+):
+    """Disconnect the user's GitHub account by clearing stored tokens and username."""
+    auth_service = AuthService()
+    try:
+        await auth_service.update_user(current_user["id"], {
+            "github_connected": False,
+            "github_access_token": None,
+            "github_username": None,
+            "avatar_url": None
+        })
+        return {"message": "GitHub disconnected"}
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

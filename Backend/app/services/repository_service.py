@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import re
 from app.db.supabase import get_service_db
 from app.services.github_service import create_github_service
 from app.core.logging import get_logger
@@ -10,6 +11,46 @@ logger = get_logger(__name__)
 class RepositoryService:
     def __init__(self):
         self.db = get_service_db()
+
+    def _is_uuid(self, value: str) -> bool:
+        if not value:
+            return False
+        return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value))
+
+    async def resolve_repository_id(self, repo_id: str, user_id: str) -> Optional[str]:
+        """
+        Accept either:
+        - internal repository UUID (repositories.id)
+        - GitHub numeric repo id (repositories.github_repo_id)
+
+        Returns internal repository UUID, or None if not found.
+        """
+        try:
+            if self._is_uuid(repo_id):
+                # verify ownership
+                result = self.db.table("repositories") \
+                    .select("id") \
+                    .eq("id", repo_id) \
+                    .eq("user_id", user_id) \
+                    .single() \
+                    .execute()
+                return result.data["id"] if result.data else None
+
+            # try github_repo_id
+            try:
+                gh_id = int(repo_id)
+            except Exception:
+                return None
+
+            result = self.db.table("repositories") \
+                .select("id") \
+                .eq("user_id", user_id) \
+                .eq("github_repo_id", gh_id) \
+                .single() \
+                .execute()
+            return result.data["id"] if result.data else None
+        except Exception:
+            return None
     
     async def sync_repositories(self, user_id: str, github_token: str) -> List[Dict[str, Any]]:
         try:
@@ -61,16 +102,41 @@ class RepositoryService:
                 .offset(offset)\
                 .execute()
             
-            return result.data
+            repos = result.data or []
+
+            # Attach latest analysis summary to each repo so UI can show scores/history
+            enhanced = []
+            for repo in repos:
+                try:
+                    latest = await self.get_latest_analysis(repo["id"])
+                    if latest:
+                        repo["lastScan"] = latest.get("completed_at") or latest.get("started_at")
+                        repo["score"] = latest.get("overall_score")
+                        repo["security_score"] = latest.get("security_score")
+                        repo["quality_score"] = latest.get("quality_score")
+                        repo["architecture_score"] = latest.get("architecture_score")
+                        repo["total_issues"] = latest.get("total_issues", 0)
+                    else:
+                        repo["lastScan"] = None
+                        repo["score"] = None
+                    enhanced.append(repo)
+                except Exception:
+                    enhanced.append(repo)
+
+            return enhanced
         except Exception as e:
             logger.error(f"Get repositories failed: {str(e)}")
             raise
     
     async def get_repository(self, repo_id: str, user_id: str) -> Optional[Dict[str, Any]]:
         try:
+            resolved_id = await self.resolve_repository_id(repo_id, user_id)
+            if not resolved_id:
+                return None
+
             result = self.db.table("repositories")\
                 .select("*")\
-                .eq("id", repo_id)\
+                .eq("id", resolved_id)\
                 .eq("user_id", user_id)\
                 .single()\
                 .execute()
@@ -170,6 +236,9 @@ class RepositoryService:
                 .limit(1)\
                 .execute()
             
+            logger.info(f"[get_latest_analysis] repo_id={repo_id}, found={len(result.data) if result.data else 0} results")
+            if result.data:
+                logger.info(f"[get_latest_analysis] Latest analysis: id={result.data[0].get('id')}, status={result.data[0].get('status')}, scores={result.data[0].get('overall_score')}/{result.data[0].get('security_score')}/{result.data[0].get('quality_score')}")
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Get latest analysis failed: {str(e)}")

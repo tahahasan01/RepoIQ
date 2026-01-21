@@ -4,8 +4,9 @@ import { Github, Menu, X, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
-import { useState, Fragment } from "react";
+import { useState, Fragment, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import apiClient from "@/lib/api";
 
 const navLinks = [
   { href: "/", label: "Home" },
@@ -16,13 +17,24 @@ const navLinks = [
 export function Navbar() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const hash = location.hash || "";
   const isHomeActive = location.pathname === "/" && (hash === "" || hash === "#" || hash === "#home");
   const isFeaturesActive = (location.pathname === "/" && hash === "#features") || false;
   const isPricingActive = location.pathname === "/pricing" || (location.pathname === "/" && hash === "#pricing");
   const isDocsActive = location.pathname === "/docs" || (location.pathname === "/" && hash === "#docs");
+
+  useEffect(() => {
+    // Check auth on mount
+    if (localStorage.getItem('token')) {
+      apiClient.getCurrentUser().then(u => {
+        // user data loaded by AccountDropdown
+      }).catch(() => {
+        // not logged in
+      });
+    }
+  }, []);
 
   function handleDocsClick() {
     if (location.pathname === "/") {
@@ -68,6 +80,11 @@ export function Navbar() {
     }
 
     navigate('/#pricing');
+  }
+
+  function handleLogout() {
+    logout();
+    navigate("/");
   }
 
   return (
@@ -136,7 +153,10 @@ export function Navbar() {
           
           <div className="hidden sm:flex items-center gap-2">
             {isAuthenticated ? (
-              <AccountDropdown />
+              <>
+                <Button variant="outline" onClick={handleLogout}>Logout</Button>
+                <AccountDropdown />
+              </>
             ) : (
               <>
                 <Link to="/login">

@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { ReactNode } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import {
   LayoutDashboard,
   AlertTriangle,
@@ -15,10 +15,12 @@ import {
   Clock,
   Loader2,
   History,
+  ArrowLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useState, useEffect } from "react";
+import apiClient from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { runScan, scanStorage, ScanResult } from "@/services/scanService";
 // role is owner-only now; no role hook needed here
@@ -38,37 +40,110 @@ interface DashboardLayoutProps {
   lastScan?: string;
 }
 
-const sidebarLinks = [
-  { href: "/dashboard/1", icon: LayoutDashboard, label: "Overview" },
-  { href: "/dashboard/1/issues", icon: AlertTriangle, label: "Issues" },
-  { href: "/dashboard/1/files", icon: FileCode, label: "Files" },
-  { href: "/dashboard/1/docs", icon: FileText, label: "Documentation" },
-  { href: "/dashboard/1/settings", icon: Settings, label: "Settings" },
-];
+export function DashboardLayout({ children }: DashboardLayoutProps) {
+  const { id: repoId } = useParams<{ id: string }>();
 
-export function DashboardLayout({
-  children,
-  repoName = "Dashboard",
-  branch = "main",
-  lastScan = "2 hours ago",
-}: DashboardLayoutProps) {
+  // Generate sidebar links dynamically based on repoId
+  const sidebarLinks = repoId ? [
+    { href: `/dashboard/${repoId}`, icon: LayoutDashboard, label: "Overview" },
+    { href: `/dashboard/${repoId}/issues`, icon: AlertTriangle, label: "Issues" },
+    { href: `/dashboard/${repoId}/files`, icon: FileCode, label: "Files" },
+    { href: `/dashboard/${repoId}/docs`, icon: FileText, label: "Documentation" },
+    { href: `/dashboard/${repoId}/settings`, icon: Settings, label: "Settings" },
+  ] : [];
+
+  const [repoName, setRepoName] = useState<string>("Dashboard");
+  const [branch, setBranch] = useState<string>("main");
+  const [lastScan, setLastScan] = useState<string>("Never");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanHistory, setScanHistory] = useState<ScanResult[]>([]);
   const location = useLocation();
 
   useEffect(() => {
-    // Load scan history
-    setScanHistory(scanStorage.getScans());
-  }, []);
+    // Load repository + analysis history from backend
+    let mounted = true;
+
+    async function load() {
+      try {
+        if (!repoId || repoId === 'undefined') {
+          // No repo selected yet
+          console.log('[DashboardLayout] No repoId in URL params, repoId:', repoId);
+          setRepoName("Repository");
+          setBranch("main");
+          setScanHistory([]);
+          setLastScan("Never");
+          return;
+        }
+
+        console.log('[DashboardLayout] Loading repo:', repoId);
+        const repo = await apiClient.getRepository(repoId as string);
+        if (!mounted) return;
+        setRepoName(repo?.name || repo?.full_name || "Repository");
+        setBranch(repo?.default_branch || "main");
+
+        const history = await apiClient.getAnalysisHistory(repoId as string);
+        if (!mounted) return;
+        
+        console.log('[DashboardLayout] History response:', history);
+        
+        // Ensure scanHistory is always an array - handle both array response and object with 'history' field
+        let historyArray: any[] = [];
+        if (Array.isArray(history)) {
+          historyArray = history;
+        } else if (history && Array.isArray(history.history)) {
+          historyArray = history.history;
+        }
+        
+        // Normalize history items into a consistent shape for the UI
+        const scanItems = historyArray.map((item: any) => ({
+          id: item.id,
+          // Prefer completed_at, fall back to created_at/started_at
+          timestamp: item.completed_at || item.created_at || item.started_at || null,
+          stats: {
+            total: item.total_issues ?? item.total ?? 0,
+            critical: item.critical_issues ?? 0,
+            high: item.high_issues ?? 0,
+            medium: item.medium_issues ?? 0,
+            low: item.low_issues ?? 0,
+          }
+        }));
+
+        setScanHistory(scanItems);
+        console.log('[DashboardLayout] Set scan history with', scanItems.length, 'items');
+
+        // compute last scan from most recent completed analysis or repository.last_analyzed
+        const latest = scanItems[0];
+        if (latest?.timestamp) {
+          setLastScan(new Date(latest.timestamp).toLocaleString());
+        } else if (repo?.last_analyzed) {
+          setLastScan(new Date(repo.last_analyzed).toLocaleString());
+        } else {
+          setLastScan("Never");
+        }
+      } catch (err) {
+        console.error("Failed loading repo/history", err);
+      }
+    }
+
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, [repoId]);
 
   const handleRunScan = async () => {
     setIsScanning(true);
     try {
-      const result = await runScan(repoName, branch);
-      setScanHistory([result, ...scanHistory]);
-      // Trigger a custom event to notify Issues page
-      window.dispatchEvent(new CustomEvent("scanCompleted", { detail: result }));
+      await apiClient.startAnalysis(repoId as string);
+      // Refresh history after starting scan
+      const history = await apiClient.getAnalysisHistory(repoId as string);
+      setScanHistory(history || []);
+      const latest = (history || [])[0];
+      if (latest?.completed_at) {
+        setLastScan(new Date(latest.completed_at).toLocaleString());
+      }
+      window.dispatchEvent(new CustomEvent("scanCompleted", { detail: { repository_id: repoId } }));
     } catch (error) {
       console.error("Scan failed:", error);
     } finally {
@@ -167,6 +242,12 @@ export function DashboardLayout({
         {/* Top bar */}
         <header className="sticky top-0 z-30 glass-panel border-b h-16 flex items-center justify-between px-6">
           <div className="flex items-center gap-4">
+            <Link to="/repos" className="hidden sm:inline-flex">
+              <Button variant="ghost" size="sm" className="gap-2">
+                <ArrowLeft className="h-4 w-4" />
+                Back to Repos
+              </Button>
+            </Link>
             <div className="flex items-center gap-2">
               <h1 className="text-lg font-semibold">{repoName}</h1>
               <span className="flex items-center gap-1 text-sm text-muted-foreground px-2 py-1 bg-muted rounded-md">
@@ -192,7 +273,7 @@ export function DashboardLayout({
               <DropdownMenuContent align="end" className="w-64">
                 <DropdownMenuLabel>Recent Scans</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                {scanHistory.length === 0 ? (
+                {!Array.isArray(scanHistory) || scanHistory.length === 0 ? (
                   <div className="p-2 text-sm text-muted-foreground text-center">
                     No scans yet
                   </div>
@@ -200,18 +281,18 @@ export function DashboardLayout({
                   scanHistory.slice(0, 5).map((scan) => (
                     <DropdownMenuItem key={scan.id} className="flex flex-col items-start">
                       <div className="text-xs text-muted-foreground">
-                        {new Date(scan.timestamp).toLocaleString()}
+                        {scan.timestamp ? new Date(scan.timestamp).toLocaleString() : 'Unknown'}
                       </div>
                       <div className="text-sm font-medium">
-                        {scan.stats.total} issues found
+                        {(scan.stats && typeof scan.stats.total === 'number') ? `${scan.stats.total} issues found` : 'No data'}
                       </div>
                       <div className="text-xs">
-                        {scan.stats.critical > 0 && (
+                        {scan.stats && scan.stats.critical > 0 && (
                           <span className="text-destructive mr-2">
                             {scan.stats.critical} critical
                           </span>
                         )}
-                        {scan.stats.high > 0 && (
+                        {scan.stats && scan.stats.high > 0 && (
                           <span className="text-orange-500 mr-2">
                             {scan.stats.high} high
                           </span>

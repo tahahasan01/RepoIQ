@@ -23,57 +23,106 @@ class AgentOrchestrator:
         files: List[Dict[str, str]],
         project_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        logger.info(f"Starting repository analysis for {len(files)} files")
+        logger.info(f"Starting fast batch analysis for {len(files)} files")
         
         all_issues = []
-        agent_results = {
-            "security": None,
-            "quality": None,
-            "architecture": None,
-            "documentation": None
-        }
+        total_security_score = 0
+        total_quality_score = 0
+        total_architecture_score = 0
+        batch_count_actual = 0
         
-        tasks = []
-        for file_data in files[:20]:
-            file_path = file_data["path"]
-            code = file_data["content"]
+        # Process files in larger batches (5 files per AI call)
+        batch_size = 5
+        total_batches = (len(files) + batch_size - 1) // batch_size
+        
+        for i in range(0, len(files), batch_size):
+            batch = files[i:i + batch_size]
+            batch_num = i // batch_size + 1
+            logger.info(f"Analyzing batch {batch_num}/{total_batches} ({len(batch)} files)...")
             
-            tasks.append(self._analyze_file(file_path, code, project_context))
-        
-        file_results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for result in file_results:
-            if isinstance(result, Exception):
-                logger.error(f"File analysis failed: {str(result)}")
+            try:
+                # Analyze entire batch in one AI call
+                batch_result = await self._analyze_file_batch(batch, project_context)
+                
+                if batch_result and "issues" in batch_result:
+                    all_issues.extend(batch_result["issues"])
+                    total_security_score += batch_result.get("security_score", 50)
+                    total_quality_score += batch_result.get("quality_score", 50)
+                    total_architecture_score += batch_result.get("architecture_score", 50)
+                    batch_count_actual += 1
+                    logger.info(f"✓ Batch {batch_num} complete: {len(batch_result['issues'])} issues found")
+            except Exception as e:
+                logger.error(f"Batch {batch_num} failed: {str(e)}")
                 continue
-            
-            for agent_type, agent_result in result.items():
-                if agent_result and "issues" in agent_result:
-                    all_issues.extend(agent_result["issues"])
-                    
-                    if agent_results[agent_type] is None:
-                        agent_results[agent_type] = agent_result
-                    else:
-                        agent_results[agent_type]["issues"].extend(agent_result["issues"])
-                        agent_results[agent_type]["files_analyzed"] += agent_result.get("files_analyzed", 0)
         
-        overall_scores = self._calculate_overall_scores(agent_results)
+        # Calculate average scores
+        avg_security = total_security_score / batch_count_actual if batch_count_actual > 0 else 50
+        avg_quality = total_quality_score / batch_count_actual if batch_count_actual > 0 else 50
+        avg_architecture = total_architecture_score / batch_count_actual if batch_count_actual > 0 else 50
+        overall = (avg_security + avg_quality + avg_architecture) / 3
         
         return {
-            "overall_score": overall_scores["overall"],
-            "security_score": overall_scores["security"],
-            "quality_score": overall_scores["quality"],
-            "architecture_score": overall_scores["architecture"],
-            "documentation_score": overall_scores.get("documentation", 100),
+            "overall_score": int(overall),
+            "security_score": int(avg_security),
+            "quality_score": int(avg_quality),
+            "architecture_score": int(avg_architecture),
+            "documentation_score": 100,
             "total_issues": len(all_issues),
             "critical_issues": len([i for i in all_issues if i.get("severity") == "critical"]),
             "high_issues": len([i for i in all_issues if i.get("severity") == "high"]),
             "medium_issues": len([i for i in all_issues if i.get("severity") == "medium"]),
             "low_issues": len([i for i in all_issues if i.get("severity") == "low"]),
             "issues": all_issues,
-            "agent_results": agent_results,
+            "agent_results": {},
             "files_analyzed": len(files)
         }
+    
+    async def _analyze_file_batch(
+        self,
+        files: List[Dict[str, str]],
+        project_context: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Analyze multiple files in a single AI call for speed."""
+        from app.services.toon_service import get_toon_service
+        toon = get_toon_service()
+        
+        # Compress files using TOON
+        compressed = toon.compress_code_context(files, max_chars=30000)
+        
+        # Single comprehensive analysis prompt
+        file_list = "\n".join([f"- {f['path']}" for f in files])
+        prompt = f"""Analyze these {len(files)} files for ALL issues (security, quality, architecture, documentation).
+
+Files to analyze:
+{file_list}
+
+Code (TOON compressed):
+{compressed}
+
+Return JSON with this exact structure:
+{{
+  "issues": [{{
+    "severity": "critical|high|medium|low",
+    "category": "security|quality|architecture|documentation",
+    "file_path": "exact/path/from/list/above",
+    "line_number": 1,
+    "message": "Clear description of the issue",
+    "suggestion": "How to fix it"
+  }}],
+  "security_score": 85,
+  "quality_score": 75,
+  "architecture_score": 90
+}}
+
+Focus on the most important issues."""
+        
+        try:
+            # Use security agent as unified analyzer
+            result = await self.security_agent.analyze(prompt, "", project_context)
+            return result if result else {"issues": [], "security_score": 50, "quality_score": 50, "architecture_score": 50}
+        except Exception as e:
+            logger.error(f"Batch analysis error: {e}")
+            return {"issues": [], "security_score": 50, "quality_score": 50, "architecture_score": 50}
     
     async def _analyze_file(
         self,
@@ -155,7 +204,7 @@ class AgentOrchestrator:
         for issue in critical_issues[:5]:
             if issue.get("auto_fixable"):
                 quick_wins.append({
-                    "issue": issue["description"],
+                    "issue": issue.get("message", issue.get("description", "No description")),
                     "category": issue["category"],
                     "impact": "high",
                     "effort": "low"
@@ -164,7 +213,7 @@ class AgentOrchestrator:
         medium_term = []
         for issue in high_issues[:10]:
             medium_term.append({
-                "issue": issue["description"],
+                "issue": issue.get("message", issue.get("description", "No description")),
                 "category": issue["category"],
                 "impact": "high",
                 "effort": "medium"
@@ -174,7 +223,7 @@ class AgentOrchestrator:
         architecture_issues = [i for i in issues if i.get("agent_type") == "architecture"]
         for issue in architecture_issues[:5]:
             long_term.append({
-                "issue": issue["description"],
+                "issue": issue.get("message", issue.get("description", "No description")),
                 "category": issue["category"],
                 "impact": "medium",
                 "effort": "high"

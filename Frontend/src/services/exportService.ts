@@ -88,6 +88,7 @@ export function exportAsDOC(reports: BugReport[]): void {
       <div class="report-header">
         <p class="report-title">${escapeHtml(report.title)}</p>
         <p class="report-date">Report ID: #${report.id} | Repository: ${escapeHtml(report.repoName)} | Reported on: ${new Date(report.timestamp).toLocaleString()}</p>
+        <p class="report-date">Severity: ${escapeHtml(report.severity || "medium")} | Status: ${escapeHtml(report.status || "open")}</p>
       </div>
       <div class="report-details">${escapeHtml(report.details)}</div>
     </div>
@@ -190,6 +191,7 @@ export function exportAsPDF(reports: BugReport[]): void {
     <div class="report">
       <p class="report-title">${escapeHtml(report.title)}</p>
       <p class="report-date">Report ID: #${report.id} | Repository: ${escapeHtml(report.repoName)} | Reported: ${new Date(report.timestamp).toLocaleString()}</p>
+      <p class="report-date">Severity: ${escapeHtml(report.severity || "medium")} | Status: ${escapeHtml(report.status || "open")}</p>
       <div class="report-details">${escapeHtml(report.details)}</div>
     </div>
   `

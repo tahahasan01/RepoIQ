@@ -31,6 +31,8 @@ export interface BugReport {
   details: string;
   timestamp: number;
   repoName: string;
+  severity?: "critical" | "high" | "medium" | "low";
+  status?: "open" | "triaged" | "in_progress" | "resolved";
 }
 
 const STORAGE_KEYS = {
@@ -209,7 +211,11 @@ export const bugReportStorage = {
 
   saveReport(report: BugReport): void {
     const reports = this.getReports();
-    reports.unshift(report);
+    reports.unshift({
+      status: "open",
+      severity: "medium",
+      ...report,
+    });
     // Keep only last 50 reports
     if (reports.length > 50) reports.pop();
     localStorage.setItem(STORAGE_KEYS.BUG_REPORTS, JSON.stringify(reports));
@@ -281,6 +287,8 @@ export function initializeDummyData(): void {
       details: "Users report slow performance after extended sessions.\n\nSteps to reproduce:\n1. Login to application\n2. Leave session open for 2+ hours\n3. Notice increasing memory usage\n\nExpected: Memory should remain stable\nActual: Memory increases by ~50MB per hour",
       timestamp: now - 5 * 60 * 60 * 1000, // 5 hours ago
       repoName: "Dashboard",
+      severity: "high",
+      status: "open",
     });
     
     bugReportStorage.saveReport({
@@ -289,6 +297,8 @@ export function initializeDummyData(): void {
       details: "Files over 10MB fail to upload with timeout error.\n\nError message: 'Request timeout after 30s'\n\nSuggestion: Increase timeout or implement chunked upload",
       timestamp: now - 24 * 60 * 60 * 1000, // 1 day ago
       repoName: "Dashboard",
+      severity: "medium",
+      status: "triaged",
     });
   }
 }
