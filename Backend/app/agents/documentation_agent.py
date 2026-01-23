@@ -204,3 +204,172 @@ Return the improved version."""
         ]
         
         return await self._call_llm(messages)
+    
+    async def generate_architecture_diagram(self, files: List[str], repo_name: str = "Repository") -> str:
+        """Generate an ASCII architecture diagram based on the actual file structure."""
+        
+        # Categorize files by type
+        categories = {
+            "frontend": [],
+            "backend": [],
+            "api": [],
+            "database": [],
+            "services": [],
+            "components": [],
+            "pages": [],
+            "hooks": [],
+            "utils": [],
+            "config": [],
+            "tests": [],
+            "models": [],
+            "agents": [],
+            "tasks": [],
+        }
+        
+        for file_path in files:
+            path_lower = file_path.lower()
+            if any(x in path_lower for x in ["frontend", "src/components", "src/pages", "src/hooks"]):
+                if "component" in path_lower:
+                    categories["components"].append(file_path)
+                elif "page" in path_lower:
+                    categories["pages"].append(file_path)
+                elif "hook" in path_lower:
+                    categories["hooks"].append(file_path)
+                else:
+                    categories["frontend"].append(file_path)
+            elif any(x in path_lower for x in ["backend", "server", "api"]):
+                if "route" in path_lower or "endpoint" in path_lower:
+                    categories["api"].append(file_path)
+                elif "service" in path_lower:
+                    categories["services"].append(file_path)
+                elif "model" in path_lower or "schema" in path_lower:
+                    categories["models"].append(file_path)
+                elif "agent" in path_lower:
+                    categories["agents"].append(file_path)
+                elif "task" in path_lower:
+                    categories["tasks"].append(file_path)
+                else:
+                    categories["backend"].append(file_path)
+            elif any(x in path_lower for x in ["database", "db", "migration", "sql"]):
+                categories["database"].append(file_path)
+            elif any(x in path_lower for x in ["test", "spec", "__test__"]):
+                categories["tests"].append(file_path)
+            elif any(x in path_lower for x in ["config", ".env", "settings"]):
+                categories["config"].append(file_path)
+            elif any(x in path_lower for x in ["util", "helper", "lib"]):
+                categories["utils"].append(file_path)
+        
+        # Build file structure summary
+        file_summary = f"Project: {repo_name}\nTotal Files: {len(files)}\n\n"
+        for category, file_list in categories.items():
+            if file_list:
+                file_summary += f"{category.upper()}: {len(file_list)} files\n"
+                for f in file_list[:5]:  # Show first 5 files per category
+                    file_summary += f"  - {f}\n"
+                if len(file_list) > 5:
+                    file_summary += f"  ... and {len(file_list) - 5} more\n"
+        
+        system_prompt = """You are a software architecture expert. Generate a clear ASCII architecture diagram based on the file structure provided.
+
+IMPORTANT: 
+- Create a diagram that represents the ACTUAL project structure from the files
+- Use simple ASCII box characters (-, |, +, >, <)
+- Show data flow with arrows (→, ←, ↓, ↑)
+- Include main layers: Frontend, API/Backend, Database, External Services
+- Show key components discovered from the file structure
+- Keep it clean and readable (max 60 chars wide)
+
+Example format:
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Frontend (React)                      │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
+│  │ Components  │  │   Pages     │  │   Hooks     │      │
+│  └─────────────┘  └─────────────┘  └─────────────┘      │
+└────────────────────────────┬────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│                    Backend (FastAPI)                     │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
+│  │   Routes    │  │  Services   │  │   Agents    │      │
+│  └─────────────┘  └─────────────┘  └─────────────┘      │
+└────────────────────────────┬────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│                      Database                            │
+└─────────────────────────────────────────────────────────┘
+```
+"""
+        
+        user_prompt = f"""Generate an ASCII architecture diagram for this project based on its file structure:
+
+{file_summary}
+
+Create a professional diagram showing:
+1. Main layers/tiers based on the actual files
+2. Key components in each layer
+3. Data flow between layers
+4. Any external integrations detected
+
+Output ONLY the ASCII diagram, no explanations."""
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        try:
+            result = await self._call_llm(messages, temperature=0.5)
+            return result
+        except Exception as e:
+            logger.error(f"Failed to generate architecture diagram: {e}")
+            # Return a basic fallback diagram
+            return self._generate_fallback_diagram(categories, repo_name)
+    
+    def _generate_fallback_diagram(self, categories: dict, repo_name: str) -> str:
+        """Generate a basic architecture diagram without LLM."""
+        lines = []
+        lines.append(f"# {repo_name} Architecture")
+        lines.append("")
+        lines.append("```")
+        lines.append("┌─────────────────────────────────────────────────────────┐")
+        
+        # Frontend layer
+        if any(categories.get(k) for k in ["frontend", "components", "pages", "hooks"]):
+            lines.append("│                    Frontend Layer                        │")
+            components = []
+            if categories.get("components"): components.append(f"Components ({len(categories['components'])})")
+            if categories.get("pages"): components.append(f"Pages ({len(categories['pages'])})")
+            if categories.get("hooks"): components.append(f"Hooks ({len(categories['hooks'])})")
+            if components:
+                lines.append(f"│  {' | '.join(components)[:55].ljust(55)} │")
+            lines.append("├────────────────────────────┬────────────────────────────┤")
+            lines.append("│                            ▼                            │")
+        
+        # Backend layer
+        if any(categories.get(k) for k in ["backend", "api", "services", "agents"]):
+            lines.append("│                    Backend Layer                         │")
+            components = []
+            if categories.get("api"): components.append(f"API ({len(categories['api'])})")
+            if categories.get("services"): components.append(f"Services ({len(categories['services'])})")
+            if categories.get("agents"): components.append(f"Agents ({len(categories['agents'])})")
+            if components:
+                lines.append(f"│  {' | '.join(components)[:55].ljust(55)} │")
+            lines.append("├────────────────────────────┬────────────────────────────┤")
+            lines.append("│                            ▼                            │")
+        
+        # Database layer
+        if categories.get("database") or categories.get("models"):
+            lines.append("│                    Data Layer                            │")
+            components = []
+            if categories.get("database"): components.append(f"Database ({len(categories['database'])})")
+            if categories.get("models"): components.append(f"Models ({len(categories['models'])})")
+            if components:
+                lines.append(f"│  {' | '.join(components)[:55].ljust(55)} │")
+        
+        lines.append("└─────────────────────────────────────────────────────────┘")
+        lines.append("```")
+        
+        return "\n".join(lines)

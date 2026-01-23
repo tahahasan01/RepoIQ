@@ -1,11 +1,14 @@
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import List
+from github import GithubException
 from app.schemas import GitHubRepo, RepositoryResponse
 from app.services.repository_service import RepositoryService
 from app.services.github_service import create_github_service
 from app.api.dependencies import get_current_user, get_github_token
 from app.services.auth_service import AuthService
+from app.core.logging import get_logger
 
+logger = get_logger(__name__)
 router = APIRouter(prefix="/github", tags=["GitHub"])
 
 
@@ -85,13 +88,16 @@ async def get_repository_files(
     repo_service = RepositoryService()
     
     try:
+        logger.info(f"📂 Fetching files for repository: {repo_id}")
         files = await repo_service.get_repository_files(
             repo_id,
             current_user["id"],
             github_token
         )
+        logger.info(f"✅ Returning {len(files) if files else 0} files")
         return {"files": files}
     except Exception as e:
+        logger.error(f"❌ Failed to fetch repository files: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
@@ -115,7 +121,26 @@ async def get_file_content(
             github_token
         )
         return {"file_path": file_path, "content": content}
+    except GithubException as e:
+        # File doesn't exist or GitHub API error
+        if e.status == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"File not found: {file_path}"
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"GitHub API error: {str(e)}"
+        )
     except Exception as e:
+        # Check if error message indicates file not found
+        error_msg = str(e).lower()
+        if "not found" in error_msg or "404" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"File not found: {file_path}"
+            )
+        # Other server errors
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)

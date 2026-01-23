@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import apiClient from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
@@ -6,8 +6,13 @@ import { useAuth } from "@/hooks/useAuth";
 export default function GitHubCallback() {
   const navigate = useNavigate();
   const { login } = useAuth();
+  const hasRun = useRef(false);
 
   useEffect(() => {
+    // Prevent double execution
+    if (hasRun.current) return;
+    hasRun.current = true;
+
     const handleCallback = async () => {
       const params = new URLSearchParams(window.location.search);
       const code = params.get("code");
@@ -35,12 +40,21 @@ export default function GitHubCallback() {
           localStorage.setItem("refresh_token", response.refresh_token);
         }
 
-        // Fetch user data
-        const user = await apiClient.getCurrentUser();
-        login(user, response.access_token);
-
+        // Navigate immediately for instant UX (optimistic)
         console.log("[GitHub OAuth] Success! Redirecting to repos...");
         navigate("/repos");
+
+        // Store user data in background (non-blocking)
+        if (response.user) {
+          login(response.user, response.access_token, response.refresh_token);
+        } else {
+          // Fetch user data in background
+          apiClient.getCurrentUser().then(user => {
+            login(user, response.access_token, response.refresh_token);
+          }).catch(err => {
+            console.error("[GitHub OAuth] Failed to fetch user in background:", err);
+          });
+        }
       } catch (err) {
         console.error("[GitHub OAuth] Callback failed:", err);
         navigate("/login?error=callback_failed");
@@ -48,7 +62,7 @@ export default function GitHubCallback() {
     };
 
     handleCallback();
-  }, [navigate, login]);
+  }, []);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">

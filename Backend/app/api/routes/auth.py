@@ -63,16 +63,24 @@ async def login(login_data: LoginRequest):
         )
 
 
-@router.post("/github/callback", response_model=TokenResponse)
+class TokenWithUserResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    user: dict
+
+
+@router.post("/github/callback", response_model=TokenWithUserResponse)
 async def github_callback(callback_data: GitHubCallbackRequest):
     auth_service = AuthService()
     
     try:
         result = await auth_service.github_oauth(callback_data.code)
         
-        return TokenResponse(
+        # github_oauth already returns user data, so we include it in the response
+        return TokenWithUserResponse(
             access_token=result["access_token"],
-            refresh_token=result["refresh_token"]
+            refresh_token=result["refresh_token"],
+            user=result.get("user", {})
         )
     except Exception as e:
         raise HTTPException(

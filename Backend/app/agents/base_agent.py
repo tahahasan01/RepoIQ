@@ -11,8 +11,8 @@ logger = get_logger(__name__)
 
 class BaseAgent(ABC):
     def __init__(self):
-        # Create httpx client without proxy support to avoid compatibility issues
-        http_client = httpx.Client(proxy=None)
+        # Use a plain httpx client to avoid proxy keyword incompatibilities
+        http_client = httpx.Client()
         self.client = OpenAI(
             api_key=settings.OPENAI_API_KEY,
             http_client=http_client

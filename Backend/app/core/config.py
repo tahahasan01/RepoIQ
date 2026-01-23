@@ -22,7 +22,12 @@ class Settings(BaseSettings):
     
     OPENAI_API_KEY: str
     
+    # Redis configuration
     REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_MAX_CONNECTIONS: int = 50
+    REDIS_SOCKET_TIMEOUT: int = 5
+    REDIS_SOCKET_CONNECT_TIMEOUT: int = 2
+    CACHE_DEFAULT_TTL: int = 300  # 5 minutes
     
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
@@ -32,7 +37,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     API_V1_PREFIX: str = "/api/v1"
     # Include common dev frontend ports (add more in production via .env)
-    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:8081"
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8081"
     
     MAX_UPLOAD_SIZE: int = 5242880
     UPLOAD_DIR: str = "uploads"
@@ -45,7 +50,14 @@ class Settings(BaseSettings):
     
     @property
     def BACKEND_CORS_ORIGINS(self) -> List[str]:
-        return self.allowed_origins_list
+        """Get list of allowed CORS origins, ensuring localhost:8081 is included in development"""
+        origins = self.allowed_origins_list
+        
+        # In development, ensure localhost:8081 is always included
+        if self.ENVIRONMENT == "development" and "http://localhost:8081" not in origins:
+            origins.append("http://localhost:8081")
+        
+        return origins
     
     @property
     def api_prefix(self) -> str:

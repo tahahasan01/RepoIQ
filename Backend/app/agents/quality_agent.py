@@ -60,6 +60,7 @@ Identify all code quality issues and return them in JSON format."""
         response = await self._call_llm(messages)
         issues = self.extract_issues_from_response(response, file_path)
         
+        # Always run static analysis for common patterns
         static_issues = self._run_static_analysis(code, file_path, language)
         issues.extend(static_issues)
         

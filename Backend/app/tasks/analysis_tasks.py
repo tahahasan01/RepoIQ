@@ -6,6 +6,7 @@ from app.services.github_service import create_github_service
 from app.services.token_optimizer import get_token_optimizer
 from app.services.cache_service import get_analysis_cache
 from app.services.toon_service import get_toon_service
+from app.tasks.cache_warming import warm_cache_on_analysis_completion
 from app.core.logging import get_logger
 from typing import Dict, Any
 import asyncio
@@ -16,24 +17,28 @@ logger = get_logger(__name__)
 # Synchronous version without Celery/Redis
 async def run_analysis_sync(repo_id: str, user_id: str, github_token: str, analysis_id: str) -> Dict[str, Any]:
     """Run analysis synchronously without using Celery/Redis"""
-    logger.info(f"Starting synchronous repository analysis: {repo_id}")
+    logger.info(f"⚡ Starting synchronous repository analysis: {repo_id} (analysis_id: {analysis_id})")
     
     try:
         result = await _run_analysis(repo_id, user_id, github_token, analysis_id)
-        logger.info(f"Repository analysis completed: {repo_id}")
+        logger.info(f"✅ Repository analysis completed successfully: {repo_id}")
         return result
     except Exception as e:
-        logger.error(f"Repository analysis failed: {str(e)}")
+        logger.error(f"❌ Repository analysis failed for {repo_id}: {type(e).__name__}: {str(e)}")
+        logger.exception("Full error traceback:")
+        
         # Mark analysis as failed
         try:
             repo_service = RepositoryService()
             await repo_service.update_analysis(analysis_id, {
                 "status": "failed",
-                "error_message": str(e),
+                "error_message": f"{type(e).__name__}: {str(e)}",
                 "completed_at": None
             })
-        except:
-            pass
+            logger.info(f"Marked analysis {analysis_id} as failed in database")
+        except Exception as update_error:
+            logger.error(f"Failed to update analysis status: {str(update_error)}")
+        
         raise
 
 
@@ -71,6 +76,17 @@ def analyze_repository_task(self, repo_id: str, user_id: str, github_token: str,
 
 
 async def _run_analysis(repo_id: str, user_id: str, github_token: str, analysis_id: str) -> Dict[str, Any]:
+    """Wrapper with overall timeout"""
+    try:
+        return await asyncio.wait_for(
+            _run_analysis_internal(repo_id, user_id, github_token, analysis_id),
+            timeout=600.0  # 10 minutes max
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"❌ Analysis timed out after 10 minutes for repo {repo_id}")
+        raise Exception("Analysis timed out after 10 minutes. Repository may be too large.")
+
+async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, analysis_id: str) -> Dict[str, Any]:
     repo_service = RepositoryService()
     orchestrator = AgentOrchestrator()
     token_optimizer = get_token_optimizer()
@@ -113,14 +129,27 @@ async def _run_analysis(repo_id: str, user_id: str, github_token: str, analysis_
         return cached_result
     
     logger.info(f"Fetching repository files for {repo['full_name']}")
-    # Fetch ALL files from repository
-    files = github_service.get_repository_files(repo["full_name"], repo["default_branch"])
+    # Fetch ALL files from repository with increased timeout for large repos
+    try:
+        # Increased timeout to 90 seconds for large repositories
+        files = await asyncio.wait_for(
+            asyncio.to_thread(github_service.get_repository_files, repo["full_name"], repo["default_branch"]),
+            timeout=90.0
+        )
+        logger.info(f"✅ Successfully fetched {len(files)} files from GitHub")
+    except asyncio.TimeoutError:
+        logger.error(f"❌ Timeout fetching files from GitHub (90s limit exceeded)")
+        raise Exception("Repository file fetch timed out after 90 seconds. Repository is very large or GitHub API is slow. Try analyzing a smaller repository.")
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch repository files: {str(e)}")
+        raise
     
     # Filter for code files only
     def is_code_file(path: str) -> bool:
         """Filter for actual code files, skip UI libraries and tests."""
-        skip_extensions = ['.md', '.txt', '.json', '.yml', '.yaml', '.xml', 
-                          '.toml', '.ini', '.cfg', '.lock', '.log', '.css', '.html']
+        # Only skip documentation and config files
+        skip_extensions = ['.md', '.txt', '.json', '.yml', '.yaml', 
+                          '.toml', '.ini', '.cfg', '.lock', '.log']
         skip_files = ['.gitignore', 'LICENSE', 'Dockerfile', 'Makefile',
                      'requirements.txt', 'package.json', 'package-lock.json']
         
@@ -154,39 +183,86 @@ async def _run_analysis(repo_id: str, user_id: str, github_token: str, analysis_
         if 'test_' in filename or filename.endswith('_test.py') or filename.endswith('.test.ts') or filename.endswith('.spec.ts'):
             return False
         
+        # Include SQL, HTML, CSS, and other web files (important for security analysis)
         return True
     
     code_files_list = [f for f in files if is_code_file(f["path"])]
     
-    # Limit to maximum 30 files to control costs
-    MAX_FILES = 30
+    # Prioritize important files (main app code first)
+    def file_priority(file_path: str) -> int:
+        path_lower = file_path.lower()
+        # High priority: main app/api/service code
+        if any(x in path_lower for x in ['/api/', '/service', '/controller', '/model', '/handler']):
+            return 0
+        # Medium priority: other source code
+        if any(x in path_lower for x in ['src/', 'app/', 'backend/', 'server/']):
+            return 1
+        # Lower priority: frontend components
+        return 2
+    
+    code_files_list.sort(key=lambda f: file_priority(f["path"]))
+    
+    # Limit to maximum 15 files for analysis (balance between thoroughness and speed)
+    MAX_FILES = 15
+    MAX_FILE_SIZE = 50 * 1024
+    
     if len(code_files_list) > MAX_FILES:
-        logger.info(f"Limiting analysis from {len(code_files_list)} to {MAX_FILES} files")
+        logger.info(f"Limiting analysis from {len(code_files_list)} to {MAX_FILES} most important files")
         code_files_list = code_files_list[:MAX_FILES]
     
     logger.info(f"Found {len(files)} total files, analyzing {len(code_files_list)} important code files")
     
-    # Fetch content for ALL code files
-    code_files = []
-    for idx, file in enumerate(code_files_list, 1):
+    # Add detailed logging
+    logger.info(f"📊 File breakdown: {len(files)} total, {len(code_files_list)} code files selected")
+    if len(code_files_list) == 0:
+        logger.warning("⚠️ No code files found to analyze!")
+    
+    # Fetch content for ALL code files IN PARALLEL (much faster!)
+    async def fetch_file_content(file, idx, total):
         try:
-            logger.info(f"[{idx}/{len(code_files_list)}] Fetching: {file['path']}")
-            content = github_service.get_file_content(
-                repo["full_name"],
-                file["path"],
-                repo["default_branch"]
+            logger.info(f"[{idx}/{total}] Fetching: {file['path']}")
+            
+            # Increased timeout to 20 seconds per file for reliability
+            content = await asyncio.wait_for(
+                asyncio.to_thread(
+                    github_service.get_file_content,
+                    repo["full_name"],
+                    file["path"],
+                    repo["default_branch"]
+                ),
+                timeout=20.0
             )
             
             if content:
-                code_files.append({
+                # Skip very large files to speed up analysis
+                if len(content) > MAX_FILE_SIZE:
+                    logger.info(f"Skipping large file {file['path']} ({len(content):,} chars)")
+                    return None
+                    
+                return {
                     "path": file["path"],
                     "content": content
-                })
+                }
+        except asyncio.TimeoutError:
+            logger.warning(f"⏱️ Timeout fetching {file['path']} (20s limit)")
+            return None
         except Exception as e:
             logger.warning(f"Failed to fetch {file['path']}: {str(e)}")
-            continue
+            return None
     
-    logger.info(f"Successfully loaded {len(code_files)} code files")
+    # Fetch files in parallel batches of 5 (much faster than sequential!)
+    # asyncio already imported at module level
+    code_files = []
+    batch_size = 5
+    for i in range(0, len(code_files_list), batch_size):
+        batch = code_files_list[i:i+batch_size]
+        results = await asyncio.gather(
+            *[fetch_file_content(f, i+idx+1, len(code_files_list)) for idx, f in enumerate(batch)],
+            return_exceptions=True
+        )
+        code_files.extend([r for r in results if r is not None and not isinstance(r, Exception)])
+    
+    logger.info(f"Successfully loaded {len(code_files)} code files (parallel fetch)")
     
     # Use TOON to compress files for analysis
     logger.info("Compressing files using TOON format...")
@@ -247,15 +323,34 @@ async def _run_analysis(repo_id: str, user_id: str, github_token: str, analysis_
         "last_analyzed": datetime.utcnow().isoformat()
     })
     
-    # Cache the results
+    # CRITICAL: Invalidate API response cache for /results endpoint
+    # The cache middleware caches this endpoint for 60 min, but we need fresh data after analysis
+    redis_service = cache_service.redis
+    # Delete ALL cached /results responses for this repo (we don't know the exact cache key due to user hash)
+    cache_pattern = f"api:response:*repositories/{repo_id}/results*"
+    try:
+        # Use scan to find and delete matching keys
+        for key in redis_service.redis_client.scan_iter(match=cache_pattern):
+            redis_service.redis_client.delete(key)
+            logger.info(f"🗑️ Invalidated cached API response: {key.decode() if isinstance(key, bytes) else key}")
+    except Exception as e:
+        logger.warning(f"Failed to invalidate API cache (non-critical): {e}")
+    
+    # Cache the results (7 days - analysis rarely changes unless code changes)
     file_paths = [f["path"] for f in code_files]
     cache_service.cache_analysis(
         repo_id,
         analysis_result,
         commit_sha,
         file_paths,
-        ttl=3600 * 24  # 24 hours
+        ttl=3600 * 24 * 7  # 7 days
     )
+    
+    # Warm cache for frequently accessed data (issues, README, history)
+    try:
+        await warm_cache_on_analysis_completion(analysis_id, repo_id, user_id, github_token)
+    except Exception as e:
+        logger.warning(f"Cache warming failed (non-critical): {e}")
     
     logger.info(f"✓ Analysis complete: {len(code_files)} files, {analysis_result['total_issues']} issues found")
     

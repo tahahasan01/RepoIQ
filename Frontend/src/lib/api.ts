@@ -1,15 +1,77 @@
-// API client for backend communication
+/**
+ * API client for backend communication with caching support.
+ * 
+ * Caching Strategy:
+ * - Backend sends Cache-Control headers with appropriate TTLs
+ * - Browser automatically respects cache headers for repeat requests
+ * - SessionStorage used for instant page loads (separate from HTTP cache)
+ * - Redis on backend provides shared cache across all users and workers
+ * 
+ * Performance Features:
+ * - Automatic token refresh on 401
+ * - Request timeout protection (10s)
+ * - Cache-aware error handling
+ * - Request throttling to prevent excessive API calls
+ */
+import { RequestThrottler } from '@/utils/throttle';
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
 interface ApiError {
   detail: string | { msg: string }[];
 }
 
+/**
+ * Check if an error is a CORS error
+ */
+function isCorsError(error: any): boolean {
+  if (!error) return false;
+  
+  const errorMessage = error.message || String(error);
+  const errorString = errorMessage.toLowerCase();
+  
+  // Check for CORS-related error messages
+  return (
+    errorString.includes('cors') ||
+    errorString.includes('access-control-allow-origin') ||
+    errorString.includes('blocked by cors policy') ||
+    (errorString.includes('failed to fetch') && 
+     errorString.includes('networkerror') || 
+     error.name === 'TypeError')
+  );
+}
+
+/**
+ * Check if an error is a network error (no connection, timeout, etc.)
+ */
+function isNetworkError(error: any): boolean {
+  if (!error) return false;
+  
+  const errorMessage = error.message || String(error);
+  const errorString = errorMessage.toLowerCase();
+  
+  return (
+    errorString.includes('failed to fetch') ||
+    errorString.includes('networkerror') ||
+    errorString.includes('network request failed') ||
+    errorString.includes('err_network') ||
+    error.name === 'TypeError' && errorMessage.includes('fetch')
+  );
+}
+
 class ApiClient {
   private baseUrl: string;
+  private refreshing: boolean = false;
+  private refreshPromise: Promise<boolean> | null = null;
+  private requestThrottler: RequestThrottler;
+  
+  // Track pending requests to prevent duplicate calls
+  private pendingRequests = new Map<string, Promise<any>>();
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
+    // Throttle requests with 300ms minimum delay between same endpoint calls
+    this.requestThrottler = new RequestThrottler(300);
   }
 
   private getToken(): string | null {
@@ -30,10 +92,56 @@ class ApiClient {
 
   private async request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    throttleKey?: string
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     let token = this.getToken();
+    
+    // Don't throttle critical endpoints that need fresh data
+    const criticalEndpoints = ['/results', '/issues'];
+    const isCritical = criticalEndpoints.some(path => endpoint.includes(path));
+    
+    // Use throttling for GET requests (read operations) but NOT for critical endpoints
+    const shouldThrottle = !isCritical && (options.method === 'GET' || !options.method);
+    const key = throttleKey || endpoint;
+    
+    if (shouldThrottle && this.pendingRequests.has(key)) {
+      // Return existing pending request instead of making a new one
+      console.log('[API] ♻️ Returning existing request for:', endpoint);
+      return this.pendingRequests.get(key) as Promise<T>;
+    }
+    
+    const makeRequest = async (): Promise<T> => {
+      return this._doRequest<T>(endpoint, options, token);
+    };
+    
+    let requestPromise: Promise<T>;
+    
+    if (shouldThrottle) {
+      requestPromise = this.requestThrottler.throttle(key, makeRequest);
+    } else {
+      requestPromise = makeRequest();
+    }
+    
+    // Track pending request
+    if (shouldThrottle) {
+      this.pendingRequests.set(key, requestPromise);
+      requestPromise.finally(() => {
+        this.pendingRequests.delete(key);
+      });
+    }
+    
+    return requestPromise;
+  }
+  
+  private async _doRequest<T>(
+    endpoint: string,
+    options: RequestInit = {},
+    token: string | null = null
+  ): Promise<T> {
+    const url = `${this.baseUrl}${endpoint}`;
+    if (!token) token = this.getToken();
 
     const makeHeaders = () => {
       const headers: HeadersInit = {
@@ -51,10 +159,14 @@ class ApiClient {
 
     console.log('[API] Fetching:', url);
 
-    const doFetch = async () => {
+    const doFetch = async (currentToken: string | null = token) => {
+      const headers = makeHeaders();
+      if (currentToken) {
+        headers['Authorization'] = `Bearer ${currentToken}`;
+      }
       return fetch(url, {
         ...options,
-        headers: makeHeaders(),
+        headers,
       });
     };
 
@@ -62,20 +174,29 @@ class ApiClient {
       let response = await doFetch();
       console.log('[API] Response status:', response.status);
 
-      // If unauthorized, try refresh once
+      // Handle authentication errors
       if (response.status === 401) {
         console.log('[API] 401 received, attempting token refresh');
         const refreshed = await this.tryRefreshToken();
         if (refreshed) {
-          token = this.getToken();
-          response = await doFetch();
+          const newToken = this.getToken();
+          response = await doFetch(newToken);
           console.log('[API] Retried request, status:', response.status);
         } else {
-          // notify app to route user back to login
-          try {
-            window.dispatchEvent(new CustomEvent('authExpired'));
-          } catch {}
+          // Token refresh failed - clear auth and redirect to login
+          console.log('[API] Token refresh failed, logging out');
+          this.clearAuthAndCaches();
+          window.dispatchEvent(new CustomEvent('authExpired'));
+          throw new Error('Authentication expired. Please log in again.');
         }
+      }
+
+      // Handle forbidden - session expired or invalid
+      if (response.status === 403) {
+        console.log('[API] 403 Forbidden - session expired or invalid, logging out');
+        this.clearAuthAndCaches();
+        window.dispatchEvent(new CustomEvent('authExpired'));
+        throw new Error('Session expired. Please log in again.');
       }
 
       if (!response.ok) {
@@ -96,18 +217,65 @@ class ApiClient {
       return data;
     } catch (error) {
       console.log('[API] Exception:', error);
+      
+      // Detect and enhance CORS errors
+      if (isCorsError(error)) {
+        const corsError = new Error(
+          'CORS Error: Backend is not allowing requests from this origin. ' +
+          'Please check backend CORS configuration to include: ' + window.location.origin
+        );
+        (corsError as any).isCorsError = true;
+        (corsError as any).originalError = error;
+        console.error('[API] CORS Error detected:', corsError.message);
+        throw corsError;
+      }
+      
+      // Detect and enhance network errors
+      if (isNetworkError(error)) {
+        const networkError = new Error(
+          'Network Error: Unable to reach the backend server. ' +
+          'Please ensure the backend is running on ' + this.baseUrl
+        );
+        (networkError as any).isNetworkError = true;
+        (networkError as any).originalError = error;
+        console.error('[API] Network Error detected:', networkError.message);
+        throw networkError;
+      }
+      
+      // Preserve original error if it's an Error instance
       if (error instanceof Error) {
         throw error;
       }
+      
       throw new Error('Network error');
     }
   }
 
   private async tryRefreshToken(): Promise<boolean> {
+    // If already refreshing, wait for that attempt
+    if (this.refreshing && this.refreshPromise) {
+      console.log('[API] Refresh already in progress, waiting...');
+      return this.refreshPromise;
+    }
+
+    this.refreshing = true;
+    this.refreshPromise = this._doRefresh();
+    
+    try {
+      const result = await this.refreshPromise;
+      return result;
+    } finally {
+      this.refreshing = false;
+      this.refreshPromise = null;
+    }
+  }
+
+  private async _doRefresh(): Promise<boolean> {
     const refreshToken = localStorage.getItem('refresh_token');
     if (!refreshToken) {
       console.log('[API] No refresh token available');
       this.clearAuthAndCaches();
+      window.dispatchEvent(new CustomEvent('authExpired'));
       return false;
     }
 
@@ -120,23 +288,29 @@ class ApiClient {
 
       if (!resp.ok) {
         console.log('[API] Refresh failed, status:', resp.status);
-        // clear tokens + caches
         this.clearAuthAndCaches();
+        window.dispatchEvent(new CustomEvent('authExpired'));
         return false;
       }
 
       const data = await resp.json();
       if (data.access_token) {
         localStorage.setItem('token', data.access_token);
+        if (data.refresh_token) {
+          localStorage.setItem('refresh_token', data.refresh_token);
+        }
+        console.log('[API] Token refreshed successfully');
+        return true;
       }
-      if (data.refresh_token) {
-        localStorage.setItem('refresh_token', data.refresh_token);
-      }
-      console.log('[API] Token refreshed');
-      return true;
+      
+      console.log('[API] Refresh response missing access_token');
+      this.clearAuthAndCaches();
+      window.dispatchEvent(new CustomEvent('authExpired'));
+      return false;
     } catch (err) {
       console.error('[API] Refresh exception', err);
       this.clearAuthAndCaches();
+      window.dispatchEvent(new CustomEvent('authExpired'));
       return false;
     }
   }
@@ -198,15 +372,34 @@ class ApiClient {
     );
   }
 
+  async cancelAnalysis(analysisId: string) {
+    return this.request<{ message: string }>(
+      `/analysis/${analysisId}/cancel`,
+      { method: 'POST' }
+    );
+  }
+
   async getAnalysisResults(repoId: string) {
     return this.request<any>(`/analysis/repositories/${repoId}/results`);
+  }
+
+  async getBatchAnalysisResults() {
+    return this.request<{ results: Record<string, any> }>(`/analysis/batch/results`);
   }
 
   async getAnalysisHistory(repoId: string) {
     return this.request<any>(`/analysis/repositories/${repoId}/history`);
   }
 
+  async getAnalysisById(analysisId: string) {
+    return this.request<any>(`/analysis/${analysisId}`);
+  }
+
   async getIssues(analysisId: string) {
+    return this.request<any[]>(`/analysis/${analysisId}/issues`);
+  }
+
+  async getIssuesByAnalysisId(analysisId: string) {
     return this.request<any[]>(`/analysis/${analysisId}/issues`);
   }
 
@@ -230,6 +423,15 @@ class ApiClient {
 
   async getImprovementRoadmap(repoId: string) {
     return this.request<any>(`/analysis/repositories/${repoId}/roadmap`);
+  }
+
+  async getArchitectureDiagram(repoId: string) {
+    return this.request<{
+      repository_id: string;
+      repository_name: string;
+      diagram: string;
+      file_count: number;
+    }>(`/analysis/repositories/${repoId}/architecture`);
   }
 
   async refresh(refreshToken: string) {

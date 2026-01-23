@@ -1,9 +1,16 @@
 import { useEffect, useState } from "react";
 
 type User = {
-  name: string;
+  id?: string;
+  name?: string;
   email?: string;
   avatar?: string;
+  avatar_url?: string;
+  full_name?: string;
+  github_username?: string;
+  username?: string;
+  login?: string;
+  bio?: string;
 };
 
 export function useAuth() {

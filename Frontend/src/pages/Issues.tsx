@@ -33,11 +33,68 @@ export default function Issues() {
   const [selectedIssue, setSelectedIssue] = useState<number | null>(null);
   const [copiedFix, setCopiedFix] = useState(false);
   const [issues, setIssues] = useState<ScanIssue[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   // owner-only app: no role checks
 
   const params = useParams();
   // routes may provide :id or :repoId depending on the router setup
   const repoId = (params as any).id || (params as any).repoId;
+  
+  // Clear any stale mock data from localStorage on component mount
+  useEffect(() => {
+    // Clear old mock data keys
+    const keysToRemove = ['repoiq_scans', 'repoiq_bug_reports'];
+    keysToRemove.forEach(key => {
+      if (localStorage.getItem(key)) {
+        console.log('[Issues] 🗑️ Clearing stale mock data:', key);
+        localStorage.removeItem(key);
+      }
+    });
+  }, []);
+
+  // Issues caching functions
+  const ISSUES_CACHE_KEY = (repoId: string) => `repoiq_issues_${repoId}`;
+  const ANALYSIS_CACHE_KEY = (repoId: string) => `repoiq_analysis_${repoId}`; // Dashboard's cache
+
+  const getCachedIssues = (repoId: string) => {
+    try {
+      // First, try to get issues from Dashboard's analysis cache (most likely to exist)
+      const analysisRaw = sessionStorage.getItem(ANALYSIS_CACHE_KEY(repoId));
+      if (analysisRaw) {
+        const analysisParsed = JSON.parse(analysisRaw);
+        if (Date.now() - (analysisParsed.timestamp || 0) <= 30 * 60 * 1000) {
+          if (analysisParsed.data?.issues && Array.isArray(analysisParsed.data.issues)) {
+            console.log('[Issues] Found issues in Dashboard cache:', analysisParsed.data.issues.length);
+            return analysisParsed.data.issues;
+          }
+        }
+      }
+
+      // Fallback to Issues-specific cache
+      const issuesRaw = sessionStorage.getItem(ISSUES_CACHE_KEY(repoId));
+      if (!issuesRaw) return null;
+      const parsed = JSON.parse(issuesRaw);
+      // Cache for 30 minutes (same as Dashboard)
+      if (Date.now() - (parsed.timestamp || 0) > 30 * 60 * 1000) {
+        sessionStorage.removeItem(ISSUES_CACHE_KEY(repoId));
+        return null;
+      }
+      return parsed.issues;
+    } catch {
+      return null;
+    }
+  };
+
+  const setCachedIssues = (repoId: string, issues: any[]) => {
+    try {
+      sessionStorage.setItem(
+        ISSUES_CACHE_KEY(repoId),
+        JSON.stringify({ issues, timestamp: Date.now() })
+      );
+    } catch {
+      // Ignore storage errors
+    }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -46,40 +103,124 @@ export default function Issues() {
       try {
         if (!repoId) {
           console.warn('[Issues] No repoId in URL params');
+          setIsLoading(false);
           return;
         }
-        // Fetch analysis results which includes issues
-        const results = await apiClient.getAnalysisResults(repoId as string).catch(() => null);
-        if (!mounted) return;
         
-        let issuesList: any[] = [];
-        if (results && results.issues) {
-          // Backend returns issues with different field names - map them to frontend format
-          issuesList = results.issues.map((issue: any) => ({
-            id: issue.id,
-            file: issue.file_path || issue.file || '',
-            line: issue.line_number || issue.line || 0,
+        // INSTANT LOAD: Check cache first for immediate display
+        const cachedIssues = getCachedIssues(repoId as string);
+        if (cachedIssues && Array.isArray(cachedIssues) && cachedIssues.length > 0) {
+          console.log('[Issues] ⚡ INSTANT: Showing', cachedIssues.length, 'cached issues');
+          // Map cached issues to correct format
+          const cachedMapped = cachedIssues.map((issue: any, idx: number) => ({
+            id: issue.id || `issue-${idx}`,
+            file: issue.file_path || issue.file || 'unknown',
+            line: issue.line_number || issue.line || 1,
             severity: issue.severity || 'low',
             type: issue.category || issue.type || 'unknown',
-            description: issue.description || '',
+            description: issue.description || issue.message || 'No description',
             details: issue.suggestion || issue.details || '',
             fix: issue.suggestion || issue.fix || 'No fix available',
           }));
+          setIssues(cachedMapped);
+          setIsLoading(false); // Don't show loading - we have cached data!
+          // Continue to fetch fresh data in background...
+        } else {
+          // No cache - show loading spinner
+          setIsLoading(true);
+        }
+        
+        console.log('[Issues] 🔄 Fetching fresh data from API...');
+        // Fetch analysis results which includes issues
+        const results = await apiClient.getAnalysisResults(repoId as string).catch((err) => {
+          console.error('[Issues] ❌ API call failed:', err);
+          return null;
+        });
+        if (!mounted) return;
+        
+        // Debug logging (reduced verbosity)
+        if (results) {
+          console.log('[Issues] 📦 API returned:', results.issues?.length || 0, 'issues');
+        } else {
+          console.log('[Issues] 📦 API returned null');
+        }
+        let issuesList: any[] = [];
+        if (results && results.issues && Array.isArray(results.issues)) {
+          console.log('[Issues] Found', results.issues.length, 'issues in results');
+          // Backend returns issues with different field names - map them to frontend format
+          issuesList = results.issues.map((issue: any, idx: number) => ({
+            id: issue.id || `issue-${idx}`,
+            file: issue.file_path || issue.file || 'unknown',
+            line: issue.line_number || issue.line || 1,
+            severity: issue.severity || 'low',
+            type: issue.category || issue.type || 'unknown',
+            description: issue.description || issue.message || 'No description',
+            details: issue.suggestion || issue.details || '',
+            fix: issue.suggestion || issue.fix || 'No fix available',
+          }));
+            console.debug('[Issues] Mapped issues:', issuesList.slice(0, 10));
+          } else if (results && (!results.issues || results.issues.length === 0) && results.id) {
+            // If results.issues is missing or empty, always try the dedicated issues endpoint as a fallback.
+            console.log('[Issues] results.issues empty or missing — attempting fallback to /analysis/{id}/issues for analysis id:', results.id);
+            const issuesRes = await apiClient.getIssues(results.id).catch((e) => {
+              console.warn('[Issues] Fallback issues endpoint failed:', e);
+              return null;
+            });
+            if (issuesRes && Array.isArray(issuesRes)) {
+              console.log('[Issues] Fallback returned', issuesRes.length, 'issues');
+              issuesList = issuesRes.map((issue: any, idx: number) => ({
+                id: issue.id || `issue-${idx}`,
+                file: issue.file_path || issue.file || 'unknown',
+                line: issue.line_number || issue.line || 1,
+                severity: issue.severity || 'low',
+                type: issue.category || issue.type || 'unknown',
+                description: issue.description || issue.message || 'No description',
+                details: issue.suggestion || issue.details || '',
+                fix: issue.suggestion || issue.fix || 'No fix available',
+              }));
+              console.debug('[Issues] Mapped fallback issues:', issuesList.slice(0, 10));
+            } else {
+              console.log('[Issues] Fallback did not return issues. issuesRes:', issuesRes);
+          }
         } else if (!results) {
-          // Fallback to local storage
-          const latestScan = scanStorage.getLatestScan();
-          issuesList = latestScan ? latestScan.issues : [];
+          // No API results - repository likely hasn't been analyzed yet
+          console.log('[Issues] ℹ️ No analysis results found - please run an analysis first');
+          issuesList = [];
+        } else {
+          console.log('[Issues] Results exist but no issues array:', results);
+          console.log('[Issues] This could mean: 1) Analysis not completed, 2) No issues found');
         }
 
-        setIssues(issuesList);
+        // Update with fresh API data
+        if (issuesList.length > 0) {
+          console.log('[Issues] ✅ Updated with', issuesList.length, 'fresh issues');
+          setIssues(issuesList);
+          // Cache for instant loading on next visit
+          setCachedIssues(repoId as string, issuesList);
+        } else if (!cachedIssues || cachedIssues.length === 0) {
+          // Only clear if we had no cached data either
+          console.log('[Issues] ℹ️ No issues found (analysis may not be complete)');
+          setIssues([]);
+        }
+        // If we had cached data and API returned empty, keep showing cached data
       } catch (err) {
-        console.error("Failed to load issues", err);
+        console.error("[Issues] ❌ API error:", err);
+        // Keep showing cached data if available
+        if (!issues.length) {
+          setIssues([]);
+        }
+      } finally {
+        setIsLoading(false);
       }
     }
 
     load();
 
     const handleScanCompleted = async (event: CustomEvent) => {
+      // Clear cache on new scan
+      if (repoId) {
+        sessionStorage.removeItem(ISSUES_CACHE_KEY(repoId as string));
+      }
       await load();
     };
 
@@ -135,9 +276,8 @@ export default function Issues() {
             <div className="flex items-center gap-4 mb-4">
               <h2 className="text-xl font-semibold">Issues</h2>
               <span className="text-sm text-muted-foreground">
-                {filteredIssues.length} found
+                {isLoading ? 'Loading...' : `${filteredIssues.length} found`}
               </span>
-              
             </div>
             <div className="flex gap-3">
               <div className="relative flex-1">

@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.api.routes import auth, users, github, analysis, chat
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.middleware.compression import CompressionMiddleware, JSONOptimizationMiddleware
+from app.middleware.cache_middleware import ResponseCacheMiddleware
 
 settings = get_settings()
 
@@ -42,9 +43,11 @@ app = FastAPI(
 )
 
 # Configure CORS - MUST be first middleware for preflight to work
+cors_origins = settings.BACKEND_CORS_ORIGINS
+logger.info(f"CORS configured - Allowing origins: {', '.join(cors_origins)}")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.BACKEND_CORS_ORIGINS,
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,7 +94,17 @@ app.add_middleware(
     compression_level=6  # Balance between speed and ratio
 )
 
-logger.info("Production middleware configured")
+# Response caching (before compression to cache uncompressed data)
+app.add_middleware(
+    ResponseCacheMiddleware,
+    default_ttl=300,  # 5 minutes default
+    endpoint_ttls={
+        "/api/v1/github/repositories": 300,  # 5 min
+        "/api/v1/analysis/repositories/": 3600,  # 60 min
+    }
+)
+
+logger.info("Production middleware configured (rate limiting, caching, compression)")
 
 
 # Request logging middleware
@@ -160,6 +173,74 @@ async def get_metrics():
     except Exception as e:
         logger.error(f"Failed to get metrics: {e}")
         return {"error": str(e)}
+
+
+# Cache statistics endpoint
+@app.get("/api/v1/cache/stats")
+async def cache_stats():
+    """
+    Get comprehensive cache statistics.
+    Shows hit rates, memory usage, and performance metrics.
+    """
+    from app.services.redis_service import get_redis_service
+    from app.services.cache_service import get_analysis_cache
+    
+    try:
+        redis_service = get_redis_service()
+        analysis_cache = get_analysis_cache()
+        
+        # Get Redis stats
+        redis_stats = redis_service.get_stats()
+        
+        # Get analysis cache stats
+        analysis_stats = analysis_cache.get_cache_stats() if hasattr(analysis_cache, 'get_cache_stats') else {}
+        
+        return {
+            "status": "healthy",
+            "redis": redis_stats,
+            "analysis_cache": analysis_stats,
+            "performance_summary": {
+                "overall_hit_rate": redis_stats.get("hit_rate", 0),
+                "total_requests": redis_stats.get("total_requests", 0),
+                "cache_efficiency": "excellent" if redis_stats.get("hit_rate", 0) > 70 else "good" if redis_stats.get("hit_rate", 0) > 50 else "needs improvement"
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to get cache stats: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
+# Cache invalidation endpoint (admin)
+@app.delete("/api/v1/cache/invalidate/{pattern}")
+async def invalidate_cache(pattern: str):
+    """
+    Invalidate cache keys matching a pattern.
+    Example patterns:
+    - github:repos:* (all repository lists)
+    - db:repo:* (all repository data)
+    - file:content:* (all file content)
+    """
+    from app.services.redis_service import get_redis_service
+    
+    try:
+        redis_service = get_redis_service()
+        deleted_count = redis_service.invalidate(pattern)
+        
+        return {
+            "success": True,
+            "pattern": pattern,
+            "deleted_keys": deleted_count,
+            "message": f"Invalidated {deleted_count} cache keys matching pattern: {pattern}"
+        }
+    except Exception as e:
+        logger.error(f"Failed to invalidate cache: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 

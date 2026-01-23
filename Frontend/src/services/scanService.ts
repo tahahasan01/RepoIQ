@@ -26,13 +26,16 @@ export interface ScanResult {
 }
 
 export interface BugReport {
-  id: number;
+  id: number | string;
   title: string;
   details: string;
   timestamp: number;
   repoName: string;
   severity?: "critical" | "high" | "medium" | "low";
   status?: "open" | "triaged" | "in_progress" | "resolved";
+  category?: string;
+  file_path?: string;
+  line_number?: number;
 }
 
 const STORAGE_KEYS = {
@@ -303,5 +306,6 @@ export function initializeDummyData(): void {
   }
 }
 
-// Auto-initialize when module is imported
-initializeDummyData();
+// REMOVED: Auto-initialization of dummy data
+// All data should come from real API calls, not local storage mocks
+// initializeDummyData(); // DISABLED - Use real data from backend

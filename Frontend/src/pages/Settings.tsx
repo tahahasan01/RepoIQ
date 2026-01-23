@@ -28,7 +28,7 @@ import { useNavigate } from "react-router-dom";
 export default function Settings() {
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
-  const { logout } = useAuth();
+  const { user: authUser, logout } = useAuth();
   const navigate = useNavigate();
 
   const [notifications, setNotifications] = useState({
@@ -49,30 +49,60 @@ export default function Settings() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     let mounted = true;
 
     async function load() {
+      setIsLoading(true);
+      console.log('[Settings] Loading user data...');
+      console.log('[Settings] Auth user:', authUser);
+      
       try {
-        const user = await apiClient.getCurrentUser().catch(() => null);
+        // First try to use data from auth context
+        if (authUser) {
+          console.log('[Settings] Using auth context user data');
+          setAvatar(authUser.avatar_url || authUser.avatar || null);
+          setFullName(authUser.full_name || authUser.name || "");
+          setEmail(authUser.email || "");
+          setGithubUser(authUser.github_username || authUser.username || authUser.login || null);
+        }
+        
+        // Then fetch fresh data from API
+        const user = await apiClient.getCurrentUser().catch((err) => {
+          console.error('[Settings] Failed to fetch user:', err);
+          return null;
+        });
+        
         if (!mounted) return;
+        
         if (user) {
-          setAvatar(user.avatar || user.avatar_url || null);
+          console.log('[Settings] Got user from API:', user);
+          setAvatar(user.avatar_url || user.avatar || null);
           setFullName(user.full_name || user.name || "");
           setEmail(user.email || "");
           setGithubUser(user.github_username || user.username || user.login || null);
+        } else if (!authUser) {
+          console.warn('[Settings] No user data available from auth context or API');
         }
 
-        const repoList = await apiClient.getRepositories(1, 100).catch(() => []);
+        const repoList = await apiClient.getRepositories(1, 100).catch((err) => {
+          console.error('[Settings] Failed to fetch repositories:', err);
+          return [];
+        });
+        
         if (!mounted) return;
+        
         const repoNames = (repoList || []).map((r: any) => r.name || r.full_name);
+        console.log('[Settings] Loaded', repoNames.length, 'repositories');
         setRepos(repoNames);
         setRepoCount(repoNames.length || 0);
         const initial: Record<string, boolean> = {};
         repoNames.forEach((r: any) => (initial[r] = true));
         setEnabledRepos(initial);
       } catch (err) {
+        console.error('[Settings] Load error:', err);
         const scans = scanStorage.getScans();
         const repoNames = Array.from(new Set(scans.map((s) => s.repoName)));
         setRepos(repoNames);
@@ -80,6 +110,8 @@ export default function Settings() {
         const initial: Record<string, boolean> = {};
         repoNames.forEach((r) => (initial[r] = true));
         setEnabledRepos(initial);
+      } finally {
+        if (mounted) setIsLoading(false);
       }
     }
 
@@ -87,7 +119,7 @@ export default function Settings() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [authUser]);
 
   const handleSaveProfile = async () => {
     try {
@@ -213,7 +245,9 @@ export default function Settings() {
               animate={{ opacity: 1, y: 0 }}
             >
               <h1 className="text-2xl font-bold mb-2">Settings</h1>
-              <p className="text-muted-foreground">Manage your account and preferences</p>
+              <p className="text-muted-foreground">
+                {isLoading ? "Loading account information..." : "Manage your account and preferences"}
+              </p>
             </motion.div>
           </div>
           <div className="flex items-center gap-2">

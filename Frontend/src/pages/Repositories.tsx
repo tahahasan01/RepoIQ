@@ -1,8 +1,11 @@
 import { motion } from "framer-motion";
-import { useState, useEffect } from "react";
+import { useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import apiClient from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
+import { useRepositoryStore } from "@/stores/repositoryStore";
+import { useUIStore } from "@/stores/uiStore";
+import { useAnalysisStore } from "@/stores/analysisStore";
+import { useDebouncedSearch } from "@/hooks/useDebouncedSearch";
 import {
   Search,
   Star,
@@ -11,89 +14,17 @@ import {
   Filter,
   Zap,
   ChevronRight,
+  ChevronLeft,
   RefreshCw,
   History,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import AccountDropdown from "@/components/layout/AccountDropdown";
+import AnalysisHistoryModal from "@/components/AnalysisHistoryModal";
 
-// Mock repositories data
-const mockRepos = [
-  {
-    id: 1,
-    name: "Dashboard",
-    language: "TypeScript",
-    stars: 1234,
-    forks: 234,
-    updatedAt: "2 hours ago",
-    description: "A modern dashboard with charts and analytics",
-    isPrivate: false,
-    lastScan: "Yesterday",
-    score: 87,
-  },
-  {
-    id: 2,
-    name: "api-gateway",
-    language: "Go",
-    stars: 892,
-    forks: 156,
-    updatedAt: "5 hours ago",
-    description: "High-performance API gateway with rate limiting",
-    isPrivate: true,
-    lastScan: null,
-    score: null,
-  },
-  {
-    id: 3,
-    name: "ml-pipeline",
-    language: "Python",
-    stars: 456,
-    forks: 89,
-    updatedAt: "1 day ago",
-    description: "Machine learning data processing pipeline",
-    isPrivate: false,
-    lastScan: "3 days ago",
-    score: 72,
-  },
-  {
-    id: 4,
-    name: "mobile-app",
-    language: "Dart",
-    stars: 321,
-    forks: 45,
-    updatedAt: "3 days ago",
-    description: "Cross-platform mobile application",
-    isPrivate: true,
-    lastScan: null,
-    score: null,
-  },
-  {
-    id: 5,
-    name: "design-system",
-    language: "TypeScript",
-    stars: 567,
-    forks: 78,
-    updatedAt: "1 week ago",
-    description: "Company-wide design system and component library",
-    isPrivate: false,
-    lastScan: "1 week ago",
-    score: 94,
-  },
-  {
-    id: 6,
-    name: "auth-service",
-    language: "Rust",
-    stars: 234,
-    forks: 34,
-    updatedAt: "2 weeks ago",
-    description: "Authentication and authorization microservice",
-    isPrivate: true,
-    lastScan: "2 weeks ago",
-    score: 81,
-  },
-];
-
+// Language colors for repository cards (used with real GitHub data)
 const languageColors: Record<string, string> = {
   TypeScript: "bg-blue-500",
   JavaScript: "bg-yellow-500",
@@ -101,236 +32,182 @@ const languageColors: Record<string, string> = {
   Go: "bg-cyan-500",
   Rust: "bg-orange-500",
   Dart: "bg-sky-400",
+  Java: "bg-red-500",
+  Ruby: "bg-pink-500",
+  PHP: "bg-purple-500",
+  "C++": "bg-indigo-500",
+  C: "bg-gray-500",
+  Swift: "bg-orange-400",
+  Kotlin: "bg-violet-500",
 };
 
-// Cache repositories in sessionStorage
-const REPOS_CACHE_KEY = 'repoiq_repositories_cache';
-const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
-
-function isUuidLike(value: any): boolean {
-  if (typeof value !== 'string') return false;
-  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value);
-}
-
-function getCachedRepos(): any[] | null {
-  try {
-    const cached = sessionStorage.getItem(REPOS_CACHE_KEY);
-    if (!cached) return null;
-    
-    const { data, timestamp } = JSON.parse(cached);
-    const age = Date.now() - timestamp;
-    
-    if (age > CACHE_DURATION) {
-      sessionStorage.removeItem(REPOS_CACHE_KEY);
-      return null;
-    }
-
-    // If cache contains old numeric ids (GitHub ids), invalidate.
-    // The backend expects repository UUIDs for /analysis/* routes.
-    if (Array.isArray(data) && data.length > 0) {
-      const bad = data.some((r: any) => !isUuidLike(String(r?.id)));
-      if (bad) {
-        console.warn('[Repositories] Invalidating cache: non-UUID repo ids detected');
-        sessionStorage.removeItem(REPOS_CACHE_KEY);
-        return null;
-      }
-    }
-    
-    console.log(`[Repositories] Using cached repos (${Math.round(age / 1000)}s old)`);
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-function setCachedRepos(repos: any[]) {
-  try {
-    sessionStorage.setItem(REPOS_CACHE_KEY, JSON.stringify({
-      data: repos,
-      timestamp: Date.now()
-    }));
-  } catch (err) {
-    console.error('[Repositories] Failed to cache repos', err);
-  }
-}
+// Cache management is now handled by the repository store
 
 export default function Repositories() {
-  const [searchQuery, setSearchQuery] = useState("");
-  const [repos, setRepos] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const navigate = useNavigate();
   const auth = useAuth();
-
-  useEffect(() => {
-    let mounted = true;
-    async function loadRepos() {
-      // Check cache first
-      const cached = getCachedRepos();
-      if (cached && cached.length > 0) {
-        setRepos(cached);
-        setIsLoading(false);
-        return;
-      }
-      
-      setIsLoading(true);
-      try {
-        const data = await apiClient.getRepositories(1, 100);
-        console.log('[Repositories] API returned:', data);
-        if (!mounted) return;
-        
-        let reposList: any[] = [];
-        if (Array.isArray(data)) {
-          console.log(`[Repositories] Loaded ${data.length} repositories`);
-          if (data.length > 0) {
-            console.log('[Repositories] First repo ID:', data[0].id, 'Type:', typeof data[0].id);
-          }
-          reposList = data;
-        } else if (data && data.repositories) {
-          console.log(`[Repositories] Loaded ${data.repositories.length} repositories from nested object`);
-          reposList = data.repositories;
-        } else {
-          console.warn('[Repositories] Unexpected API response format:', data);
-          reposList = [];
-        }
-        
-        setRepos(reposList);
-        setCachedRepos(reposList);
-      } catch (err) {
-        console.error("[Repositories] Failed to load repos", err);
-        if (mounted) setRepos([]);
-      } finally {
-        if (mounted) setIsLoading(false);
-      }
-    }
-
-    loadRepos();
-    // reload repos when an analysis completes elsewhere
-    const onAnalysisCompleted = (e: Event) => {
-      try {
-        // Clear cache and reload list
-        sessionStorage.removeItem(REPOS_CACHE_KEY);
-        loadRepos();
-      } catch (err) {
-        console.error('[Repositories] failed to reload after analysisCompleted', err);
-      }
-    };
-    window.addEventListener('analysisCompleted', onAnalysisCompleted as EventListener);
-    return () => {
-      mounted = false;
-      window.removeEventListener('analysisCompleted', onAnalysisCompleted as EventListener);
-    };
-  }, []);
-
-  // When repos load, fetch latest analysis for each repo and attach score/lastScan
-  useEffect(() => {
-    let mounted = true;
-    let attempted = false;
-
-    async function attachAnalyses() {
-      if (!repos || repos.length === 0 || attempted) return;
-      attempted = true;
-
-      console.log(`[Repositories] Fetching analysis for ${repos.length} repos`);
-
-      // Fetch each repo's analysis individually with timeout, update UI as results come in
-      repos.forEach(async (r) => {
-        setLoadingMap((m) => ({ ...m, [String(r.id)]: true }));
-        
-        try {
-          // Add 3 second timeout per request
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout')), 3000)
-          );
-          
-          const res = await Promise.race([
-            apiClient.getAnalysisResults(String(r.id)),
-            timeoutPromise
-          ]) as any;
-          
-          if (!mounted) return;
-          
-          if (res && res.status === 'completed' && res.overall_score != null) {
-            console.log(`[Repositories] Got score ${res.overall_score} for repo ${r.name} (${r.id})`);
-            // Update this specific repo immediately
-            setRepos((prev) =>
-              prev.map((p) =>
-                String(p.id) === String(r.id)
-                  ? { ...p, score: res.overall_score, lastScan: res.completed_at }
-                  : p
-              )
-            );
-          } else if (res && res.status === 'in_progress') {
-            console.log(`[Repositories] Analysis in progress for repo ${r.name}`);
-          } else if (res && res.status === 'failed') {
-            console.log(`[Repositories] Analysis failed for repo ${r.name}:`, res.error_message);
-          } else {
-            console.log(`[Repositories] No completed analysis for repo ${r.name}, status:`, res?.status);
-          }
-        } catch (e: any) {
-          if (e?.message !== 'Timeout') {
-            console.log(`[Repositories] No analysis for repo ${r.name} (${r.id})`);
-          } else {
-            console.log(`[Repositories] Timeout fetching analysis for repo ${r.name}`);
-          }
-        } finally {
-          if (mounted) {
-            setLoadingMap((m) => {
-              const updated = { ...m };
-              delete updated[String(r.id)];
-              return updated;
-            });
-          }
-        }
-      });
-    }
-
-    attachAnalyses();
-
-    return () => {
-      mounted = false;
-    };
-  }, [repos.length]);
-
-  const filteredRepos = repos.filter((repo) =>
-    repo.name.toLowerCase().includes(searchQuery.toLowerCase())
+  
+  // Repository store
+  const {
+    repositories: repos,
+    currentPage,
+    isLoading,
+    isSyncing,
+    hasMorePages,
+    loadRepositories,
+    syncRepositories,
+    setCurrentPage,
+  } = useRepositoryStore();
+  
+  // UI store
+  const {
+    searchQuery,
+    setSearchQuery,
+    showHistoryModal,
+    setShowHistoryModal,
+    selectedRepo,
+    setSelectedRepo,
+    analyzingRepos,
+    setAnalyzingRepo,
+  } = useUIStore();
+  
+  // Analysis store
+  const { startAnalysis } = useAnalysisStore();
+  
+  // Debounced search - filters repos client-side after 300ms delay
+  const [searchInput, setSearchInput, debouncedSearch] = useDebouncedSearch(
+    searchQuery,
+    300
   );
+  
+  // Update UI store when debounced search changes
+  useEffect(() => {
+    if (debouncedSearch !== searchQuery) {
+      setSearchQuery(debouncedSearch);
+    }
+  }, [debouncedSearch, searchQuery, setSearchQuery]);
 
+  // Load repositories when page changes
+  useEffect(() => {
+    loadRepositories(currentPage);
+  }, [currentPage, loadRepositories]);
+  
+  // Listen for analysis completion events
+  useEffect(() => {
+    const onAnalysisCompleted = () => {
+      // Clear cache and reload current page
+      useRepositoryStore.getState().clearCache();
+      loadRepositories(currentPage, true);
+    };
+    
+    window.addEventListener('analysisCompleted', onAnalysisCompleted);
+    return () => {
+      window.removeEventListener('analysisCompleted', onAnalysisCompleted);
+    };
+  }, [currentPage, loadRepositories]);
+
+  // Batch analysis is handled by the repository store automatically
+  // when repositories are loaded
+
+  // Filter repos for search (searches within current page) - client-side filtering
+  const filteredRepos = repos.filter((repo) =>
+    repo.name.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+    (repo.description || '').toLowerCase().includes(debouncedSearch.toLowerCase())
+  );
+  
+  // Pagination handlers
+  const handleNextPage = () => {
+    if (hasMorePages) {
+      setCurrentPage(currentPage + 1);
+      setSearchQuery(""); // Clear search when changing pages
+      setSearchInput(""); // Clear input too
+    }
+  };
+  
+  const handlePrevPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+      setSearchQuery(""); // Clear search when changing pages
+      setSearchInput(""); // Clear input too
+    }
+  };
+  
+  const handlePageChange = (page: number) => {
+    setCurrentPage(page);
+    setSearchQuery(""); // Clear search when changing pages
+    setSearchInput(""); // Clear input too
+  };
+  
   const handleAnalyze = async (repoId: string | number) => {
+    const repoIdStr = String(repoId);
+    
     try {
       console.log('[Repositories] Starting analysis for repo:', repoId);
       
-      // Navigate to loading page IMMEDIATELY (don't wait for API)
-      navigate(`/analyzing/${repoId}`);
+      // Set loading state
+      setAnalyzingRepo(repoIdStr, true);
       
-      // Start analysis in background
-      const response = await apiClient.startAnalysis(String(repoId));
-      console.log('[Repositories] Analysis started:', response);
-    } catch (err) {
-      console.error('[Repositories] Failed to start analysis:', err);
-      // Stay on analyzing page even if start fails - polling will handle it
+      const result = await startAnalysis(repoIdStr);
+      
+      if (result && result.analysis_id) {
+        console.log('[Repositories] ✅ Analysis started successfully:', result);
+        
+        // Keep loading state ON - it will be cleared when navigating away
+        navigate(`/analyzing/${repoId}`, { 
+          state: { analysisId: result.analysis_id } 
+        });
+      } else {
+        // Clear loading state on error
+        setAnalyzingRepo(repoIdStr, false);
+        throw new Error('Failed to start analysis - no analysis ID returned');
+      }
+    } catch (err: any) {
+      // Clear loading state
+      setAnalyzingRepo(repoIdStr, false);
+      
+      console.error('[Repositories] ❌ Failed to start analysis:', err);
+      
+      const errorMessage = err?.message || 'Unknown error occurred';
+      let errorDetail: string;
+      
+      // Check for CORS error first
+      if ((err as any).isCorsError || errorMessage.includes('CORS Error') || errorMessage.includes('CORS')) {
+        errorDetail = `CORS Error: ${errorMessage}\n\n` +
+          'The backend is not allowing requests from this origin.\n\n' +
+          'TO FIX THIS:\n' +
+          '1. RESTART the backend server (Ctrl+C then run again)\n' +
+          '2. The backend will log CORS configuration on startup\n' +
+          '3. Verify it includes: ' + window.location.origin + '\n\n' +
+          'If the problem persists, check backend .env file.';
+      } 
+      // Check for network error
+      else if ((err as any).isNetworkError || errorMessage.includes('Network Error')) {
+        errorDetail = `Network Error: ${errorMessage}\n\n` +
+          'Unable to reach the backend server.\n' +
+          'Please ensure:\n' +
+          '1. Backend server is running on http://localhost:8000\n' +
+          '2. No firewall is blocking the connection\n' +
+          '3. Check browser console for more details';
+      }
+      // Check for HTTP status errors
+      else if (errorMessage.includes('404')) {
+        errorDetail = 'Repository not found. Please sync your repositories and try again.';
+      } else if (errorMessage.includes('500')) {
+        errorDetail = 'Server error. Please check if the backend is running and check backend logs for details.';
+      } else if (errorMessage.includes('401') || errorMessage.includes('403')) {
+        errorDetail = 'Authentication error. Please log in again.';
+      } else if (errorMessage.includes('Failed to start')) {
+        errorDetail = 'Analysis task failed to start. Check backend logs for details.';
+      } else {
+        errorDetail = errorMessage;
+      }
+      
+      alert(`Failed to start analysis:\n\n${errorDetail}\n\nPlease check the console for more details.`);
     }
   };
-
+  
   const handleRefresh = async () => {
-    setIsSyncing(true);
-    try {
-      await apiClient.syncRepositories();
-      const data = await apiClient.getRepositories(1, 100);
-      console.log('[Repositories] Sync returned:', data);
-      if (Array.isArray(data)) {
-        setRepos(data);
-      } else if (data && data.repositories) {
-        setRepos(data.repositories);
-      } else {
-        setRepos([]);
-      }
-    } catch (err) {
-      console.error("[Repositories] Failed to sync repos", err);
-    } finally {
-      setIsSyncing(false);
-    }
+    await syncRepositories();
   };
 
   return (
@@ -349,20 +226,7 @@ export default function Repositories() {
 
           <div className="flex items-center gap-3">
             <ThemeToggle />
-            <div className="flex items-center gap-2">
-              {auth.user?.avatar_url ? (
-                <img 
-                  src={auth.user.avatar_url} 
-                  alt={auth.user.name || auth.user.full_name || auth.user.github_username || "User"}
-                  className="w-8 h-8 rounded-full"
-                />
-              ) : (
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-cyan-400 flex items-center justify-center text-xs font-bold">
-                  {(auth.user?.name || auth.user?.full_name || auth.user?.github_username || "U").slice(0, 2).toUpperCase()}
-                </div>
-              )}
-              <span className="text-sm font-medium hidden sm:block">{auth.user?.name || auth.user?.full_name || auth.user?.github_username || "Account"}</span>
-            </div>
+            <AccountDropdown />
           </div>
         </div>
       </header>
@@ -391,8 +255,8 @@ export default function Repositories() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder="Search repositories..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               className="pl-10"
             />
           </div>
@@ -422,6 +286,7 @@ export default function Repositories() {
             </Button>
           </div>
         ) : (
+        <>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredRepos.map((repo, index) => (
             <motion.div
@@ -475,12 +340,7 @@ export default function Repositories() {
               </div>
 
               {/* Score or Scan status */}
-              {loadingMap[String(repo.id)] ? (
-                <div className="flex items-center gap-3 mb-4 p-3 bg-muted/30 rounded-lg">
-                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary" />
-                  <span className="text-sm text-muted-foreground">Checking latest analysis...</span>
-                </div>
-              ) : repo.score !== null ? (
+              {repo.score !== null ? (
                 <div className="flex items-center justify-between mb-4 p-3 bg-muted/50 rounded-lg">
                   <div>
                     <span className="text-xs text-muted-foreground">Last Score</span>
@@ -501,28 +361,35 @@ export default function Repositories() {
               {/* Action */}
               <div className="flex gap-2">
                 <Button
-                  variant={repo.score ? "outline" : "hero"}
+                  variant="hero"
                   className="flex-1 gap-2 group"
                   onClick={() => {
-                    if (typeof repo.score === 'number' && repo.score !== null) {
-                      console.log('[Repositories] Viewing analysis for repo:', repo.name, 'ID:', repo.id, 'Score:', repo.score);
-                      navigate(`/dashboard/${repo.id}`);
-                    } else {
-                      console.log('[Repositories] Analyzing repo:', repo.name, 'ID:', repo.id);
-                      handleAnalyze(repo.id);
-                    }
+                    console.log('[Repositories] Analyzing repo:', repo.name, 'ID:', repo.id);
+                    handleAnalyze(repo.id);
                   }}
+                  disabled={analyzingRepos.has(repo.id)}
                 >
-                  {typeof repo.score === 'number' && repo.score !== null ? "View Analysis" : "Analyze Now"}
-                  <ChevronRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                  {analyzingRepos.has(repo.id) ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      Starting Analysis...
+                    </>
+                  ) : (
+                    <>
+                      Analyze Now
+                      <ChevronRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                    </>
+                  )}
                 </Button>
                 <Button
                   variant="ghost"
                   className="min-w-[96px]"
                   onClick={() => {
-                    console.log('[Repositories] Navigating to dashboard:', repo.id);
-                    navigate(`/dashboard/${repo.id}`);
+                    console.log('[Repositories] Opening history for repo:', repo.name);
+                    setSelectedRepo({ id: repo.id, name: repo.name || repo.full_name || '' });
+                    setShowHistoryModal(true);
                   }}
+                  disabled={analyzingRepos.has(repo.id)}
                 >
                   <History className="h-4 w-4 mr-2" />
                   History
@@ -531,8 +398,55 @@ export default function Repositories() {
             </motion.div>
           ))}
         </div>
+        
+        {/* Pagination Controls */}
+        {!isLoading && filteredRepos.length > 0 && (
+          <div className="flex items-center justify-center gap-4 mt-8 pb-8">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePrevPage}
+              disabled={currentPage === 1}
+              className="gap-2"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Previous
+            </Button>
+            
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">
+                Page {currentPage}
+              </span>
+            </div>
+            
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleNextPage}
+              disabled={!hasMorePages}
+              className="gap-2"
+            >
+              Next
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+        </>
         )}
       </main>
+
+      {/* Analysis History Modal */}
+      {selectedRepo && (
+        <AnalysisHistoryModal
+          isOpen={showHistoryModal}
+          onClose={() => {
+            setShowHistoryModal(false);
+            setSelectedRepo(null);
+          }}
+          repoId={selectedRepo.id}
+          repoName={selectedRepo.name}
+        />
+      )}
     </div>
   );
 }

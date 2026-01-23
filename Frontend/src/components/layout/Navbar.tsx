@@ -96,7 +96,7 @@ export function Navbar() {
     >
       <nav className="container mx-auto px-4 h-16 flex items-center justify-between">
         {/* Logo */}
-        <Link to="/" className="flex items-center gap-2 group">
+        <Link to={isAuthenticated ? "/repos" : "/"} className="flex items-center gap-2 group">
           <div className="relative">
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary to-cyan-400 flex items-center justify-center shadow-lg group-hover:shadow-primary/25 transition-shadow">
               <Zap className="h-5 w-5 text-primary-foreground" />
@@ -152,7 +152,20 @@ export function Navbar() {
           <ThemeToggle />
           
           <div className="hidden sm:flex items-center gap-2">
-            {isAuthenticated ? (
+            {/* Always show Login/Get Started on homepage (marketing page) */}
+            {location.pathname === "/" ? (
+              <>
+                <Link to="/login">
+                  <Button variant="outline">Login</Button>
+                </Link>
+                <Link to="/signup">
+                  <Button variant="hero" className="gap-2">
+                    <Github className="h-4 w-4" />
+                    Get Started Free
+                  </Button>
+                </Link>
+              </>
+            ) : isAuthenticated ? (
               <>
                 <Button variant="outline" onClick={handleLogout}>Logout</Button>
                 <AccountDropdown />
@@ -229,29 +242,58 @@ export function Navbar() {
               Pricing
             </button>
 
-            <Link
-              to="/docs"
-              onClick={() => setMobileMenuOpen(false)}
+            <button
+              onClick={() => {
+                setMobileMenuOpen(false);
+                handleDocsClick();
+              }}
               className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                location.pathname === "/docs"
-                  ? "text-primary bg-primary/10"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                isDocsActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
               }`}
             >
               Docs
-            </Link>
+            </button>
+            
             <div className="flex gap-2 mt-2 pt-2 border-t border-border">
-              <Link to="/login" className="flex-1">
-                <Button variant="outline" className="w-full">
-                  Login
-                </Button>
-              </Link>
-              <Link to="/signup" className="flex-1">
-                <Button variant="hero" className="w-full gap-2">
-                  <Github className="h-4 w-4" />
-                  Get Started
-                </Button>
-              </Link>
+              {/* Always show Login/Get Started on homepage (mobile) */}
+              {location.pathname === "/" ? (
+                <>
+                  <Link to="/login" className="flex-1" onClick={() => setMobileMenuOpen(false)}>
+                    <Button variant="outline" className="w-full">
+                      Login
+                    </Button>
+                  </Link>
+                  <Link to="/signup" className="flex-1" onClick={() => setMobileMenuOpen(false)}>
+                    <Button variant="hero" className="w-full gap-2">
+                      <Github className="h-4 w-4" />
+                      Get Started Free
+                    </Button>
+                  </Link>
+                </>
+              ) : isAuthenticated ? (
+                <>
+                  <Button variant="outline" onClick={() => { handleLogout(); setMobileMenuOpen(false); }} className="flex-1">
+                    Logout
+                  </Button>
+                  <div className="flex-1 flex justify-center">
+                    <AccountDropdown />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Link to="/login" className="flex-1" onClick={() => setMobileMenuOpen(false)}>
+                    <Button variant="outline" className="w-full">
+                      Login
+                    </Button>
+                  </Link>
+                  <Link to="/signup" className="flex-1" onClick={() => setMobileMenuOpen(false)}>
+                    <Button variant="hero" className="w-full gap-2">
+                      <Github className="h-4 w-4" />
+                      Get Started
+                    </Button>
+                  </Link>
+                </>
+              )}
             </div>
           </div>
         </motion.div>

@@ -19,7 +19,7 @@ class SecurityAgent(BaseAgent):
         
         system_prompt = """You are a security expert analyzing code for vulnerabilities.
 Focus on detecting:
-- SQL injection vulnerabilities
+- SQL injection vulnerabilities (string concatenation in queries, unsanitized inputs)
 - XSS (Cross-Site Scripting) vulnerabilities
 - Authentication and authorization flaws
 - Insecure cryptography usage
@@ -29,7 +29,19 @@ Focus on detecting:
 - Path traversal vulnerabilities
 - SSRF (Server-Side Request Forgery)
 - Command injection
+- LDAP injection
+- NoSQL injection (MongoDB, etc.)
+- XML/XXE injection
+- Template injection
+- Unsafe regex (ReDoS)
 - OWASP Top 10 issues
+
+CRITICAL: For SQL injection, detect:
+- Direct string concatenation in SQL queries (e.g., "SELECT * FROM users WHERE id = " + userId)
+- f-strings or format strings in SQL queries
+- exec() or execute() with unsanitized user input
+- Missing parameterized queries/prepared statements
+- Raw SQL without ORM protection
 
 For each issue found, provide:
 - severity: critical, high, medium, low, info
@@ -94,15 +106,37 @@ Identify all security issues and return them in JSON format."""
     def _run_static_analysis(self, code: str, file_path: str, language: str) -> List[Dict[str, Any]]:
         issues = []
         
+        # Enhanced patterns with more comprehensive SQL injection detection
         patterns = {
             "hardcoded_secret": (
-                r'(password|secret|api_key|token)\s*=\s*["\'][^"\']{8,}["\']',
+                r'(password|secret|api_key|token|private_key)\s*=\s*["\'][^"\']{8,}["\']',
                 "Hardcoded secret detected",
                 "high"
             ),
-            "sql_injection": (
-                r'(execute|query|select).*\+.*["\']',
-                "Potential SQL injection vulnerability",
+            # SQL Injection patterns - multiple variations
+            "sql_injection_concat": (
+                r'(execute|query|cursor\.execute|db\.execute|raw|sql)\s*\([^)]*\+[^)]*\)',
+                "SQL injection risk: String concatenation in SQL query",
+                "critical"
+            ),
+            "sql_injection_fstring": (
+                r'(execute|query|cursor\.execute|db\.execute)\s*\(\s*f["\']',
+                "SQL injection risk: f-string in SQL query without parameters",
+                "critical"
+            ),
+            "sql_injection_format": (
+                r'(execute|query|cursor\.execute|db\.execute)\s*\([^)]*\.format\(',
+                "SQL injection risk: .format() in SQL query",
+                "critical"
+            ),
+            "sql_injection_percent": (
+                r'(execute|query|cursor\.execute|db\.execute)\s*\([^)]*%\s*\(',
+                "SQL injection risk: % string formatting in SQL query",
+                "critical"
+            ),
+            "nosql_injection": (
+                r'(find|findOne|update|delete)\s*\(\s*\{[^}]*\$where[^}]*\}',
+                "NoSQL injection risk: $where operator with unsanitized input",
                 "critical"
             ),
             "eval_usage": (
@@ -110,10 +144,35 @@ Identify all security issues and return them in JSON format."""
                 "Dangerous use of eval() function",
                 "high"
             ),
+            "exec_usage": (
+                r'\bexec\s*\(',
+                "Dangerous use of exec() function",
+                "high"
+            ),
             "md5_usage": (
                 r'\bmd5\s*\(',
                 "Weak MD5 hash usage detected",
                 "medium"
+            ),
+            "sha1_usage": (
+                r'\bsha1\s*\(',
+                "Weak SHA1 hash usage detected",
+                "medium"
+            ),
+            "pickle_usage": (
+                r'\bpickle\.loads?\s*\(',
+                "Insecure deserialization with pickle",
+                "high"
+            ),
+            "yaml_unsafe_load": (
+                r'yaml\.load\s*\([^,)]*\)',
+                "Unsafe YAML loading (use yaml.safe_load())",
+                "high"
+            ),
+            "command_injection": (
+                r'(os\.system|subprocess\.call|subprocess\.run|exec|shell=True)',
+                "Potential command injection vulnerability",
+                "critical"
             ),
         }
         
@@ -128,7 +187,7 @@ Identify all security issues and return them in JSON format."""
                     "line_number": line_number,
                     "description": description,
                     "suggestion": self._get_suggestion(category),
-                    "auto_fixable": category in ["hardcoded_secret", "md5_usage"],
+                    "auto_fixable": category in ["hardcoded_secret", "md5_usage", "sha1_usage"],
                     "agent_type": "security"
                 })
         
@@ -137,9 +196,18 @@ Identify all security issues and return them in JSON format."""
     def _get_suggestion(self, category: str) -> str:
         suggestions = {
             "hardcoded_secret": "Use environment variables or a secrets management system",
-            "sql_injection": "Use parameterized queries or an ORM",
+            "sql_injection_concat": "Use parameterized queries with placeholders (?, %s) instead of string concatenation",
+            "sql_injection_fstring": "Use parameterized queries: cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))",
+            "sql_injection_format": "Use parameterized queries instead of .format() for SQL",
+            "sql_injection_percent": "Use parameterized queries instead of % formatting for SQL",
+            "nosql_injection": "Sanitize user input and avoid $where operator, use query builders",
             "eval_usage": "Avoid eval(). Use safer alternatives like ast.literal_eval()",
+            "exec_usage": "Avoid exec(). Refactor to use safer alternatives",
             "md5_usage": "Use SHA-256 or bcrypt for password hashing",
+            "sha1_usage": "Use SHA-256 or bcrypt for password hashing",
+            "pickle_usage": "Use safer serialization formats like JSON or msgpack",
+            "yaml_unsafe_load": "Use yaml.safe_load() instead of yaml.load()",
+            "command_injection": "Avoid shell=True, use subprocess with list arguments and input validation",
         }
         return suggestions.get(category, "Review and fix this security issue")
     

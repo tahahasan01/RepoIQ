@@ -30,7 +30,7 @@ class AnalysisCacheService:
             self.redis = None
             self.redis_available = False
         self.cache_prefix = "analysis_cache"
-        self.default_ttl = 3600 * 24  # 24 hours
+        self.default_ttl = 3600 * 24 * 7  # 7 days (analysis rarely changes unless code changes)
     
     def _generate_cache_key(
         self,

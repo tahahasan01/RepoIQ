@@ -15,10 +15,10 @@ import {
   Clock,
   Loader2,
   History,
-  ArrowLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import AccountDropdown from "@/components/layout/AccountDropdown";
 import { useState, useEffect } from "react";
 import apiClient from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -52,7 +52,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     { href: `/dashboard/${repoId}/settings`, icon: Settings, label: "Settings" },
   ] : [];
 
-  const [repoName, setRepoName] = useState<string>("Dashboard");
+  const [repoName, setRepoName] = useState<string>("Loading...");
   const [branch, setBranch] = useState<string>("main");
   const [lastScan, setLastScan] = useState<string>("Never");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -60,11 +60,8 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const [scanHistory, setScanHistory] = useState<ScanResult[]>([]);
   const location = useLocation();
 
-  useEffect(() => {
-    // Load repository + analysis history from backend
-    let mounted = true;
-
-    async function load() {
+  // Function to load repo and history (will be reused for real-time updates)
+  const loadRepoAndHistory = async () => {
       try {
         if (!repoId || repoId === 'undefined') {
           // No repo selected yet
@@ -76,30 +73,40 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
           return;
         }
 
-        console.log('[DashboardLayout] Loading repo:', repoId);
+      console.log('[DashboardLayout] 🔄 Loading repo and history:', repoId);
         const repo = await apiClient.getRepository(repoId as string);
-        if (!mounted) return;
         setRepoName(repo?.name || repo?.full_name || "Repository");
         setBranch(repo?.default_branch || "main");
 
         const history = await apiClient.getAnalysisHistory(repoId as string);
-        if (!mounted) return;
         
-        console.log('[DashboardLayout] History response:', history);
+        console.log('[DashboardLayout] 📊 Raw history response:', history);
+        console.log('[DashboardLayout] 📊 History type:', typeof history);
+        console.log('[DashboardLayout] 📊 Is array?', Array.isArray(history));
         
         // Ensure scanHistory is always an array - handle both array response and object with 'history' field
         let historyArray: any[] = [];
         if (Array.isArray(history)) {
           historyArray = history;
+          console.log('[DashboardLayout] ✅ History is array, length:', historyArray.length);
         } else if (history && Array.isArray(history.history)) {
           historyArray = history.history;
+          console.log('[DashboardLayout] ✅ History.history is array, length:', historyArray.length);
+        } else if (history && typeof history === 'object') {
+          console.log('[DashboardLayout] ⚠️ History is object but not array. Keys:', Object.keys(history));
+        } else {
+          console.log('[DashboardLayout] ⚠️ History is not an array or object:', history);
         }
+        
+        console.log('[DashboardLayout] 📊 historyArray contents:', historyArray);
         
         // Normalize history items into a consistent shape for the UI
         const scanItems = historyArray.map((item: any) => ({
-          id: item.id,
-          // Prefer completed_at, fall back to created_at/started_at
-          timestamp: item.completed_at || item.created_at || item.started_at || null,
+          id: item.id || String(Date.now()),
+          timestamp: new Date(item.completed_at || item.created_at || item.started_at || Date.now()).getTime(),
+          repoName: repoName,
+          branch: branch,
+          issues: item.issues || [],
           stats: {
             total: item.total_issues ?? item.total ?? 0,
             critical: item.critical_issues ?? 0,
@@ -110,42 +117,135 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         }));
 
         setScanHistory(scanItems);
-        console.log('[DashboardLayout] Set scan history with', scanItems.length, 'items');
+        console.log('[DashboardLayout] ✅ Set scan history with', scanItems.length, 'items');
+        console.log('[DashboardLayout] 📊 scanItems:', scanItems);
 
         // compute last scan from most recent completed analysis or repository.last_analyzed
         const latest = scanItems[0];
+        console.log('[DashboardLayout] Latest scan item:', latest);
+        console.log('[DashboardLayout] Repo last_analyzed:', repo?.last_analyzed);
+        console.log('[DashboardLayout] Repo updated_at:', repo?.updated_at);
+        
+        // Try multiple timestamp fields in order of preference
+        let scanTime = null;
         if (latest?.timestamp) {
-          setLastScan(new Date(latest.timestamp).toLocaleString());
+          scanTime = latest.timestamp;
+          console.log('[DashboardLayout] Using latest.timestamp:', scanTime);
+        } else if (historyArray[0]?.completed_at) {
+          scanTime = historyArray[0].completed_at;
+          console.log('[DashboardLayout] Using history[0].completed_at:', scanTime);
+        } else if (historyArray[0]?.updated_at) {
+          scanTime = historyArray[0].updated_at;
+          console.log('[DashboardLayout] Using history[0].updated_at:', scanTime);
+        } else if (historyArray[0]?.created_at) {
+          scanTime = historyArray[0].created_at;
+          console.log('[DashboardLayout] Using history[0].created_at:', scanTime);
         } else if (repo?.last_analyzed) {
-          setLastScan(new Date(repo.last_analyzed).toLocaleString());
+          scanTime = repo.last_analyzed;
+          console.log('[DashboardLayout] Using repo.last_analyzed:', scanTime);
+        } else if (repo?.updated_at) {
+          scanTime = repo.updated_at;
+          console.log('[DashboardLayout] Using repo.updated_at:', scanTime);
+        }
+        
+        if (scanTime) {
+          const formattedTime = new Date(scanTime).toLocaleString();
+          setLastScan(formattedTime);
+          console.log('[DashboardLayout] ✅ Last scan set to:', formattedTime);
         } else {
           setLastScan("Never");
+          console.log('[DashboardLayout] ⚠️ No scan time found, setting to Never');
         }
       } catch (err) {
         console.error("Failed loading repo/history", err);
       }
+    };
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function load() {
+      if (mounted) {
+        await loadRepoAndHistory();
+      }
     }
 
     load();
+    
+    // Listen for scan completion events to auto-refresh
+    const handleScanComplete = (event: any) => {
+      console.log('[DashboardLayout] 🎉 Scan completed event received:', event.detail);
+      if (event.detail && event.detail.repository_id === repoId) {
+        console.log('[DashboardLayout] ♻️ Refreshing data after scan completion');
+        loadRepoAndHistory();
+      }
+    };
+    
+    window.addEventListener('scanCompleted', handleScanComplete as EventListener);
+    
     return () => {
       mounted = false;
+      window.removeEventListener('scanCompleted', handleScanComplete as EventListener);
     };
   }, [repoId]);
 
   const handleRunScan = async () => {
+    if (!repoId) {
+      console.error('[DashboardLayout] Cannot run scan: no repoId');
+      return;
+    }
+    
     setIsScanning(true);
+    console.log('[DashboardLayout] 🚀 Starting analysis for repo:', repoId);
+    
     try {
+      // Start the analysis
       await apiClient.startAnalysis(repoId as string);
+      console.log('[DashboardLayout] ✅ Analysis started successfully');
+      
       // Refresh history after starting scan
       const history = await apiClient.getAnalysisHistory(repoId as string);
-      setScanHistory(history || []);
-      const latest = (history || [])[0];
-      if (latest?.completed_at) {
-        setLastScan(new Date(latest.completed_at).toLocaleString());
+      console.log('[DashboardLayout] Fetched updated history:', history);
+      
+      // Normalize history data (same as in load() function)
+      let historyArray: any[] = [];
+      if (Array.isArray(history)) {
+        historyArray = history;
+      } else if (history && Array.isArray(history.history)) {
+        historyArray = history.history;
       }
+      
+      const scanItems = historyArray.map((item: any) => ({
+        id: item.id || String(Date.now()),
+        timestamp: new Date(item.completed_at || item.created_at || item.started_at || Date.now()).getTime(),
+        repoName: repoName,
+        branch: branch,
+        issues: item.issues || [],
+        stats: {
+          total: item.total_issues ?? item.total ?? 0,
+          critical: item.critical_issues ?? 0,
+          high: item.high_issues ?? 0,
+          medium: item.medium_issues ?? 0,
+          low: item.low_issues ?? 0,
+        }
+      }));
+      
+      setScanHistory(scanItems);
+      console.log('[DashboardLayout] ✅ Updated scan history with', scanItems.length, 'items');
+      
+      // Update last scan time
+      const latest = scanItems[0];
+      if (latest?.timestamp) {
+        const formattedTime = new Date(latest.timestamp).toLocaleString();
+        setLastScan(formattedTime);
+        console.log('[DashboardLayout] ✅ Updated last scan to:', formattedTime);
+      }
+      
+      // Dispatch event for other components to refresh
       window.dispatchEvent(new CustomEvent("scanCompleted", { detail: { repository_id: repoId } }));
+      console.log('[DashboardLayout] 📡 Dispatched scanCompleted event');
     } catch (error) {
-      console.error("Scan failed:", error);
+      console.error("[DashboardLayout] ❌ Scan failed:", error);
     } finally {
       setIsScanning(false);
     }
@@ -163,7 +263,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       >
         {/* Logo */}
         <div className="h-16 flex items-center justify-between px-4 border-b border-border">
-          <Link to="/" className="flex items-center gap-2 overflow-hidden">
+          <Link to="/repos" className="flex items-center gap-2 overflow-hidden">
             <div className="w-8 h-8 min-w-[32px] rounded-lg bg-gradient-to-br from-primary to-cyan-400 flex items-center justify-center">
               <Zap className="h-4 w-4 text-primary-foreground" />
             </div>
@@ -242,12 +342,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         {/* Top bar */}
         <header className="sticky top-0 z-30 glass-panel border-b h-16 flex items-center justify-between px-6">
           <div className="flex items-center gap-4">
-            <Link to="/repos" className="hidden sm:inline-flex">
-              <Button variant="ghost" size="sm" className="gap-2">
-                <ArrowLeft className="h-4 w-4" />
-                Back to Repos
-              </Button>
-            </Link>
             <div className="flex items-center gap-2">
               <h1 className="text-lg font-semibold">{repoName}</h1>
               <span className="flex items-center gap-1 text-sm text-muted-foreground px-2 py-1 bg-muted rounded-md">
@@ -304,7 +398,8 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               </DropdownMenuContent>
             </DropdownMenu>
 
-            {/* Run Scan button */}
+            {/* Run Scan button - only show on dashboard overview page */}
+            {location.pathname === `/dashboard/${repoId}` && (
             <Button 
               variant="hero" 
               size="sm" 
@@ -319,11 +414,12 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               )}
               {isScanning ? "Scanning..." : "Run Scan"}
             </Button>
+            )}
 
             {/* Role toggle removed: app is owner-only */}
 
             <ThemeToggle />
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-cyan-400" />
+            <AccountDropdown />
           </div>
         </header>
 
