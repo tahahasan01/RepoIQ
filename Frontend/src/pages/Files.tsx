@@ -650,9 +650,10 @@ export default function Files() {
           </div>
           <div className="flex-1 overflow-auto p-2">
             {loading ? (
-              <div className="text-center text-muted-foreground py-8">
-                <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
-                <p className="text-sm">Loading files...</p>
+              <div className="space-y-2">
+                {[...Array(8)].map((_, i) => (
+                  <div key={i} className="h-8 bg-muted/50 rounded animate-pulse" style={{ paddingLeft: `${(i % 3) * 12 + 8}px` }} />
+                ))}
               </div>
             ) : fileTree.length > 0 ? (
               fileTree.map((item, index) => (
@@ -706,11 +707,13 @@ export default function Files() {
           {/* Code */}
           <div className="flex-1 overflow-auto">
             {loadingFile ? (
-              <div className="flex items-center justify-center h-full">
-                <div className="text-center space-y-3">
-                  <Loader2 className="h-8 w-8 animate-spin mx-auto text-primary" />
-                  <p className="text-sm text-muted-foreground">Loading file content...</p>
-                </div>
+              <div className="p-4 space-y-2">
+                {[...Array(15)].map((_, i) => (
+                  <div key={i} className="flex gap-4">
+                    <div className="w-12 h-5 bg-muted/50 rounded animate-pulse" />
+                    <div className="flex-1 h-5 bg-muted/30 rounded animate-pulse" style={{ width: `${Math.random() * 40 + 60}%` }} />
+                  </div>
+                ))}
               </div>
             ) : (
               <pre className="text-sm font-mono">

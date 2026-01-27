@@ -25,3 +25,4 @@ structlog==23.2.0
 slowapi==0.1.9
 radon==6.0.1
 bandit==1.7.5
+cryptography>=41.0.0  # For AES-256-GCM token encryption

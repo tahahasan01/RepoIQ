@@ -55,15 +55,33 @@ class RepositoryService:
             return None
     
     async def sync_repositories(self, user_id: str, github_token: str) -> List[Dict[str, Any]]:
+        """
+        Optimized repository sync using batch operations.
+        Reduces N+1 queries by batch-checking existing repos.
+        """
         try:
             github_service = create_github_service(github_token)
             repos = github_service.get_repositories(per_page=100)
             
+            if not repos:
+                return []
+            
+            # OPTIMIZATION: Batch fetch all existing repos for this user in ONE query
+            github_repo_ids = [repo["id"] for repo in repos]
+            existing_result = self.db.table("repositories")\
+                .select("id, github_repo_id")\
+                .eq("user_id", user_id)\
+                .in_("github_repo_id", github_repo_ids)\
+                .execute()
+            
+            # Build lookup map for O(1) access
+            existing_map = {r["github_repo_id"]: r["id"] for r in (existing_result.data or [])}
+            
             synced_repos = []
+            to_insert = []
+            to_update = []
             
             for repo in repos:
-                existing = self.db.table("repositories").select("*").eq("user_id", user_id).eq("github_repo_id", repo["id"]).execute()
-                
                 repo_data = {
                     "user_id": user_id,
                     "github_repo_id": repo["id"],
@@ -80,12 +98,30 @@ class RepositoryService:
                     "last_synced": datetime.utcnow().isoformat()
                 }
                 
-                if existing.data:
-                    result = self.db.table("repositories").update(repo_data).eq("id", existing.data[0]["id"]).execute()
-                    synced_repos.append(result.data[0])
+                if repo["id"] in existing_map:
+                    # Update existing
+                    to_update.append((existing_map[repo["id"]], repo_data))
                 else:
-                    result = self.db.table("repositories").insert(repo_data).execute()
+                    # Insert new
+                    to_insert.append(repo_data)
+            
+            # Batch insert new repos
+            if to_insert:
+                result = self.db.table("repositories").insert(to_insert).execute()
+                synced_repos.extend(result.data or [])
+                logger.info(f"✅ Batch inserted {len(to_insert)} new repositories")
+            
+            # Update existing repos (still individual but pre-fetched)
+            for repo_id, repo_data in to_update:
+                result = self.db.table("repositories").update(repo_data).eq("id", repo_id).execute()
+                if result.data:
                     synced_repos.append(result.data[0])
+            
+            if to_update:
+                logger.info(f"✅ Updated {len(to_update)} existing repositories")
+            
+            # Invalidate repository cache for this user
+            self.redis.delete(f"db:repos:{user_id}")
             
             return synced_repos
         except Exception as e:
@@ -230,6 +266,14 @@ class RepositoryService:
     async def get_repository_files(self, repo_id: str, user_id: str, github_token: str) -> List[Dict[str, Any]]:
         try:
             logger.info(f"📂 get_repository_files called for repo {repo_id}")
+            
+            # Check Redis cache FIRST for instant loading
+            cache_key = f"files:list:{repo_id}"
+            cached_files = self.redis.get(cache_key)
+            if cached_files:
+                logger.info(f"⚡ INSTANT: Returning {len(cached_files)} cached files for repo {repo_id}")
+                return cached_files
+            
             repo = await self.get_repository(repo_id, user_id)
             if not repo:
                 raise Exception("Repository not found")
@@ -237,6 +281,10 @@ class RepositoryService:
             logger.info(f"🔍 Fetching files from GitHub: {repo['full_name']}")
             github_service = create_github_service(github_token)
             files = github_service.get_repository_files(repo["full_name"], repo["default_branch"])
+            
+            # Cache the files for 1 hour
+            if files:
+                self.redis.set(cache_key, files, ttl=3600)
             
             logger.info(f"✅ Fetched {len(files) if files else 0} files from GitHub")
             return files
@@ -349,16 +397,22 @@ class RepositoryService:
             logger.exception("Full traceback:")
             return None
     
-    async def get_analysis_history(self, repo_id: str) -> List[Dict[str, Any]]:
+    async def get_analysis_history(self, repo_id: str, skip_cache: bool = False) -> List[Dict[str, Any]]:
         try:
-            # Check Redis cache for analysis history (5 min TTL - updated when new analysis completes)
             cache_key = f"db:history:{repo_id}"
-            cached_history = self.redis.get(cache_key)
-            if cached_history:
-                logger.debug(f"✓ Redis cache hit for analysis history: {repo_id}")
-                return cached_history
             
-            logger.debug(f"⚡ Fetching analysis history from DB: {repo_id}")
+            # Check Redis cache for analysis history (5 min TTL - updated when new analysis completes)
+            if not skip_cache:
+                cached_history = self.redis.get(cache_key)
+                if cached_history:
+                    logger.debug(f"✓ Redis cache hit for analysis history: {repo_id}, count={len(cached_history)}")
+                    return cached_history
+            else:
+                # Invalidate cache if skip_cache is True
+                self.redis.delete(cache_key)
+                logger.debug(f"🗑️ Invalidated history cache for: {repo_id}")
+            
+            logger.info(f"⚡ Fetching analysis history from DB: {repo_id}")
             result = self.db.table("analysis_results")\
                 .select("*")\
                 .eq("repository_id", repo_id)\
@@ -367,11 +421,14 @@ class RepositoryService:
                 .limit(20)\
                 .execute()
             
+            history_count = len(result.data) if result.data else 0
+            logger.info(f"📊 Found {history_count} completed analyses for repo {repo_id}")
+            
             if result.data:
                 # Cache for 5 minutes
                 self.redis.set(cache_key, result.data, ttl=300)
             
-            return result.data
+            return result.data or []
         except Exception as e:
             logger.error(f"Get analysis history failed: {str(e)}")
             raise
@@ -445,38 +502,99 @@ class RepositoryService:
             logger.exception("Full traceback:")
             return False
     
-    async def get_issues(self, analysis_id: str) -> List[Dict[str, Any]]:
+    async def get_issues(
+        self, 
+        analysis_id: str, 
+        page: int = 1, 
+        per_page: int = 100,
+        severity: Optional[str] = None,
+        agent_type: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get issues for an analysis with optional pagination and filtering.
+        
+        Args:
+            analysis_id: Analysis ID to fetch issues for
+            page: Page number (1-indexed)
+            per_page: Items per page (max 500)
+            severity: Optional filter by severity (critical, high, medium, low)
+            agent_type: Optional filter by agent type
+        """
         try:
-            # Check Redis cache for issues (60 min TTL - immutable once analysis is completed)
+            # Limit per_page to prevent excessive data transfer
+            per_page = min(per_page, 500)
+            
+            # Build cache key with filters
             cache_key = f"db:issues:{analysis_id}"
-            cached_issues = self.redis.get(cache_key)
-            if cached_issues:
-                logger.debug(f"✓ Redis cache hit for issues: {analysis_id}")
-                return cached_issues
+            if page == 1 and per_page >= 100 and not severity and not agent_type:
+                # Only use cache for unfiltered, first page requests
+                cached_issues = self.redis.get(cache_key)
+                if cached_issues:
+                    logger.debug(f"✓ Redis cache hit for issues: {analysis_id}")
+                    return cached_issues
             
             logger.debug(f"⚡ Fetching issues from DB: {analysis_id}")
-            result = self.db.table("issues")\
-                .select("*")\
-                .eq("analysis_id", analysis_id)\
-                .execute()
+            
+            # Build query with filters
+            query = self.db.table("issues").select("*").eq("analysis_id", analysis_id)
+            
+            # Apply optional filters
+            if severity:
+                query = query.eq("severity", severity)
+            if agent_type:
+                query = query.eq("agent_type", agent_type)
+            
+            # Order by severity (critical first) using database ordering
+            # This leverages the idx_issues_analysis_severity index
+            query = query.order("severity", desc=False)  # critical comes first alphabetically
+            
+            # Apply pagination
+            offset = (page - 1) * per_page
+            query = query.limit(per_page).offset(offset)
+            
+            result = query.execute()
             
             issues = result.data or []
-            logger.info(f"[get_issues] Found {len(issues)} issues for analysis {analysis_id}")
-            if issues:
-                logger.info(f"[get_issues] First issue sample: {issues[0]}")
+            logger.info(f"[get_issues] Found {len(issues)} issues for analysis {analysis_id} (page {page})")
             
-            # Sort by severity (critical first)
+            # Sort by severity in Python for correct order
             severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
             issues.sort(key=lambda x: severity_order.get(x.get('severity', 'low'), 4))
             
-            # Cache for 60 minutes (issues are immutable once analysis is completed)
-            if issues:
+            # Cache full first page for 60 minutes (immutable data)
+            if page == 1 and per_page >= 100 and not severity and not agent_type and issues:
                 self.redis.set(cache_key, issues, ttl=3600)
             
             return issues
         except Exception as e:
             logger.error(f"Get issues failed: {str(e)}")
             raise
+    
+    async def get_issues_count(self, analysis_id: str) -> Dict[str, int]:
+        """Get issue counts by severity for an analysis."""
+        try:
+            cache_key = f"db:issues_count:{analysis_id}"
+            cached_count = self.redis.get(cache_key)
+            if cached_count:
+                return cached_count
+            
+            result = self.db.table("issues")\
+                .select("severity")\
+                .eq("analysis_id", analysis_id)\
+                .execute()
+            
+            counts = {'total': 0, 'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+            for issue in (result.data or []):
+                severity = issue.get('severity', 'low')
+                counts[severity] = counts.get(severity, 0) + 1
+                counts['total'] += 1
+            
+            # Cache for 60 minutes
+            self.redis.set(cache_key, counts, ttl=3600)
+            return counts
+        except Exception as e:
+            logger.error(f"Get issues count failed: {str(e)}")
+            return {'total': 0, 'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
     
     async def save_improvement_roadmap(self, repo_id: str, roadmap: Dict[str, Any]) -> bool:
         try:

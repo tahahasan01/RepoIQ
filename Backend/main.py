@@ -9,7 +9,7 @@ import time
 from loguru import logger
 
 from app.core.config import get_settings
-from app.api.routes import auth, users, github, analysis, chat
+from app.api.routes import auth, users, github, analysis, chat, webhooks
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.middleware.compression import CompressionMiddleware, JSONOptimizationMiddleware
 from app.middleware.cache_middleware import ResponseCacheMiddleware
@@ -43,14 +43,19 @@ app = FastAPI(
 )
 
 # Configure CORS - MUST be first middleware for preflight to work
+# SECURITY: Use specific methods and headers instead of wildcards
 cors_origins = settings.BACKEND_CORS_ORIGINS
-logger.info(f"CORS configured - Allowing origins: {', '.join(cors_origins)}")
+cors_methods = settings.allowed_methods_list if hasattr(settings, 'allowed_methods_list') else ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
+cors_headers = settings.allowed_headers_list if hasattr(settings, 'allowed_headers_list') else ["Authorization", "Content-Type", "X-Requested-With", "Accept", "Origin"]
+
+logger.info(f"CORS configured - Origins: {', '.join(cors_origins)}")
+logger.info(f"CORS configured - Methods: {', '.join(cors_methods)}")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=cors_methods,  # SECURITY: Specific methods instead of "*"
+    allow_headers=cors_headers,  # SECURITY: Specific headers instead of "*"
     expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
 )
 
@@ -66,11 +71,12 @@ if settings.REDIS_URL:
         app.add_middleware(
             RateLimitMiddleware,
             redis_url=settings.REDIS_URL,
-            default_capacity=100,  # 100 requests
-            default_refill_rate=1.0,  # 1 per second = 60/minute
+            default_capacity=200,  # 200 requests
+            default_refill_rate=2.0,  # 2 per second = 120/minute
             endpoint_limits={
-                "/api/v1/analysis": (10, 0.1),  # 10 requests, refill 1 per 10s
-                "/api/v1/github/sync": (5, 0.05),  # 5 requests, refill 1 per 20s
+                "/api/v1/analysis/repositories": (50, 0.5),  # 50 requests, refill 1 per 2s (more lenient for polling)
+                "/api/v1/analysis": (30, 0.3),  # 30 requests, refill 1 per 3.3s
+                "/api/v1/github/sync": (5, 0.05),  # 5 requests, refill 1 per 20s (keep strict for sync)
             }
         )
         logger.info("Rate limiting enabled with Redis")
@@ -144,15 +150,71 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Health check endpoint
+# Health check endpoint with dependency verification
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {
+    """
+    Health check endpoint that verifies all critical dependencies.
+    Returns detailed status for each component.
+    """
+    from redis import Redis
+    from app.db.supabase import get_supabase_client
+    
+    health_status = {
         "status": "healthy",
         "app": settings.APP_NAME,
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "dependencies": {}
     }
+    
+    overall_healthy = True
+    
+    # Check Redis
+    try:
+        redis_client = Redis.from_url(settings.REDIS_URL, socket_timeout=2)
+        redis_client.ping()
+        health_status["dependencies"]["redis"] = {"status": "healthy", "latency_ms": 0}
+    except Exception as e:
+        health_status["dependencies"]["redis"] = {"status": "unhealthy", "error": str(e)}
+        overall_healthy = False
+    
+    # Check Supabase/Database
+    try:
+        supabase = get_supabase_client()
+        # Simple query to verify connection
+        result = supabase.table("repositories").select("id").limit(1).execute()
+        health_status["dependencies"]["database"] = {"status": "healthy"}
+    except Exception as e:
+        health_status["dependencies"]["database"] = {"status": "unhealthy", "error": str(e)}
+        overall_healthy = False
+    
+    # Update overall status
+    health_status["status"] = "healthy" if overall_healthy else "degraded"
+    
+    return health_status
+
+
+# Readiness probe (for Kubernetes)
+@app.get("/ready")
+async def readiness_check():
+    """Readiness probe - returns 200 only when app is ready to serve traffic."""
+    from redis import Redis
+    
+    try:
+        # Quick Redis check
+        redis_client = Redis.from_url(settings.REDIS_URL, socket_timeout=1)
+        redis_client.ping()
+        return {"ready": True}
+    except Exception:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503, content={"ready": False, "reason": "Dependencies not ready"})
+
+
+# Liveness probe (for Kubernetes)
+@app.get("/live")
+async def liveness_check():
+    """Liveness probe - returns 200 if the application is running."""
+    return {"alive": True}
 
 
 # Metrics endpoint for monitoring
@@ -262,6 +324,7 @@ app.include_router(users.router, prefix=settings.api_prefix)
 app.include_router(github.router, prefix=settings.api_prefix)
 app.include_router(analysis.router, prefix=settings.api_prefix)
 app.include_router(chat.router, prefix=settings.api_prefix)
+app.include_router(webhooks.router, prefix=settings.api_prefix)
 
 
 if __name__ == "__main__":

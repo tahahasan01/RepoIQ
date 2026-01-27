@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import List
+import re
 from github import GithubException
 from app.schemas import GitHubRepo, RepositoryResponse
 from app.services.repository_service import RepositoryService
@@ -10,6 +11,57 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/github", tags=["GitHub"])
+
+
+def validate_file_path(file_path: str) -> str:
+    """
+    SECURITY: Validate and sanitize file path to prevent path traversal attacks.
+    
+    Raises HTTPException if path is invalid or contains traversal attempts.
+    Returns sanitized path.
+    """
+    if not file_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File path is required"
+        )
+    
+    # Normalize the path - remove leading/trailing whitespace
+    normalized_path = file_path.strip()
+    
+    # SECURITY: Block path traversal attempts
+    traversal_patterns = [
+        r'\.\.',        # Parent directory traversal
+        r'^/',          # Absolute path from root
+        r'^\\',         # Windows absolute path
+        r'^[a-zA-Z]:',  # Windows drive letter
+        r'~',           # Home directory
+        r'\x00',        # Null byte injection
+    ]
+    
+    for pattern in traversal_patterns:
+        if re.search(pattern, normalized_path):
+            logger.warning(f"🚫 Path traversal attempt blocked: {file_path}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid file path: path traversal not allowed"
+            )
+    
+    # SECURITY: Block potentially dangerous file extensions
+    dangerous_extensions = ['.env', '.pem', '.key', '.secret', '.credentials']
+    lower_path = normalized_path.lower()
+    for ext in dangerous_extensions:
+        if lower_path.endswith(ext) or f'{ext}.' in lower_path:
+            logger.warning(f"🚫 Access to sensitive file blocked: {file_path}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access to this file type is not allowed"
+            )
+    
+    # Remove any leading slashes
+    normalized_path = normalized_path.lstrip('/').lstrip('\\')
+    
+    return normalized_path
 
 
 @router.get("/connected")
@@ -107,20 +159,23 @@ async def get_repository_files(
 @router.get("/repositories/{repo_id}/files/content")
 async def get_file_content(
     repo_id: str,
-    file_path: str = Query(...),
+    file_path: str = Query(..., description="Path to file within repository"),
     current_user: dict = Depends(get_current_user),
     github_token: str = Depends(get_github_token)
 ):
     repo_service = RepositoryService()
     
+    # SECURITY: Validate file path to prevent traversal attacks
+    validated_path = validate_file_path(file_path)
+    
     try:
         content = await repo_service.get_file_content(
             repo_id,
             current_user["id"],
-            file_path,
+            validated_path,
             github_token
         )
-        return {"file_path": file_path, "content": content}
+        return {"file_path": validated_path, "content": content}
     except GithubException as e:
         # File doesn't exist or GitHub API error
         if e.status == 404:

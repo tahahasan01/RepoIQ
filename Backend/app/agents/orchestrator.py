@@ -51,8 +51,8 @@ class AgentOrchestrator:
                 logger.error(f"❌ Batch {batch_num} failed: {str(e)}")
                 return None
         
-        # Run up to 2 batches in parallel (balanced for speed vs rate limits)
-        parallel_batches = 2
+        # Run up to 4 batches in parallel for maximum speed
+        parallel_batches = 4
         batches = [files[i:i + batch_size] for i in range(0, len(files), batch_size)]
         
         for i in range(0, len(batches), parallel_batches):
@@ -70,32 +70,54 @@ class AgentOrchestrator:
                     total_architecture_score += batch_result.get("architecture_score", 50)
                     batch_count_actual += 1
         
-        # Run best practices static analysis on all files
-        logger.info("Running best practices static analysis on all files...")
-        for file_data in files:
-            try:
-                best_practice_issues = self.best_practices_agent._run_static_analysis(
-                    file_data.get("content", ""),
-                    file_data.get("path", ""),
-                    self.best_practices_agent._detect_language(file_data.get("path", ""))
-                )
-                all_issues.extend(best_practice_issues)
-            except Exception as e:
-                logger.error(f"Best practices analysis failed for {file_data.get('path')}: {e}")
+        # Run BOTH static analyses IN PARALLEL for all files (much faster!)
+        logger.info("Running static analysis (best practices + security) in parallel...")
         
-        # Run security static analysis on all files
-        logger.info("Running security static analysis on all files...")
-        for file_data in files:
-            try:
-                security_issues = self.security_agent._run_static_analysis(
-                    file_data.get("content", ""),
-                    file_data.get("path", ""),
-                    self.security_agent._detect_language(file_data.get("path", ""))
-                )
-                all_issues.extend(security_issues)
-                logger.info(f"Security analysis found {len(security_issues)} issues in {file_data.get('path')}")
-            except Exception as e:
-                logger.error(f"Security analysis failed for {file_data.get('path')}: {e}")
+        async def run_static_analysis_parallel():
+            best_practice_tasks = []
+            security_tasks = []
+            
+            for file_data in files:
+                content = file_data.get("content", "")
+                path = file_data.get("path", "")
+                
+                # Create async wrappers for static analysis
+                async def run_best_practices(c=content, p=path):
+                    try:
+                        return self.best_practices_agent._run_static_analysis(
+                            c, p, self.best_practices_agent._detect_language(p)
+                        )
+                    except Exception as e:
+                        logger.error(f"Best practices failed for {p}: {e}")
+                        return []
+                
+                async def run_security(c=content, p=path):
+                    try:
+                        return self.security_agent._run_static_analysis(
+                            c, p, self.security_agent._detect_language(p)
+                        )
+                    except Exception as e:
+                        logger.error(f"Security failed for {p}: {e}")
+                        return []
+                
+                best_practice_tasks.append(run_best_practices())
+                security_tasks.append(run_security())
+            
+            # Run ALL static analysis in parallel
+            all_results = await asyncio.gather(
+                *best_practice_tasks, *security_tasks,
+                return_exceptions=True
+            )
+            
+            issues = []
+            for result in all_results:
+                if isinstance(result, list):
+                    issues.extend(result)
+            return issues
+        
+        static_issues = await run_static_analysis_parallel()
+        all_issues.extend(static_issues)
+        logger.info(f"Static analysis found {len(static_issues)} issues")
         
         # Calculate issue counts
         critical_count = len([i for i in all_issues if i.get("severity") == "critical"])

@@ -2,9 +2,38 @@ from fastapi import APIRouter, HTTPException, status, Depends
 from app.schemas import UserCreate, UserResponse, TokenResponse
 from app.services.auth_service import AuthService
 from app.api.dependencies import get_current_user
+from app.core.logging import get_logger
 from pydantic import BaseModel
 
+logger = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+def _sanitize_error_message(error: Exception, default_message: str = "An error occurred") -> str:
+    """
+    SECURITY: Sanitize error messages to avoid leaking internal details.
+    Only expose safe, user-friendly error messages.
+    """
+    error_str = str(error).lower()
+    
+    # Map known errors to user-friendly messages
+    if "duplicate" in error_str or "already exists" in error_str:
+        return "An account with this email already exists"
+    if "invalid" in error_str or "credentials" in error_str:
+        return "Invalid credentials"
+    if "not found" in error_str:
+        return "Resource not found"
+    if "expired" in error_str:
+        return "Session expired. Please log in again"
+    if "rate limit" in error_str:
+        return "Too many requests. Please try again later"
+    if "github" in error_str and "access" in error_str:
+        return "Failed to connect to GitHub. Please try again"
+    
+    # Log the actual error for debugging
+    logger.error(f"Auth error (sanitized for response): {error}")
+    
+    return default_message
 
 
 class LoginRequest(BaseModel):
@@ -36,9 +65,10 @@ async def signup(user_data: UserCreate):
             refresh_token=result["refresh_token"]
         )
     except Exception as e:
+        # SECURITY: Don't expose internal error details
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail=_sanitize_error_message(e, "Failed to create account")
         )
 
 
@@ -83,9 +113,10 @@ async def github_callback(callback_data: GitHubCallbackRequest):
             user=result.get("user", {})
         )
     except Exception as e:
+        # SECURITY: Don't expose internal error details
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail=_sanitize_error_message(e, "GitHub authentication failed")
         )
 
 
@@ -137,6 +168,37 @@ async def refresh_token(token_data: RefreshTokenRequest):
 
 @router.post("/logout")
 async def logout(current_user: dict = Depends(get_current_user)):
+    """
+    Logout user and invalidate their current session.
+    
+    SECURITY: Token blacklisting ensures tokens cannot be reused after logout.
+    """
+    from app.services.redis_service import get_redis_service
+    from app.core.config import get_settings
+    
+    settings = get_settings()
+    
+    try:
+        # Get Redis service for token blacklisting
+        redis_service = get_redis_service()
+        
+        # Blacklist the user's session (using user_id as identifier)
+        # The token will be rejected until its natural expiration
+        user_id = current_user.get("id")
+        if user_id:
+            # Store invalidation timestamp - any tokens issued before this are invalid
+            blacklist_key = f"auth:invalidated:{user_id}"
+            import time
+            redis_service.redis_client.setex(
+                blacklist_key,
+                settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60 + 60,  # TTL slightly longer than token
+                str(int(time.time()))
+            )
+            logger.info(f"🔒 User session invalidated: {user_id[:8]}...")
+    except Exception as e:
+        # Log but don't fail logout - it should always succeed from user perspective
+        logger.warning(f"Failed to blacklist token on logout: {e}")
+    
     return {"message": "Logged out successfully"}
 
 

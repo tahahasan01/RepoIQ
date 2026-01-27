@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import apiClient from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { X, CheckCircle, XCircle, Clock, AlertCircle } from "lucide-react";
+import { X, CheckCircle, XCircle, Clock, AlertCircle, RefreshCw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { formatDateOnly, formatRelativeTime } from "@/lib/timeUtils";
 
 interface AnalysisRun {
   id: string;
@@ -40,16 +41,27 @@ export default function AnalysisHistoryModal({
     }
   }, [isOpen, repoId]);
 
-  const loadHistory = async () => {
+  const loadHistory = async (forceRefresh = false) => {
     try {
       setLoading(true);
       setError(null);
-      console.log('[AnalysisHistoryModal] Loading history for repo:', repoId);
+      console.log('[AnalysisHistoryModal] Loading history for repo:', repoId, 'forceRefresh:', forceRefresh);
       
-      const response = await apiClient.getAnalysisHistory(repoId);
+      // Pass forceRefresh to API to bypass cache
+      const response = await apiClient.getAnalysisHistory(repoId, forceRefresh);
       console.log('[AnalysisHistoryModal] History response:', response);
+      console.log('[AnalysisHistoryModal] Total analyses in response:', response?.total_analyses);
       
       const runs = response.history || [];
+      console.log('[AnalysisHistoryModal] Found', runs.length, 'analysis runs');
+      
+      // Sort by completed_at descending to ensure latest is first
+      runs.sort((a: AnalysisRun, b: AnalysisRun) => {
+        const dateA = a.completed_at ? new Date(a.completed_at).getTime() : 0;
+        const dateB = b.completed_at ? new Date(b.completed_at).getTime() : 0;
+        return dateB - dateA;
+      });
+      
       setHistory(runs);
       
       if (runs.length === 0) {
@@ -71,19 +83,10 @@ export default function AnalysisHistoryModal({
 
   const formatDate = (dateString: string | null) => {
     if (!dateString) return "N/A";
-    try {
-      const date = new Date(dateString);
-      return new Intl.DateTimeFormat('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true
-      }).format(date);
-    } catch {
-      return dateString;
-    }
+    // Show only date and relative time (e.g., "Jan 27, 2026 (34 minutes ago)")
+    const relative = formatRelativeTime(dateString);
+    const dateOnly = formatDateOnly(dateString);
+    return `${dateOnly} (${relative})`;
   };
 
   const getScoreColor = (score: number | null) => {
@@ -130,12 +133,22 @@ export default function AnalysisHistoryModal({
               <h2 className="text-2xl font-bold">Analysis History</h2>
               <p className="text-sm text-muted-foreground mt-1">{repoName}</p>
             </div>
-            <button
-              onClick={onClose}
-              className="p-2 hover:bg-accent rounded-lg transition-colors"
-            >
-              <X className="h-5 w-5" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => loadHistory(true)}
+                disabled={loading}
+                className="p-2 hover:bg-accent rounded-lg transition-colors disabled:opacity-50"
+                title="Refresh history"
+              >
+                <RefreshCw className={`h-5 w-5 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+              <button
+                onClick={onClose}
+                className="p-2 hover:bg-accent rounded-lg transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
           </div>
 
           {/* Content */}
@@ -149,7 +162,8 @@ export default function AnalysisHistoryModal({
               <div className="flex flex-col items-center justify-center py-12">
                 <AlertCircle className="h-12 w-12 text-muted-foreground mb-4" />
                 <p className="text-muted-foreground">{error}</p>
-                <Button onClick={loadHistory} variant="outline" className="mt-4">
+                <Button onClick={() => loadHistory(true)} variant="outline" className="mt-4 gap-2">
+                  <RefreshCw className="h-4 w-4" />
                   Retry
                 </Button>
               </div>

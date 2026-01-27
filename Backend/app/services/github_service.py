@@ -5,17 +5,78 @@ from app.core.config import get_settings
 from app.services.redis_service import get_redis_service
 import base64
 import httpx
+import asyncio
+import time
+from functools import wraps
 
 settings = get_settings()
 logger = get_logger(__name__)
 
 
+def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0):
+    """Decorator for exponential backoff retry on transient failures."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except GithubException as e:
+                    # Retry on rate limit (403), server errors (5xx), or timeouts
+                    if e.status in [403, 429, 500, 502, 503, 504]:
+                        last_exception = e
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f"Retry {attempt + 1}/{max_retries} after {delay}s due to: {e.status}")
+                        time.sleep(delay)
+                    else:
+                        raise
+                except (httpx.TimeoutException, httpx.ConnectError) as e:
+                    last_exception = e
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"Retry {attempt + 1}/{max_retries} after {delay}s due to: {type(e).__name__}")
+                    time.sleep(delay)
+            raise last_exception
+        return wrapper
+    return decorator
+
+
 class GitHubService:
     def __init__(self, access_token: str):
-        self.client = Github(access_token)
+        self.client = Github(access_token, per_page=100)  # Optimize pagination
+        self.access_token = access_token
         self.user = None
         self.redis = get_redis_service()
-        
+        self._rate_limit_remaining = None
+        self._rate_limit_reset = None
+    
+    def _check_rate_limit(self) -> bool:
+        """Check GitHub API rate limit - NON-BLOCKING (no sleep)."""
+        try:
+            # Use cached rate limit if recent (< 60 seconds old)
+            if self._rate_limit_remaining is not None and self._rate_limit_reset:
+                time_since_check = time.time() - (self._rate_limit_reset - 3600)  # Approximate last check
+                if time_since_check < 60 and self._rate_limit_remaining > 10:
+                    return True  # Use cached value, skip API call
+            
+            rate_limit = self.client.get_rate_limit()
+            self._rate_limit_remaining = rate_limit.core.remaining
+            self._rate_limit_reset = rate_limit.core.reset.timestamp()
+            
+            if self._rate_limit_remaining < 10:
+                wait_time = max(0, self._rate_limit_reset - time.time())
+                # NEVER block - just warn and continue or fail fast
+                if wait_time >= 60:
+                    logger.error(f"❌ Rate limit exhausted ({self._rate_limit_remaining}), reset in {wait_time:.0f}s")
+                    return False  # Fail fast instead of blocking
+                else:
+                    logger.warning(f"⚠️ Rate limit low ({self._rate_limit_remaining}), continuing anyway")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to check rate limit: {e}")
+            return True  # Continue anyway
+    
+    @retry_with_backoff(max_retries=3, base_delay=1.0)
     def get_user_info(self) -> Dict[str, Any]:
         if not self.user:
             self.user = self.client.get_user()
@@ -41,28 +102,37 @@ class GitHubService:
         self.redis.set(cache_key, user_info, ttl=3600)
         return user_info
     
+    @retry_with_backoff(max_retries=3, base_delay=1.0)
     def get_repositories(self, page: int = 1, per_page: int = 30) -> List[Dict[str, Any]]:
         if not self.user:
             self.user = self.client.get_user()
         
-        # Check Redis cache for repositories list (5 min TTL - frequently updated)
+        # Check Redis cache for repositories list (10 min TTL - balanced freshness)
         cache_key = f"github:repos:{self.user.login}:{page}:{per_page}"
         cached_repos = self.redis.get(cache_key)
         if cached_repos:
             logger.debug(f"✓ Redis cache hit for repositories: {self.user.login}")
             return cached_repos
         
+        # Check rate limit before making API calls
+        if not self._check_rate_limit():
+            raise GithubException(403, {"message": "Rate limit exceeded"}, None)
+        
         repos = []
         try:
             logger.debug(f"⚡ Fetching repositories from GitHub for: {self.user.login}")
-            for repo in self.user.get_repos(sort="updated", direction="desc"):
+            # Use pagination efficiently - get only what we need
+            paginated_repos = self.user.get_repos(sort="updated", direction="desc")
+            
+            # Iterate with early exit
+            for repo in paginated_repos:
                 repos.append(self._format_repository(repo))
-                
                 if len(repos) >= per_page:
                     break
             
-            # Cache for 5 minutes
-            self.redis.set(cache_key, repos, ttl=300)
+            # Cache for 10 minutes (balanced between freshness and performance)
+            self.redis.set(cache_key, repos, ttl=600)
+            logger.info(f"✅ Fetched {len(repos)} repositories for {self.user.login}")
             return repos
         except GithubException as e:
             logger.error(f"Failed to fetch repositories: {str(e)}")
@@ -84,16 +154,62 @@ class GitHubService:
             logger.error(f"Failed to fetch repository {full_name}: {str(e)}")
             raise
     
+    @retry_with_backoff(max_retries=3, base_delay=1.0)
     def get_repository_files(self, full_name: str, branch: str = "main", path: str = "") -> List[Dict[str, Any]]:
-        # Check Redis cache for file list (30 min TTL - rarely changes)
-        # Only cache the root path to avoid too many cache keys
-        if path == "":
-            cache_key = f"github:files:{full_name}:{branch}"
-            cached_files = self.redis.get(cache_key)
-            if cached_files:
-                logger.debug(f"✓ Redis cache hit for files: {full_name}")
-                return cached_files
+        """
+        Get all files in a repository using the Git Trees API for optimal performance.
+        This makes a SINGLE API call to get all files instead of recursive calls.
+        """
+        # Check Redis cache for file list (60 min TTL - rarely changes)
+        cache_key = f"github:files:{full_name}:{branch}"
+        cached_files = self.redis.get(cache_key)
+        if cached_files:
+            logger.debug(f"✓ Redis cache hit for files: {full_name}")
+            return cached_files
         
+        # Check rate limit
+        if not self._check_rate_limit():
+            raise GithubException(403, {"message": "Rate limit exceeded"}, None)
+        
+        try:
+            repo = self.client.get_repo(full_name)
+            
+            # Use Git Trees API with recursive=True for SINGLE API call
+            # This is MUCH faster than recursive get_contents calls
+            try:
+                tree = repo.get_git_tree(branch, recursive=True)
+            except GithubException:
+                # Fallback to master branch
+                try:
+                    tree = repo.get_git_tree("master", recursive=True)
+                except GithubException as e:
+                    logger.error(f"Failed to get tree for {full_name}: {e}")
+                    # Fallback to old method if Trees API fails
+                    return self._get_files_recursive(full_name, branch, path)
+            
+            files = []
+            for item in tree.tree:
+                # Only include files (blobs), not directories (trees)
+                if item.type == "blob" and self._is_code_file(item.path):
+                    files.append({
+                        "path": item.path,
+                        "name": item.path.split("/")[-1],
+                        "size": item.size or 0,
+                        "sha": item.sha,
+                        "type": "file"
+                    })
+            
+            # Cache for 60 minutes (files rarely change)
+            logger.info(f"✅ Trees API: Fetched {len(files)} files from {full_name} in single call")
+            self.redis.set(cache_key, files, ttl=3600)
+            
+            return files
+        except GithubException as e:
+            logger.error(f"Failed to fetch repository files: {str(e)}")
+            raise
+    
+    def _get_files_recursive(self, full_name: str, branch: str = "main", path: str = "") -> List[Dict[str, Any]]:
+        """Fallback recursive method for fetching files (slower, for compatibility)."""
         try:
             repo = self.client.get_repo(full_name)
             
@@ -103,13 +219,12 @@ class GitHubService:
                 contents = repo.get_contents(path, ref="master")
             
             files = []
-            
             if not isinstance(contents, list):
                 contents = [contents]
             
             for content in contents:
                 if content.type == "dir":
-                    files.extend(self.get_repository_files(full_name, branch, content.path))
+                    files.extend(self._get_files_recursive(full_name, branch, content.path))
                 else:
                     if self._is_code_file(content.path):
                         files.append({
@@ -120,19 +235,13 @@ class GitHubService:
                             "type": content.type
                         })
             
-            # Cache root file list for 30 minutes
-            if path == "":
-                logger.debug(f"⚡ Caching file list for: {full_name}")
-                self.redis.set(cache_key, files, ttl=1800)
-            
             return files
         except GithubException as e:
-            logger.error(f"Failed to fetch repository files: {str(e)}")
+            logger.error(f"Recursive file fetch failed: {str(e)}")
             raise
     
+    @retry_with_backoff(max_retries=3, base_delay=0.5)
     def get_file_content(self, full_name: str, file_path: str, branch: str = "main") -> str:
-        import httpx
-        
         logger.info(f"📖 Fetching file content: repo={full_name}, file={file_path}, branch={branch}")
         
         # Check Redis cache for file content (30 min TTL)

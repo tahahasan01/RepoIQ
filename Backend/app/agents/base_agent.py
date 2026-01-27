@@ -17,9 +17,10 @@ class BaseAgent(ABC):
             api_key=settings.OPENAI_API_KEY,
             http_client=http_client
         )
-        self.model = "gpt-4-turbo-preview"
-        self.temperature = 0.7
-        self.max_tokens = 4000
+        # Use gpt-4o-mini - fastest OpenAI model with excellent quality
+        self.model = "gpt-4o-mini"
+        self.temperature = 0.3  # Lower temperature for faster, more consistent responses
+        self.max_tokens = 2000  # Reduced for faster responses
         
     @abstractmethod
     async def analyze(self, code: str, file_path: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

@@ -14,6 +14,15 @@ import asyncio
 logger = get_logger(__name__)
 
 
+async def _warm_cache_background(analysis_id: str, repo_id: str, user_id: str, github_token: str):
+    """Background task for cache warming - doesn't block main response."""
+    try:
+        await warm_cache_on_analysis_completion(analysis_id, repo_id, user_id, github_token)
+        logger.info(f"✅ Background cache warming completed for analysis {analysis_id}")
+    except Exception as e:
+        logger.warning(f"Background cache warming failed (non-critical): {e}")
+
+
 # Synchronous version without Celery/Redis
 async def run_analysis_sync(repo_id: str, user_id: str, github_token: str, analysis_id: str) -> Dict[str, Any]:
     """Run analysis synchronously without using Celery/Redis"""
@@ -126,6 +135,11 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
             "files_analyzed": cached_result["files_analyzed"],
             "completed_at": datetime.utcnow().isoformat()
         })
+        # Invalidate history cache so new analysis shows immediately
+        from app.services.redis_service import get_redis_service
+        redis = get_redis_service()
+        redis.delete(f"db:history:{repo_id}")
+        logger.info(f"🗑️ Invalidated history cache for repo: {repo_id} (cached analysis path)")
         return cached_result
     
     logger.info(f"Fetching repository files for {repo['full_name']}")
@@ -137,6 +151,13 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
             timeout=90.0
         )
         logger.info(f"✅ Successfully fetched {len(files)} files from GitHub")
+        
+        # IMPORTANT: Cache files for instant loading on Files page
+        from app.services.redis_service import get_redis_service
+        redis = get_redis_service()
+        redis.set(f"files:list:{repo_id}", files, ttl=3600)
+        logger.info(f"⚡ Pre-cached {len(files)} files for instant dashboard loading")
+        
     except asyncio.TimeoutError:
         logger.error(f"❌ Timeout fetching files from GitHub (90s limit exceeded)")
         raise Exception("Repository file fetch timed out after 90 seconds. Repository is very large or GitHub API is slow. Try analyzing a smaller repository.")
@@ -250,26 +271,39 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
             logger.warning(f"Failed to fetch {file['path']}: {str(e)}")
             return None
     
-    # Fetch files in parallel batches of 5 (much faster than sequential!)
-    # asyncio already imported at module level
-    code_files = []
-    batch_size = 5
-    for i in range(0, len(code_files_list), batch_size):
-        batch = code_files_list[i:i+batch_size]
-        results = await asyncio.gather(
-            *[fetch_file_content(f, i+idx+1, len(code_files_list)) for idx, f in enumerate(batch)],
-            return_exceptions=True
-        )
-        code_files.extend([r for r in results if r is not None and not isinstance(r, Exception)])
+    # Fetch ALL files in parallel (maximum speed!)
+    # Increased from batch_size=5 to fetch all at once
+    logger.info(f"⚡ Fetching {len(code_files_list)} files in parallel...")
+    results = await asyncio.gather(
+        *[fetch_file_content(f, idx+1, len(code_files_list)) for idx, f in enumerate(code_files_list)],
+        return_exceptions=True
+    )
+    code_files = [r for r in results if r is not None and not isinstance(r, Exception)]
     
     logger.info(f"Successfully loaded {len(code_files)} code files (parallel fetch)")
     
-    # Use TOON to compress files for analysis
-    logger.info("Compressing files using TOON format...")
-    compressed_toon = toon_service.compress_analysis_request(code_files, {
-        "language": repo.get("language"),
-        "repo_name": repo["name"]
-    })
+    # Fetch structure IN PARALLEL with TOON compression for maximum speed
+    logger.info("Compressing files and fetching structure in parallel...")
+    
+    async def compress_files():
+        compressed = toon_service.compress_analysis_request(code_files, {
+            "language": repo.get("language"),
+            "repo_name": repo["name"]
+        })
+        return compressed
+    
+    async def get_structure():
+        return await asyncio.to_thread(
+            github_service.get_repository_structure, 
+            repo["full_name"], 
+            repo["default_branch"]
+        )
+    
+    # Run both in parallel
+    compressed_toon, structure = await asyncio.gather(
+        compress_files(),
+        get_structure()
+    )
     
     # Calculate token savings
     original_size = sum(len(f["content"]) for f in code_files)
@@ -278,7 +312,6 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     logger.info(f"TOON compression: {original_size:,} → {compressed_size:,} chars ({savings_pct:.1f}% reduction)")
     
     all_file_paths = [f["path"] for f in files]
-    structure = github_service.get_repository_structure(repo["full_name"], repo["default_branch"])
     
     project_context = {
         "project_structure": structure,
@@ -336,6 +369,13 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     except Exception as e:
         logger.warning(f"Failed to invalidate API cache (non-critical): {e}")
     
+    # CRITICAL: Invalidate history cache IMMEDIATELY so new analysis shows in history modal
+    try:
+        redis_service.delete(f"db:history:{repo_id}")
+        logger.info(f"🗑️ Invalidated history cache for repo: {repo_id}")
+    except Exception as e:
+        logger.warning(f"Failed to invalidate history cache (non-critical): {e}")
+    
     # Cache the results (7 days - analysis rarely changes unless code changes)
     file_paths = [f["path"] for f in code_files]
     cache_service.cache_analysis(
@@ -346,11 +386,9 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
         ttl=3600 * 24 * 7  # 7 days
     )
     
-    # Warm cache for frequently accessed data (issues, README, history)
-    try:
-        await warm_cache_on_analysis_completion(analysis_id, repo_id, user_id, github_token)
-    except Exception as e:
-        logger.warning(f"Cache warming failed (non-critical): {e}")
+    # Warm cache in BACKGROUND (non-blocking) for faster response
+    asyncio.create_task(_warm_cache_background(analysis_id, repo_id, user_id, github_token))
+    logger.info("Cache warming started in background")
     
     logger.info(f"✓ Analysis complete: {len(code_files)} files, {analysis_result['total_issues']} issues found")
     

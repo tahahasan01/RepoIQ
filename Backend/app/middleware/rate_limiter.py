@@ -1,9 +1,13 @@
 """
 Production-grade rate limiting middleware using token bucket algorithm.
 Supports per-user, per-endpoint, and global rate limits with Redis backend.
+
+SECURITY: Includes in-memory fallback when Redis is unavailable to maintain protection.
 """
 from typing import Optional, Dict, Callable
 from datetime import datetime, timedelta
+from collections import defaultdict
+import threading
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -16,6 +20,71 @@ from app.core.config import get_settings
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+
+class InMemoryTokenBucket:
+    """
+    In-memory fallback rate limiter for when Redis is unavailable.
+    
+    SECURITY: This ensures rate limiting continues even during Redis outages.
+    Less precise than Redis (per-process instead of global) but maintains protection.
+    """
+    
+    def __init__(self, capacity: int = 100, refill_rate: float = 1.0):
+        self.capacity = capacity
+        self.refill_rate = refill_rate
+        self._buckets: Dict[str, tuple[float, float]] = {}  # identifier -> (tokens, last_refill)
+        self._lock = threading.Lock()
+        self._cleanup_counter = 0
+    
+    def consume(self, identifier: str, tokens: int = 1) -> tuple[bool, Dict]:
+        """Synchronous token bucket consumption."""
+        now = time.time()
+        
+        with self._lock:
+            # Periodic cleanup of old entries (every 100 requests)
+            self._cleanup_counter += 1
+            if self._cleanup_counter >= 100:
+                self._cleanup_old_entries(now)
+                self._cleanup_counter = 0
+            
+            # Get or initialize bucket
+            if identifier in self._buckets:
+                current_tokens, last_refill = self._buckets[identifier]
+            else:
+                current_tokens = self.capacity
+                last_refill = now
+            
+            # Refill tokens based on elapsed time
+            elapsed = now - last_refill
+            current_tokens = min(self.capacity, current_tokens + (elapsed * self.refill_rate))
+            
+            # Check if request can be allowed
+            allowed = current_tokens >= tokens
+            if allowed:
+                current_tokens -= tokens
+            
+            # Update bucket
+            self._buckets[identifier] = (current_tokens, now)
+            
+            return allowed, {
+                "remaining": int(current_tokens),
+                "capacity": self.capacity,
+                "reset_after": int((self.capacity - current_tokens) / self.refill_rate) if not allowed else 0
+            }
+    
+    def _cleanup_old_entries(self, now: float, max_age: float = 3600.0):
+        """Remove entries older than max_age seconds."""
+        to_remove = [
+            identifier 
+            for identifier, (_, last_refill) in self._buckets.items()
+            if now - last_refill > max_age
+        ]
+        for identifier in to_remove:
+            del self._buckets[identifier]
+        
+        if to_remove:
+            logger.debug(f"Cleaned up {len(to_remove)} old rate limit entries")
 
 
 class TokenBucket:
@@ -126,6 +195,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     """
     FastAPI middleware for applying rate limits to requests.
     Supports multiple limit tiers and custom rules.
+    
+    SECURITY: Uses Redis when available, falls back to in-memory rate limiting
+    to maintain protection even during Redis outages.
     """
     
     def __init__(
@@ -145,18 +217,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             endpoint_limits: Dict of {endpoint_pattern: (capacity, rate)}
         """
         super().__init__(app)
+        self.default_capacity = default_capacity
+        self.default_refill_rate = default_refill_rate
+        
         try:
             self.redis = Redis.from_url(redis_url, decode_responses=True)
             self.redis.ping()  # Test connection
             self.redis_available = True
-            logger.info("Redis connected for rate limiting")
+            logger.info("✅ Redis connected for rate limiting")
         except Exception as e:
-            logger.warning(f"Redis unavailable, rate limiting disabled: {e}")
+            logger.warning(f"⚠️ Redis unavailable, using in-memory rate limiting: {e}")
             self.redis = None
             self.redis_available = False
         
         self.default_limiter = None
         self.endpoint_limiters = {}
+        
+        # SECURITY: Always create in-memory fallback limiter
+        self.fallback_limiter = InMemoryTokenBucket(default_capacity, default_refill_rate)
+        self.fallback_endpoint_limiters = {}
         
         if self.redis_available:
             self.default_limiter = TokenBucket(
@@ -175,6 +254,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         rate,
                         key_prefix=f"rate_limit:{pattern.replace('/', '_')}"
                     )
+                    # Also create in-memory fallback for each endpoint
+                    self.fallback_endpoint_limiters[pattern] = InMemoryTokenBucket(capacity, rate)
+        else:
+            # Create in-memory limiters for all endpoints
+            if endpoint_limits:
+                for pattern, (capacity, rate) in endpoint_limits.items():
+                    self.fallback_endpoint_limiters[pattern] = InMemoryTokenBucket(capacity, rate)
+            
+            logger.info("⚠️ Using in-memory rate limiting (less precise, per-process only)")
     
     def _get_limiter(self, path: str) -> TokenBucket:
         """Select appropriate limiter for request path."""
@@ -198,25 +286,38 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         client_host = request.client.host if request.client else "unknown"
         return f"ip:{client_host}"
     
+    def _get_fallback_limiter(self, path: str) -> InMemoryTokenBucket:
+        """Select appropriate in-memory fallback limiter for request path."""
+        for pattern, limiter in self.fallback_endpoint_limiters.items():
+            if path.startswith(pattern):
+                return limiter
+        return self.fallback_limiter
+    
     async def dispatch(self, request: Request, call_next):
         """Process request with rate limiting."""
         # Skip rate limiting for health checks and OPTIONS (CORS preflight)
-        if request.url.path in ["/health", "/api/v1/health", "/metrics"] or request.method == "OPTIONS":
-            return await call_next(request)
-        
-        # If Redis unavailable, allow all requests
-        if not self.redis_available:
+        if request.url.path in ["/health", "/api/v1/health", "/metrics", "/ready", "/live"] or request.method == "OPTIONS":
             return await call_next(request)
         
         identifier = self._get_identifier(request)
-        limiter = self._get_limiter(request.url.path)
         
-        try:
-            allowed, info = await limiter.consume(identifier)
-        except Exception as e:
-            logger.error(f"Rate limit check failed: {e}")
-            # Fail open - allow request if rate limiting fails
-            return await call_next(request)
+        # Try Redis first, fall back to in-memory
+        allowed = True
+        info = {"remaining": self.default_capacity, "capacity": self.default_capacity, "reset_after": 0}
+        
+        if self.redis_available:
+            limiter = self._get_limiter(request.url.path)
+            try:
+                allowed, info = await limiter.consume(identifier)
+            except Exception as e:
+                logger.warning(f"Redis rate limit failed, using fallback: {e}")
+                # SECURITY: Fall back to in-memory instead of allowing all requests
+                fallback_limiter = self._get_fallback_limiter(request.url.path)
+                allowed, info = fallback_limiter.consume(identifier)
+        else:
+            # SECURITY: Use in-memory rate limiting when Redis is not available
+            fallback_limiter = self._get_fallback_limiter(request.url.path)
+            allowed, info = fallback_limiter.consume(identifier)
         
         # Add rate limit headers to response
         response = None

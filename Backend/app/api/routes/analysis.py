@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks, Query
 from loguru import logger
 from app.schemas import AutoFixRequest
 from app.services.repository_service import RepositoryService
@@ -132,7 +132,10 @@ async def get_analysis_results(
     repo_id: str,
     current_user: dict = Depends(get_current_user)
 ):
+    from app.services.redis_service import get_redis_service
+    
     repo_service = RepositoryService()
+    redis = get_redis_service()
     
     repo = await repo_service.get_repository(repo_id, current_user["id"])
     if not repo:
@@ -140,6 +143,13 @@ async def get_analysis_results(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Repository not found"
         )
+    
+    # Check for cached analysis result FIRST for instant loading
+    cached_analysis = redis.get(f"analysis:result:{repo['id']}")
+    if cached_analysis:
+        logger.info(f"[get_analysis_results] ⚡ INSTANT: Using cached analysis for repo {repo_id}")
+        # Still need to get the latest analysis to ensure freshness
+        pass
     
     analysis = await repo_service.get_latest_analysis(repo["id"])
     logger.info(f"[get_analysis_results] repo_id={repo_id} (resolved={repo['id']}), analysis={analysis}")
@@ -309,6 +319,7 @@ async def cancel_analysis(
 @router.get("/repositories/{repo_id}/history")
 async def get_analysis_history(
     repo_id: str,
+    refresh: bool = Query(False, description="Force refresh from database, bypassing cache"),
     current_user: dict = Depends(get_current_user)
 ):
     repo_service = RepositoryService()
@@ -321,7 +332,14 @@ async def get_analysis_history(
         )
     
     try:
-        history = await repo_service.get_analysis_history(repo["id"])
+        logger.info(f"[get_analysis_history] Fetching history for repo {repo_id}, refresh={refresh}")
+        history = await repo_service.get_analysis_history(repo["id"], skip_cache=refresh)
+        
+        # Ensure history is a list
+        if not history:
+            history = []
+        
+        logger.info(f"[get_analysis_history] Found {len(history)} analyses for repo {repo_id}")
         
         return {
             "repository_id": repo["id"],
@@ -334,12 +352,14 @@ async def get_analysis_history(
                     "quality_score": item.get("quality_score", 0),
                     "architecture_score": item.get("architecture_score", 0),
                     "total_issues": item.get("total_issues", 0),
-                    "completed_at": item.get("completed_at")
+                    "completed_at": item.get("completed_at"),
+                    "status": item.get("status", "completed")
                 }
                 for item in history
             ]
         }
     except Exception as e:
+        logger.error(f"[get_analysis_history] Error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)

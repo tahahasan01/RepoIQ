@@ -138,11 +138,14 @@ export default function Dashboard() {
       }
       
       try {
-        setLoading(true);
-        console.log('[Dashboard] Loading analysis results for repo:', repoId, 'forceRefresh:', forceRefresh);
-        
         // Try cached analysis first for instant UI (unless force refresh)
         const cached = !forceRefresh ? getCachedAnalysis(repoId) : null;
+        
+        // Only show loading if we don't have cached data
+        if (!cached) {
+          setLoading(true);
+        }
+        console.log('[Dashboard] Loading analysis results for repo:', repoId, 'forceRefresh:', forceRefresh, 'hasCached:', !!cached);
         if (cached) {
           console.log('[Dashboard] Using cached analysis data');
           console.log('[Dashboard] Cached issues count:', cached.issues?.length || 0);
@@ -376,10 +379,32 @@ export default function Dashboard() {
       setRecentIssues(mappedIssues.slice(0, 5));
       setStats(event.detail.stats);
     };
+    
+    // Listen for analysis completion to refresh data
+    const handleAnalysisCompleted = (event: CustomEvent) => {
+      console.log('[Dashboard] Analysis completed event received:', event.detail);
+      if (event.detail?.repoId === repoId) {
+        console.log('[Dashboard] Reloading data after analysis completion');
+        loadAnalysisData(true); // Force refresh
+      }
+    };
+    
+    // Listen for dashboard refresh events
+    const handleDashboardRefresh = (event: CustomEvent) => {
+      console.log('[Dashboard] Dashboard refresh event received:', event.detail);
+      if (event.detail?.repoId === repoId) {
+        loadAnalysisData(true); // Force refresh
+      }
+    };
 
     window.addEventListener("scanCompleted", handleScanCompleted as EventListener);
+    window.addEventListener("analysisCompleted", handleAnalysisCompleted as EventListener);
+    window.addEventListener("dashboardRefresh", handleDashboardRefresh as EventListener);
+    
     return () => {
       window.removeEventListener("scanCompleted", handleScanCompleted as EventListener);
+      window.removeEventListener("analysisCompleted", handleAnalysisCompleted as EventListener);
+      window.removeEventListener("dashboardRefresh", handleDashboardRefresh as EventListener);
     };
   }, [repoId]);
 

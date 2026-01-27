@@ -42,6 +42,7 @@ interface RepositoryState {
   
   // Async actions
   loadRepositories: (page?: number, forceRefresh?: boolean) => Promise<void>;
+  backgroundRefresh: (page: number) => Promise<void>;
   syncRepositories: () => Promise<void>;
   refreshRepositories: () => Promise<void>;
   updateRepository: (repoId: string, updates: Partial<Repository>) => void;
@@ -134,33 +135,81 @@ export const useRepositoryStore = create<RepositoryState>()(
         const state = get();
         const targetPage = page ?? state.currentPage;
         
-        // Check cache first (unless force refresh)
+        // Check cache first (unless force refresh) - BEFORE setting loading state
         if (!forceRefresh) {
           const cached = getCachedReposForPage(targetPage);
+          const cachedAnalysis = getCachedBatchAnalysis();
+          
           if (cached && cached.length > 0) {
-            console.log(`[RepositoryStore] Loading page ${targetPage} from cache`);
+            console.log(`[RepositoryStore] ⚡ INSTANT load from cache - page ${targetPage}`);
+            
+            // Apply cached analysis data immediately
+            let reposWithAnalysis = cached;
+            if (cachedAnalysis) {
+              reposWithAnalysis = cached.map((repo) => {
+                const analysis = cachedAnalysis[String(repo.id)];
+                if (analysis && analysis.overall_score != null) {
+                  return { ...repo, score: analysis.overall_score, lastScan: analysis.completed_at };
+                }
+                return repo;
+              });
+            }
+            
+            // Set repos IMMEDIATELY without loading state
             set({ 
-              repositories: cached, 
+              repositories: reposWithAnalysis, 
               currentPage: targetPage,
-              isLoading: false,
+              isLoading: false, // Explicitly set to false for instant display
               hasMorePages: cached.length === state.reposPerPage
             });
-            // Still fetch in background to update cache
-            get().loadRepositories(targetPage, true);
-            return;
+            
+            // Only refresh if cache is stale (> 10 minutes old) - longer cache for instant feel
+            try {
+              const cacheEntry = sessionStorage.getItem(`${REPOS_CACHE_KEY}_page_${targetPage}`);
+              if (cacheEntry) {
+                const { timestamp } = JSON.parse(cacheEntry);
+                const cacheAge = Date.now() - timestamp;
+                if (cacheAge > 10 * 60 * 1000) {
+                  // Background refresh after 1 second (non-blocking)
+                  setTimeout(() => {
+                    get().backgroundRefresh(targetPage);
+                  }, 1000);
+                }
+              }
+            } catch (e) {
+              // Ignore cache parsing errors
+            }
+            return; // Exit early - repos already displayed
           }
         }
 
+        // Only set loading if we don't have cache
         set({ isLoading: true, error: null });
 
         try {
-          const data = await apiClient.getRepositories(targetPage, state.reposPerPage);
+          // Fetch repos and batch analysis IN PARALLEL for speed
+          const [data, batchResults] = await Promise.all([
+            apiClient.getRepositories(targetPage, state.reposPerPage),
+            apiClient.getBatchAnalysisResults().catch(() => null) // Don't fail if batch fails
+          ]);
           
           let reposList: Repository[] = [];
           if (Array.isArray(data)) {
             reposList = data;
           } else if (data && (data as any).repositories) {
             reposList = (data as any).repositories;
+          }
+
+          // Apply analysis data to repos
+          if (batchResults?.results) {
+            setCachedBatchAnalysis(batchResults.results);
+            reposList = reposList.map((repo) => {
+              const analysis = batchResults.results[String(repo.id)];
+              if (analysis && analysis.overall_score != null) {
+                return { ...repo, score: analysis.overall_score, lastScan: analysis.completed_at };
+              }
+              return repo;
+            });
           }
 
           setCachedReposForPage(targetPage, reposList);
@@ -172,9 +221,6 @@ export const useRepositoryStore = create<RepositoryState>()(
             hasMorePages: reposList.length === state.reposPerPage,
             error: null
           });
-
-          // Fetch batch analysis in background
-          get().refreshBatchAnalysis();
         } catch (err: any) {
           console.error('[RepositoryStore] Failed to load repos', err);
           set({ 
@@ -182,6 +228,43 @@ export const useRepositoryStore = create<RepositoryState>()(
             error: err?.message || 'Failed to load repositories',
             repositories: []
           });
+        }
+      },
+      
+      // Background refresh without showing loading state
+      backgroundRefresh: async (page: number) => {
+        try {
+          const state = get();
+          const [data, batchResults] = await Promise.all([
+            apiClient.getRepositories(page, state.reposPerPage),
+            apiClient.getBatchAnalysisResults().catch(() => null)
+          ]);
+          
+          let reposList: Repository[] = [];
+          if (Array.isArray(data)) {
+            reposList = data;
+          } else if (data && (data as any).repositories) {
+            reposList = (data as any).repositories;
+          }
+
+          if (batchResults?.results) {
+            setCachedBatchAnalysis(batchResults.results);
+            reposList = reposList.map((repo) => {
+              const analysis = batchResults.results[String(repo.id)];
+              if (analysis && analysis.overall_score != null) {
+                return { ...repo, score: analysis.overall_score, lastScan: analysis.completed_at };
+              }
+              return repo;
+            });
+          }
+
+          // Only update if we're still on the same page
+          if (get().currentPage === page) {
+            setCachedReposForPage(page, reposList);
+            set({ repositories: reposList, hasMorePages: reposList.length === state.reposPerPage });
+          }
+        } catch (err) {
+          console.log('[RepositoryStore] Background refresh failed (non-critical):', err);
         }
       },
 

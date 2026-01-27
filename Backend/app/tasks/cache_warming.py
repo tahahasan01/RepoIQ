@@ -98,7 +98,8 @@ async def warm_cache_on_analysis_completion(
     github_token: str
 ):
     """
-    Pre-fetch and cache issues and documentation after analysis completes.
+    Pre-fetch and cache ALL dashboard data after analysis completes.
+    This ensures Files, Dashboard, and Documentation load INSTANTLY.
     
     Args:
         analysis_id: Analysis identifier
@@ -106,20 +107,42 @@ async def warm_cache_on_analysis_completion(
         user_id: User identifier
         github_token: GitHub access token
     """
+    import asyncio
+    
     try:
-        logger.info(f"🔥 Warming cache after analysis completion: {analysis_id}")
+        logger.info(f"🔥 FAST cache warming after analysis: {analysis_id}")
         
         repo_service = RepositoryService()
         github_service = create_github_service(github_token)
+        redis_service = get_redis_service()
         
-        # Pre-fetch issues (should be quick as they're now in DB)
-        issues = await repo_service.get_issues(analysis_id)
-        logger.info(f"✓ Pre-cached {len(issues)} issues")
-        
-        # Pre-fetch repository data
+        # Pre-fetch repository data FIRST (needed for other calls)
         repo = await repo_service.get_repository(repo_id, user_id)
-        if repo:
-            # Pre-fetch README
+        if not repo:
+            logger.warning(f"Repository not found: {repo_id}")
+            return False
+        
+        # Run ALL cache warming in parallel for maximum speed
+        async def cache_issues():
+            issues = await repo_service.get_issues(analysis_id)
+            logger.info(f"✓ Pre-cached {len(issues)} issues")
+            return issues
+        
+        async def cache_files():
+            try:
+                files = github_service.get_repository_files(
+                    repo["full_name"],
+                    repo["default_branch"]
+                )
+                # Cache files list in Redis for instant loading
+                redis_service.set(f"files:list:{repo_id}", files, ttl=3600)
+                logger.info(f"✓ Pre-cached {len(files)} files list")
+                return files
+            except Exception as e:
+                logger.warning(f"Failed to cache files: {e}")
+                return []
+        
+        async def cache_readme():
             try:
                 readme_variations = ["README.md", "readme.md", "Readme.md", "README"]
                 for readme_name in readme_variations:
@@ -131,19 +154,38 @@ async def warm_cache_on_analysis_completion(
                         )
                         if content:
                             logger.info(f"✓ Pre-cached README: {readme_name}")
-                            break
+                            return content
                     except:
                         continue
             except Exception as e:
-                logger.warning(f"Failed to pre-cache README: {e}")
+                logger.warning(f"Failed to cache README: {e}")
+            return None
         
-        # Invalidate and refresh analysis history
-        redis_service = get_redis_service()
-        redis_service.delete(f"db:history:{repo_id}")
-        history = await repo_service.get_analysis_history(repo_id)
-        logger.info(f"✓ Refreshed analysis history with {len(history)} records")
+        async def cache_history():
+            redis_service.delete(f"db:history:{repo_id}")
+            history = await repo_service.get_analysis_history(repo_id)
+            logger.info(f"✓ Pre-cached {len(history)} history records")
+            return history
         
-        logger.info(f"✓ Cache warming completed after analysis: {analysis_id}")
+        async def cache_analysis():
+            # Cache the analysis result itself
+            analysis = await repo_service.get_analysis(analysis_id)
+            if analysis:
+                redis_service.set(f"analysis:result:{repo_id}", analysis, ttl=3600)
+                logger.info(f"✓ Pre-cached analysis result")
+            return analysis
+        
+        # Execute ALL in parallel
+        await asyncio.gather(
+            cache_issues(),
+            cache_files(),
+            cache_readme(),
+            cache_history(),
+            cache_analysis(),
+            return_exceptions=True
+        )
+        
+        logger.info(f"✓ ⚡ FAST cache warming completed for: {repo['full_name']}")
         return True
     except Exception as e:
         logger.error(f"Cache warming failed for analysis {analysis_id}: {e}")

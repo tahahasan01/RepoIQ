@@ -1,4 +1,3 @@
-import { motion } from "framer-motion";
 import { useState, useEffect } from "react";
 import { useParams, useLocation } from "react-router-dom";
 import apiClient from "@/lib/api";
@@ -8,19 +7,19 @@ import {
   FileText,
   Download,
   RefreshCw,
-  GitBranch,
   Bug,
   AlertTriangle,
   Shield,
   Code,
   CheckCircle,
   FileDown,
+  GitBranch,
 } from "lucide-react";
 import { BugReport } from "@/services/scanService";
 import { generateFullAnalysisReport, generateBugReportPDF, AnalysisReport } from "@/services/reportService";
 
 export default function Documentation() {
-  const [activeTab, setActiveTab] = useState<"report" | "architecture" | "bugreport">("report");
+  const [activeTab, setActiveTab] = useState<"report" | "bugreport">("report");
   const [bugReports, setBugReports] = useState<BugReport[]>([]);
   const [analysisData, setAnalysisData] = useState<any>(null);
   const [repoData, setRepoData] = useState<any>(null);
@@ -33,22 +32,6 @@ export default function Documentation() {
   const queryParams = new URLSearchParams(location.search);
   const analysisId = queryParams.get('analysis_id');
   
-  // Architecture caching
-  const ARCH_CACHE_KEY = (id: string) => `repoiq_architecture_${id}`;
-  const getInitialArchitecture = () => {
-    if (!repoId) return '';
-    try {
-      const raw = sessionStorage.getItem(ARCH_CACHE_KEY(repoId));
-      if (!raw) return '';
-      const parsed = JSON.parse(raw);
-      if (Date.now() - (parsed.timestamp || 0) > 30 * 60 * 1000) return '';
-      return parsed.content || '';
-    } catch {}
-    return '';
-  };
-  const initialArchitecture = getInitialArchitecture();
-  const [architecture, setArchitecture] = useState(initialArchitecture);
-  const [isLoadingArchitecture, setIsLoadingArchitecture] = useState(!initialArchitecture);
 
   useEffect(() => {
     let mounted = true;
@@ -97,35 +80,7 @@ export default function Documentation() {
       }
     }
     
-    async function loadArchitecture() {
-      if (!repoId) return;
-      
-      if (initialArchitecture) {
-        setIsLoadingArchitecture(false);
-      }
-      
-      try {
-        const result = await apiClient.getArchitectureDiagram(repoId as string);
-        if (!mounted) return;
-        
-        if (result && result.diagram) {
-          setArchitecture(result.diagram);
-          try {
-            sessionStorage.setItem(
-              ARCH_CACHE_KEY(repoId as string),
-              JSON.stringify({ content: result.diagram, timestamp: Date.now() })
-            );
-          } catch {}
-        }
-      } catch (err) {
-        console.error('[Documentation] Failed to load architecture:', err);
-      } finally {
-        if (mounted) setIsLoadingArchitecture(false);
-      }
-    }
-    
     loadData();
-    loadArchitecture();
     
     return () => { mounted = false; };
   }, [repoId, analysisId]);
@@ -201,186 +156,213 @@ export default function Documentation() {
     <DashboardLayout>
       <div className="space-y-6">
         {/* Header */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between">
+        <div className="flex items-center justify-between pb-4 border-b border-border">
           <div>
-            <h1 className="text-2xl font-bold mb-2">Reports & Documentation</h1>
-            <p className="text-muted-foreground">Generate comprehensive reports for your repository analysis</p>
+            <h1 className="text-3xl font-semibold text-foreground mb-1">Reports & Documentation</h1>
+            <p className="text-sm text-muted-foreground">Generate professional PDF reports for stakeholder review and team collaboration</p>
           </div>
-        </motion.div>
+        </div>
 
         {/* Tabs */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="flex gap-2 border-b border-border">
+        <div className="flex gap-1 border-b border-border">
           {[
-            { id: "report", label: "Full Report", icon: FileText },
-            { id: "architecture", label: "Architecture", icon: GitBranch },
+            { id: "report", label: "Full Analysis Report", icon: FileText },
             { id: "bugreport", label: "Bug Report", icon: Bug }
           ].map((tab) => (
             <button 
               key={tab.id} 
               onClick={() => setActiveTab(tab.id as any)} 
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-all ${
                 activeTab === tab.id 
-                  ? "border-primary text-primary" 
-                  : "border-transparent text-muted-foreground hover:text-foreground"
+                  ? "border-primary text-primary bg-primary/5" 
+                  : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50"
               }`}
             >
-              <tab.icon className="h-4 w-4" />{tab.label}
+              <tab.icon className="h-4 w-4" />
+              {tab.label}
             </button>
           ))}
-        </motion.div>
+        </div>
 
         {/* Content */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="glass-panel rounded-xl overflow-hidden">
+        <div className="bg-card border border-border rounded-lg overflow-hidden">
           
           {/* FULL REPORT TAB */}
           {activeTab === "report" && (
             <>
-              <div className="p-4 border-b border-border flex items-center justify-between">
-                <h3 className="font-semibold">Comprehensive Analysis Report</h3>
+              <div className="px-6 py-4 border-b border-border bg-muted/30 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-foreground">Full Analysis Report</h2>
+                  <p className="text-xs text-muted-foreground mt-1">Comprehensive code quality assessment with detailed findings</p>
+                </div>
                 <Button 
                   onClick={handleDownloadReport} 
                   disabled={isLoadingReport || !analysisData}
                   className="gap-2"
+                  size="sm"
                 >
                   <Download className="h-4 w-4" />
-                  Download PDF Report
+                  Download PDF
                 </Button>
               </div>
 
-              <div className="p-6">
+              <div className="p-8">
                 {isLoadingReport ? (
-                  <div className="text-center py-12">
-                    <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-3 text-primary" />
-                    <p className="text-muted-foreground">Loading analysis data...</p>
+                  <div className="text-center py-16">
+                    <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-3 text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground">Loading analysis data...</p>
                   </div>
                 ) : !analysisData ? (
-                  <div className="text-center py-12">
-                    <AlertTriangle className="h-12 w-12 mx-auto mb-4 text-yellow-500" />
-                    <p className="text-lg font-medium mb-2">No Analysis Data Available</p>
-                    <p className="text-muted-foreground">Run an analysis first to generate reports.</p>
+                  <div className="text-center py-16">
+                    <AlertTriangle className="h-10 w-10 mx-auto mb-4 text-muted-foreground" />
+                    <p className="text-base font-medium mb-1 text-foreground">No Analysis Data Available</p>
+                    <p className="text-sm text-muted-foreground">Run an analysis first to generate reports.</p>
                   </div>
                 ) : (
-                  <div className="space-y-6">
+                  <div className="space-y-10">
                     {/* Scores Overview */}
-                    <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white p-6 rounded-xl">
-                      <h4 className="text-lg font-semibold mb-4 text-center">Analysis Scores</h4>
-                      <div className="grid grid-cols-5 gap-4 text-center">
-                        <div>
-                          <div className="text-3xl font-bold">{analysisData?.overall_score || 0}</div>
-                          <div className="text-xs opacity-80">Overall</div>
-                        </div>
-                        <div>
-                          <div className="text-3xl font-bold">{analysisData?.security_score || 0}</div>
-                          <div className="text-xs opacity-80">Security</div>
-                        </div>
-                        <div>
-                          <div className="text-3xl font-bold">{analysisData?.quality_score || 0}</div>
-                          <div className="text-xs opacity-80">Quality</div>
-                        </div>
-                        <div>
-                          <div className="text-3xl font-bold">{analysisData?.architecture_score || 0}</div>
-                          <div className="text-xs opacity-80">Architecture</div>
-                        </div>
-                        <div>
-                          <div className="text-3xl font-bold">{analysisData?.documentation_score || 0}</div>
-                          <div className="text-xs opacity-80">Documentation</div>
-                        </div>
+                    <div>
+                      <h3 className="text-base font-semibold text-foreground mb-4 uppercase tracking-wide">Analysis Scores</h3>
+                      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                        {[
+                          { label: "Overall", score: analysisData?.overall_score || 0, icon: CheckCircle },
+                          { label: "Security", score: analysisData?.security_score || 0, icon: Shield },
+                          { label: "Quality", score: analysisData?.quality_score || 0, icon: Code },
+                          { label: "Architecture", score: analysisData?.architecture_score || 0, icon: GitBranch },
+                          { label: "Documentation", score: analysisData?.documentation_score || 0, icon: FileText },
+                        ].map((item) => {
+                          const Icon = item.icon;
+                          const scoreColor = item.score >= 80 ? "text-green-600" : item.score >= 60 ? "text-amber-600" : "text-red-600";
+                          const borderColor = item.score >= 80 ? "border-green-200" : item.score >= 60 ? "border-amber-200" : "border-red-200";
+                          const bgColor = item.score >= 80 ? "bg-green-50 dark:bg-green-950/20" : item.score >= 60 ? "bg-amber-50 dark:bg-amber-950/20" : "bg-red-50 dark:bg-red-950/20";
+                          
+                          return (
+                            <div
+                              key={item.label}
+                              className={`p-5 border ${borderColor} ${bgColor} rounded-lg`}
+                            >
+                              <div className="flex items-center justify-between mb-3">
+                                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{item.label}</span>
+                                <Icon className="h-4 w-4 text-muted-foreground" />
+                              </div>
+                              <div className={`text-3xl font-bold mb-2 ${scoreColor}`}>
+                                {item.score}
+                              </div>
+                              <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full ${
+                                    item.score >= 80 ? "bg-green-600" : 
+                                    item.score >= 60 ? "bg-amber-600" : 
+                                    "bg-red-600"
+                                  }`}
+                                  style={{ width: `${item.score}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
 
                     {/* Issue Summary */}
-                    <div className="bg-muted/50 p-6 rounded-xl border">
-                      <h4 className="text-lg font-semibold mb-4">Issues Summary</h4>
-                      <div className="grid grid-cols-5 gap-4 text-center">
-                        <div className="p-4 bg-background rounded-lg border">
-                          <div className="text-2xl font-bold text-blue-600">{stats.total}</div>
-                          <div className="text-xs text-muted-foreground">Total</div>
-                        </div>
-                        <div className="p-4 bg-background rounded-lg border">
-                          <div className="text-2xl font-bold text-red-600">{stats.critical}</div>
-                          <div className="text-xs text-muted-foreground">Critical</div>
-                        </div>
-                        <div className="p-4 bg-background rounded-lg border">
-                          <div className="text-2xl font-bold text-orange-500">{stats.high}</div>
-                          <div className="text-xs text-muted-foreground">High</div>
-                        </div>
-                        <div className="p-4 bg-background rounded-lg border">
-                          <div className="text-2xl font-bold text-yellow-600">{stats.medium}</div>
-                          <div className="text-xs text-muted-foreground">Medium</div>
-                        </div>
-                        <div className="p-4 bg-background rounded-lg border">
-                          <div className="text-2xl font-bold text-green-600">{stats.low}</div>
-                          <div className="text-xs text-muted-foreground">Low</div>
-                        </div>
+                    <div>
+                      <h3 className="text-base font-semibold text-foreground mb-4 uppercase tracking-wide">Issues Summary</h3>
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                        {[
+                          { label: "Total Issues", count: stats.total, color: "text-blue-600", border: "border-blue-200", bg: "bg-blue-50 dark:bg-blue-950/20" },
+                          { label: "Critical", count: stats.critical, color: "text-red-600", border: "border-red-200", bg: "bg-red-50 dark:bg-red-950/20" },
+                          { label: "High", count: stats.high, color: "text-orange-600", border: "border-orange-200", bg: "bg-orange-50 dark:bg-orange-950/20" },
+                          { label: "Medium", count: stats.medium, color: "text-amber-600", border: "border-amber-200", bg: "bg-amber-50 dark:bg-amber-950/20" },
+                          { label: "Low", count: stats.low, color: "text-green-600", border: "border-green-200", bg: "bg-green-50 dark:bg-green-950/20" },
+                        ].map((stat) => (
+                          <div
+                            key={stat.label}
+                            className={`p-5 border ${stat.border} ${stat.bg} rounded-lg text-center`}
+                          >
+                            <div className={`text-2xl font-bold mb-1 ${stat.color}`}>
+                              {stat.count}
+                            </div>
+                            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                              {stat.label}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
 
-                    {/* Report Contents Preview */}
-                    <div className="border rounded-xl overflow-hidden">
-                      <div className="p-4 bg-muted/50 border-b">
-                        <h4 className="font-semibold">Report Contents</h4>
-                      </div>
-                      <div className="p-4 space-y-3">
-                        <div className="flex items-center gap-3 p-3 bg-muted/30 rounded-lg">
-                          <Shield className="h-5 w-5 text-red-500" />
-                          <span>Security Vulnerabilities</span>
-                          <span className="ml-auto text-sm text-muted-foreground">
-                            {analysisData?.issues?.filter((i: any) => i.agent_type === 'security' || i.category?.toLowerCase().includes('security')).length || 0} issues
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3 p-3 bg-muted/30 rounded-lg">
-                          <Code className="h-5 w-5 text-blue-500" />
-                          <span>Code Quality Issues</span>
-                          <span className="ml-auto text-sm text-muted-foreground">
-                            {analysisData?.issues?.filter((i: any) => i.agent_type === 'quality').length || 0} issues
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3 p-3 bg-muted/30 rounded-lg">
-                          <GitBranch className="h-5 w-5 text-purple-500" />
-                          <span>Architecture Issues</span>
-                          <span className="ml-auto text-sm text-muted-foreground">
-                            {analysisData?.issues?.filter((i: any) => i.agent_type === 'architecture').length || 0} issues
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3 p-3 bg-muted/30 rounded-lg">
-                          <CheckCircle className="h-5 w-5 text-green-500" />
-                          <span>Best Practice Suggestions</span>
-                          <span className="ml-auto text-sm text-muted-foreground">
-                            {analysisData?.issues?.filter((i: any) => i.category?.toLowerCase().includes('practice')).length || 0} suggestions
-                          </span>
-                        </div>
+                    {/* Report Contents */}
+                    <div>
+                      <h3 className="text-base font-semibold text-foreground mb-4 uppercase tracking-wide">Report Contents</h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {[
+                          { 
+                            label: "Security Vulnerabilities", 
+                            count: analysisData?.issues?.filter((i: any) => i.agent_type === 'security' || i.category?.toLowerCase().includes('security')).length || 0,
+                            icon: Shield
+                          },
+                          { 
+                            label: "Code Quality Issues", 
+                            count: analysisData?.issues?.filter((i: any) => i.agent_type === 'quality').length || 0,
+                            icon: Code
+                          },
+                          { 
+                            label: "Architecture Issues", 
+                            count: analysisData?.issues?.filter((i: any) => i.agent_type === 'architecture').length || 0,
+                            icon: GitBranch
+                          },
+                          { 
+                            label: "Best Practice Suggestions", 
+                            count: analysisData?.issues?.filter((i: any) => i.category?.toLowerCase().includes('practice')).length || 0,
+                            icon: CheckCircle
+                          },
+                        ].map((item) => {
+                          const Icon = item.icon;
+                          return (
+                            <div
+                              key={item.label}
+                              className="p-5 border border-border rounded-lg hover:border-primary/50 transition-colors"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <div className="p-2 rounded bg-muted">
+                                    <Icon className="h-5 w-5 text-muted-foreground" />
+                                  </div>
+                                  <div>
+                                    <h4 className="text-sm font-semibold text-foreground">{item.label}</h4>
+                                    <p className="text-xs text-muted-foreground mt-0.5">
+                                      {item.count === 1 ? '1 issue' : `${item.count} issues`}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="text-xl font-bold text-foreground">
+                                  {item.count}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
 
-                    <div className="text-center text-sm text-muted-foreground">
-                      <p>Click "Download PDF Report" to generate a comprehensive report with all issues, suggestions, and recommendations.</p>
-                      <p className="mt-1">The report is formatted for easy sharing with your development team.</p>
+                    {/* Download Section */}
+                    <div className="pt-6 border-t border-border">
+                      <div className="flex items-center justify-between p-6 bg-muted/50 rounded-lg border border-border">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground mb-1">Ready to Download</p>
+                          <p className="text-xs text-muted-foreground">
+                            Generate a professional PDF report formatted for stakeholder review and team collaboration.
+                          </p>
+                        </div>
+                        <Button 
+                          onClick={handleDownloadReport}
+                          className="gap-2"
+                          size="sm"
+                        >
+                          <Download className="h-4 w-4" />
+                          Download Report
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-
-          {/* ARCHITECTURE TAB */}
-          {activeTab === "architecture" && (
-            <>
-              <div className="p-4 border-b border-border">
-                <h3 className="font-semibold">Architecture Diagram</h3>
-              </div>
-              <div className="p-6 flex justify-center">
-                {isLoadingArchitecture ? (
-                  <div className="flex flex-col items-center gap-4 py-12">
-                    <RefreshCw className="h-8 w-8 animate-spin text-primary" />
-                    <p className="text-muted-foreground">Generating architecture diagram from file structure...</p>
-                  </div>
-                ) : architecture ? (
-                  <pre className="text-sm font-mono bg-muted/30 p-6 rounded-lg overflow-x-auto whitespace-pre-wrap max-w-full">{architecture}</pre>
-                ) : (
-                  <div className="text-center py-12 text-muted-foreground">
-                    <GitBranch className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>No architecture diagram available.</p>
-                    <p className="text-sm mt-2">Run an analysis to generate the diagram.</p>
                   </div>
                 )}
               </div>
@@ -390,93 +372,125 @@ export default function Documentation() {
           {/* BUG REPORT TAB */}
           {activeTab === "bugreport" && (
             <>
-              <div className="p-4 border-b border-border flex items-center justify-between">
-                <h3 className="font-semibold">Bug Report</h3>
+              <div className="px-6 py-4 border-b border-border bg-muted/30 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-foreground">Bug Report</h2>
+                  <p className="text-xs text-muted-foreground mt-1">Detailed bug tracking report with severity classification</p>
+                </div>
                 <Button 
                   onClick={handleDownloadBugReport}
                   disabled={bugReports.length === 0}
                   className="gap-2"
+                  size="sm"
                 >
                   <FileDown className="h-4 w-4" />
-                  Download Bug Report PDF
+                  Download PDF
                 </Button>
               </div>
 
-              <div className="p-6">
+              <div className="p-8">
                 {isLoadingReport ? (
-                  <div className="text-center py-12">
-                    <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-3 text-primary" />
-                    <p className="text-muted-foreground">Loading bug reports...</p>
+                  <div className="text-center py-16">
+                    <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-3 text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground">Loading bug reports...</p>
                   </div>
                 ) : bugReports.length === 0 ? (
-                  <div className="text-center py-12">
-                    <CheckCircle className="h-12 w-12 mx-auto mb-4 text-green-500" />
-                    <p className="text-lg font-medium mb-2">No Bugs Found!</p>
-                    <p className="text-muted-foreground">Great job! Your code analysis found no issues.</p>
+                  <div className="text-center py-16">
+                    <CheckCircle className="h-10 w-10 mx-auto mb-4 text-muted-foreground" />
+                    <p className="text-base font-medium mb-1 text-foreground">No Bugs Found</p>
+                    <p className="text-sm text-muted-foreground">Code analysis completed with no issues detected.</p>
                   </div>
                 ) : (
-                  <div className="space-y-4">
+                  <div className="space-y-6">
                     {/* Stats Bar */}
-                    <div className="grid grid-cols-5 gap-4 mb-6">
-                      <div className="text-center p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
-                        <div className="text-2xl font-bold text-blue-600">{bugReports.length}</div>
-                        <div className="text-xs text-muted-foreground">Total Bugs</div>
-                      </div>
-                      <div className="text-center p-4 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
-                        <div className="text-2xl font-bold text-red-600">{stats.critical}</div>
-                        <div className="text-xs text-muted-foreground">Critical</div>
-                      </div>
-                      <div className="text-center p-4 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-200 dark:border-orange-800">
-                        <div className="text-2xl font-bold text-orange-500">{stats.high}</div>
-                        <div className="text-xs text-muted-foreground">High</div>
-                      </div>
-                      <div className="text-center p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg border border-yellow-200 dark:border-yellow-800">
-                        <div className="text-2xl font-bold text-yellow-600">{stats.medium}</div>
-                        <div className="text-xs text-muted-foreground">Medium</div>
-                      </div>
-                      <div className="text-center p-4 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
-                        <div className="text-2xl font-bold text-green-600">{stats.low}</div>
-                        <div className="text-xs text-muted-foreground">Low</div>
+                    <div>
+                      <h3 className="text-base font-semibold text-foreground mb-4 uppercase tracking-wide">Bug Statistics</h3>
+                      <div className="grid grid-cols-5 gap-4">
+                        {[
+                          { label: "Total", count: bugReports.length, color: "text-blue-600", border: "border-blue-200", bg: "bg-blue-50 dark:bg-blue-950/20" },
+                          { label: "Critical", count: stats.critical, color: "text-red-600", border: "border-red-200", bg: "bg-red-50 dark:bg-red-950/20" },
+                          { label: "High", count: stats.high, color: "text-orange-600", border: "border-orange-200", bg: "bg-orange-50 dark:bg-orange-950/20" },
+                          { label: "Medium", count: stats.medium, color: "text-amber-600", border: "border-amber-200", bg: "bg-amber-50 dark:bg-amber-950/20" },
+                          { label: "Low", count: stats.low, color: "text-green-600", border: "border-green-200", bg: "bg-green-50 dark:bg-green-950/20" },
+                        ].map((stat) => (
+                          <div
+                            key={stat.label}
+                            className={`p-5 border ${stat.border} ${stat.bg} rounded-lg text-center`}
+                          >
+                            <div className={`text-2xl font-bold mb-1 ${stat.color}`}>
+                              {stat.count}
+                            </div>
+                            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                              {stat.label}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
 
                     {/* Bug List */}
-                    <div className="space-y-3 max-h-[500px] overflow-y-auto">
-                      {bugReports.slice(0, 20).map((bug, index) => (
-                        <div key={bug.id} className="border rounded-lg overflow-hidden">
-                          <div className="p-3 bg-muted/50 border-b flex items-start justify-between gap-4">
-                            <div>
-                              <div className="font-medium text-sm">#{index + 1}: {bug.title}</div>
-                              <div className="text-xs text-muted-foreground mt-1">
-                                {bug.file_path && <span>File: {bug.file_path}</span>}
-                                {bug.line_number && <span className="ml-2">Line: {bug.line_number}</span>}
+                    <div>
+                      <h3 className="text-base font-semibold text-foreground mb-4 uppercase tracking-wide">Bug Details</h3>
+                      <div className="space-y-3 max-h-[500px] overflow-y-auto">
+                        {bugReports.slice(0, 20).map((bug, index) => (
+                          <div key={bug.id} className="border border-border rounded-lg overflow-hidden">
+                            <div className="px-4 py-3 bg-muted/30 border-b border-border flex items-start justify-between gap-4">
+                              <div className="flex-1">
+                                <div className="font-medium text-sm text-foreground mb-1">
+                                  #{index + 1}: {bug.title}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {bug.file_path && <span className="font-mono">{bug.file_path}</span>}
+                                  {bug.line_number && <span className="ml-2">Line {bug.line_number}</span>}
+                                  {bug.category && <span className="ml-2">• {bug.category}</span>}
+                                </div>
                               </div>
+                              <span className={`px-2.5 py-1 rounded text-xs font-semibold text-white whitespace-nowrap ${
+                                bug.severity === 'critical' ? 'bg-red-600' :
+                                bug.severity === 'high' ? 'bg-orange-600' :
+                                bug.severity === 'medium' ? 'bg-amber-600' : 'bg-green-600'
+                              }`}>
+                                {bug.severity?.toUpperCase()}
+                              </span>
                             </div>
-                            <span className={`px-2 py-1 rounded text-xs font-bold text-white ${
-                              bug.severity === 'critical' ? 'bg-red-600' :
-                              bug.severity === 'high' ? 'bg-orange-500' :
-                              bug.severity === 'medium' ? 'bg-yellow-600' : 'bg-green-600'
-                            }`}>
-                              {bug.severity?.toUpperCase()}
-                            </span>
+                            <div className="p-4">
+                              <pre className="whitespace-pre-wrap font-mono text-xs bg-muted/50 p-3 rounded border border-border text-foreground">{bug.details}</pre>
+                            </div>
                           </div>
-                          <div className="p-3 text-sm">
-                            <pre className="whitespace-pre-wrap font-mono text-xs bg-muted/30 p-3 rounded">{bug.details}</pre>
+                        ))}
+                        {bugReports.length > 20 && (
+                          <div className="text-center text-sm text-muted-foreground py-4 border-t border-border pt-6">
+                            Showing 20 of {bugReports.length} bugs. Download the full report to see all issues.
                           </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Download Section */}
+                    <div className="pt-6 border-t border-border">
+                      <div className="flex items-center justify-between p-6 bg-muted/50 rounded-lg border border-border">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground mb-1">Ready to Download</p>
+                          <p className="text-xs text-muted-foreground">
+                            Generate a professional bug report PDF for your development team.
+                          </p>
                         </div>
-                      ))}
-                      {bugReports.length > 20 && (
-                        <div className="text-center text-sm text-muted-foreground py-4">
-                          ... and {bugReports.length - 20} more bugs. Download the full report to see all.
-                        </div>
-                      )}
+                        <Button 
+                          onClick={handleDownloadBugReport}
+                          className="gap-2"
+                          size="sm"
+                        >
+                          <FileDown className="h-4 w-4" />
+                          Download Report
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )}
               </div>
             </>
           )}
-        </motion.div>
+        </div>
       </div>
     </DashboardLayout>
   );

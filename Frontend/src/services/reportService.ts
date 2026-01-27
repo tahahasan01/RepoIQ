@@ -75,10 +75,12 @@ function getScoreColor(score: number): string {
   return '#dc2626';
 }
 
-// Generate comprehensive PDF report
+// Generate comprehensive PDF report - Print-Ready Format
 export function generateFullAnalysisReport(report: AnalysisReport): void {
   const timestamp = new Date().toLocaleString();
-  const dateStr = new Date().toLocaleDateString();
+  const dateStr = new Date().toLocaleDateString('en-US', { 
+    year: 'numeric', month: 'long', day: 'numeric' 
+  });
   
   // Group issues by category
   const securityIssues = report.issues.filter(i => 
@@ -102,456 +104,646 @@ export function generateFullAnalysisReport(report: AnalysisReport): void {
     !architectureIssues.includes(i) && !bestPracticeIssues.includes(i)
   );
 
+  // Generate issue sections HTML
+  const generateIssueSection = (issues: any[], title: string, icon: string, colorClass: string) => {
+    if (issues.length === 0) {
+      return `
+        <div class="section-card no-issues-card">
+          <div class="section-header ${colorClass}">
+            <span class="section-icon">${icon}</span>
+            <span class="section-title">${title}</span>
+            <span class="section-count">0 issues</span>
+          </div>
+          <div class="no-issues-content">
+            <span class="check-icon">✓</span>
+            <p>No issues detected in this category</p>
+          </div>
+        </div>
+      `;
+    }
+    
+    return `
+      <div class="section-card">
+        <div class="section-header ${colorClass}">
+          <span class="section-icon">${icon}</span>
+          <span class="section-title">${title}</span>
+          <span class="section-count">${issues.length} issue${issues.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="issues-list">
+          ${issues.map((issue, idx) => `
+            <div class="issue-item">
+              <div class="issue-number">${idx + 1}</div>
+              <div class="issue-content">
+                <div class="issue-location">
+                  <span class="file-name">${escapeHtml(issue.file)}</span>
+                  ${issue.line ? `<span class="line-number">Line ${issue.line}</span>` : ''}
+                  ${getSeverityBadge(issue.severity)}
+                </div>
+                <div class="issue-description">${escapeHtml(issue.description)}</div>
+                ${issue.suggestion ? `
+                  <div class="issue-suggestion">
+                    <span class="suggestion-label">Recommendation:</span>
+                    ${escapeHtml(issue.suggestion)}
+                  </div>
+                ` : ''}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  };
+
   const html = `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Repository Analysis Report - ${escapeHtml(report.repository.name)}</title>
   <style>
+    /* ===== Print-Optimized Styles ===== */
+    @page {
+      size: A4;
+      margin: 15mm 15mm 20mm 15mm;
+    }
+    
     @media print {
-      body { margin: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .page-break { page-break-before: always; }
+      html, body {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        color-adjust: exact !important;
+      }
+      .page { page-break-after: always; }
+      .page:last-child { page-break-after: avoid; }
       .no-break { page-break-inside: avoid; }
+      .page-break-before { page-break-before: always; }
     }
-    * { box-sizing: border-box; }
-    body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      line-height: 1.6;
+    
+    /* ===== Base Styles ===== */
+    * {
+      box-sizing: border-box;
       margin: 0;
-      padding: 20mm;
-      color: #1f2937;
-      background: #fff;
+      padding: 0;
     }
     
-    /* Header */
-    .report-header {
-      text-align: center;
-      padding: 30px 0;
-      border-bottom: 3px solid #2563eb;
-      margin-bottom: 30px;
+    body {
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif;
+      font-size: 11pt;
+      line-height: 1.5;
+      color: #1a1a1a;
+      background: white;
     }
-    .report-header h1 {
-      font-size: 28px;
+    
+    .page {
+      width: 100%;
+      min-height: 100vh;
+      padding: 0;
+      background: white;
+    }
+    
+    /* ===== Cover Page ===== */
+    .cover-page {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      text-align: center;
+      padding: 40px;
+    }
+    
+    .cover-logo {
+      font-size: 48pt;
+      margin-bottom: 20px;
+    }
+    
+    .cover-title {
+      font-size: 28pt;
+      font-weight: 700;
       color: #1e40af;
-      margin: 0 0 10px 0;
       text-transform: uppercase;
-      letter-spacing: 2px;
-    }
-    .report-header .repo-name {
-      font-size: 24px;
-      color: #374151;
-      margin: 10px 0;
-      font-weight: 600;
-    }
-    .report-header .meta {
-      font-size: 12px;
-      color: #6b7280;
+      letter-spacing: 3px;
+      margin-bottom: 10px;
     }
     
-    /* Scores Section */
-    .scores-section {
-      background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
-      color: white;
-      padding: 25px;
-      border-radius: 12px;
+    .cover-subtitle {
+      font-size: 14pt;
+      color: #64748b;
+      margin-bottom: 50px;
+    }
+    
+    .cover-repo-name {
+      font-size: 22pt;
+      font-weight: 600;
+      color: #0f172a;
+      padding: 20px 40px;
+      border: 3px solid #1e40af;
+      border-radius: 8px;
       margin-bottom: 30px;
     }
-    .scores-section h2 {
-      margin: 0 0 20px 0;
-      font-size: 18px;
-      text-align: center;
+    
+    .cover-meta {
+      font-size: 11pt;
+      color: #64748b;
+      line-height: 1.8;
+    }
+    
+    .cover-meta strong {
+      color: #374151;
+    }
+    
+    .cover-date {
+      margin-top: 60px;
+      margin-bottom: 50px;
+      font-size: 10pt;
+      color: #94a3b8;
+    }
+    
+    .cover-footer {
+      margin-top: auto;
+      padding-top: 30px;
+      border-top: 1px solid #e2e8f0;
+      font-size: 9pt;
+      color: #94a3b8;
+      width: 100%;
+    }
+    
+    .cover-footer .footer-logo {
+      font-size: 10pt;
+      font-weight: 600;
+      color: #64748b;
+      margin-bottom: 3px;
+    }
+    
+    /* ===== Executive Summary Page ===== */
+    .summary-page {
+      padding: 40px;
+    }
+    
+    .page-title {
+      font-size: 18pt;
+      font-weight: 700;
+      color: #1e40af;
+      border-bottom: 3px solid #1e40af;
+      padding-bottom: 10px;
+      margin-bottom: 30px;
+    }
+    
+    /* Score Cards */
+    .scores-container {
+      background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+      border-radius: 12px;
+      padding: 30px;
+      margin-bottom: 30px;
+      color: white;
+    }
+    
+    .scores-title {
+      font-size: 12pt;
       text-transform: uppercase;
       letter-spacing: 1px;
+      opacity: 0.9;
+      margin-bottom: 20px;
+      text-align: center;
     }
+    
     .scores-grid {
       display: flex;
-      justify-content: space-around;
-      flex-wrap: wrap;
+      justify-content: space-between;
       gap: 15px;
     }
-    .score-item {
+    
+    .score-card {
+      flex: 1;
       text-align: center;
-      min-width: 100px;
-    }
-    .score-value {
-      font-size: 36px;
-      font-weight: bold;
-    }
-    .score-label {
-      font-size: 12px;
-      opacity: 0.9;
-      text-transform: uppercase;
+      padding: 15px 10px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 8px;
     }
     
-    /* Summary Section */
-    .summary-section {
-      background: #f8fafc;
-      border: 2px solid #e2e8f0;
-      padding: 20px;
-      border-radius: 12px;
-      margin-bottom: 30px;
+    .score-value {
+      font-size: 32pt;
+      font-weight: 700;
+      line-height: 1;
     }
-    .summary-section h2 {
-      margin: 0 0 15px 0;
-      color: #1e40af;
-      font-size: 18px;
-      border-bottom: 2px solid #1e40af;
-      padding-bottom: 10px;
+    
+    .score-label {
+      font-size: 9pt;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      opacity: 0.9;
+      margin-top: 8px;
     }
+    
+    /* Issues Summary */
     .summary-grid {
       display: flex;
-      justify-content: space-around;
-      flex-wrap: wrap;
       gap: 15px;
-    }
-    .summary-item {
-      text-align: center;
-      padding: 15px 20px;
-      background: white;
-      border-radius: 8px;
-      border: 1px solid #e2e8f0;
-      min-width: 100px;
-    }
-    .summary-item .count {
-      font-size: 28px;
-      font-weight: bold;
-    }
-    .summary-item .label {
-      font-size: 11px;
-      color: #6b7280;
-      text-transform: uppercase;
-    }
-    
-    /* Section Headers */
-    .section {
       margin-bottom: 30px;
     }
-    .section h2 {
-      color: #1e40af;
-      font-size: 20px;
-      margin: 0 0 15px 0;
-      padding: 10px 15px;
-      background: #eff6ff;
-      border-left: 4px solid #2563eb;
-      border-radius: 0 8px 8px 0;
-    }
-    .section-count {
-      float: right;
-      font-size: 14px;
-      color: #6b7280;
-      font-weight: normal;
-    }
     
-    /* Issue Cards */
-    .issue-card {
-      border: 1px solid #e2e8f0;
-      border-radius: 8px;
-      margin-bottom: 12px;
-      overflow: hidden;
-      page-break-inside: avoid;
-    }
-    .issue-header {
-      background: #f8fafc;
-      padding: 12px 15px;
-      border-bottom: 1px solid #e2e8f0;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .issue-file {
-      font-family: 'Consolas', 'Monaco', monospace;
-      font-size: 12px;
-      color: #374151;
-      font-weight: 600;
-    }
-    .issue-line {
-      font-size: 11px;
-      color: #6b7280;
-      margin-left: 10px;
-    }
-    .issue-body {
-      padding: 15px;
-    }
-    .issue-description {
-      font-size: 14px;
-      color: #1f2937;
-      margin-bottom: 10px;
-      line-height: 1.5;
-    }
-    .issue-suggestion {
-      background: #f0fdf4;
-      border: 1px solid #86efac;
-      border-radius: 6px;
-      padding: 10px 12px;
-      font-size: 13px;
-      color: #166534;
-    }
-    .issue-suggestion::before {
-      content: "💡 Suggestion: ";
-      font-weight: bold;
-    }
-    
-    /* No Issues Message */
-    .no-issues {
+    .summary-card {
+      flex: 1;
       text-align: center;
-      padding: 30px;
-      color: #16a34a;
-      background: #f0fdf4;
+      padding: 20px 15px;
       border-radius: 8px;
-      border: 1px solid #86efac;
-    }
-    .no-issues::before {
-      content: "✅ ";
+      border: 2px solid;
     }
     
-    /* Footer */
-    .report-footer {
-      margin-top: 40px;
-      padding-top: 20px;
-      border-top: 2px solid #e2e8f0;
-      text-align: center;
-      color: #6b7280;
-      font-size: 11px;
+    .summary-card.total { border-color: #3b82f6; background: #eff6ff; }
+    .summary-card.critical { border-color: #dc2626; background: #fef2f2; }
+    .summary-card.high { border-color: #ea580c; background: #fff7ed; }
+    .summary-card.medium { border-color: #ca8a04; background: #fefce8; }
+    .summary-card.low { border-color: #16a34a; background: #f0fdf4; }
+    .summary-card.files { border-color: #6b7280; background: #f9fafb; }
+    
+    .summary-value {
+      font-size: 28pt;
+      font-weight: 700;
+      line-height: 1;
     }
-    .report-footer .logo {
-      font-size: 16px;
-      font-weight: bold;
-      color: #2563eb;
-      margin-bottom: 5px;
+    
+    .summary-card.total .summary-value { color: #1d4ed8; }
+    .summary-card.critical .summary-value { color: #dc2626; }
+    .summary-card.high .summary-value { color: #ea580c; }
+    .summary-card.medium .summary-value { color: #ca8a04; }
+    .summary-card.low .summary-value { color: #16a34a; }
+    .summary-card.files .summary-value { color: #4b5563; }
+    
+    .summary-label {
+      font-size: 9pt;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-top: 8px;
     }
     
     /* Table of Contents */
-    .toc {
+    .toc-box {
       background: #f8fafc;
-      padding: 20px;
-      border-radius: 12px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 25px;
+    }
+    
+    .toc-title {
+      font-size: 12pt;
+      font-weight: 600;
+      color: #1e40af;
+      margin-bottom: 15px;
+    }
+    
+    .toc-list {
+      list-style: none;
+    }
+    
+    .toc-item {
+      padding: 8px 0;
+      border-bottom: 1px dotted #e2e8f0;
+      display: flex;
+      justify-content: space-between;
+      font-size: 10pt;
+    }
+    
+    .toc-item:last-child {
+      border-bottom: none;
+    }
+    
+    .toc-item-name {
+      color: #374151;
+    }
+    
+    .toc-item-count {
+      color: #64748b;
+      font-weight: 500;
+    }
+    
+    /* ===== Issues Pages ===== */
+    .issues-page {
+      padding: 40px;
+    }
+    
+    .section-card {
       margin-bottom: 30px;
       border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      overflow: hidden;
     }
-    .toc h2 {
-      margin: 0 0 15px 0;
+    
+    .section-header {
+      padding: 15px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: white;
+    }
+    
+    .section-header.security { background: linear-gradient(90deg, #dc2626, #f87171); }
+    .section-header.quality { background: linear-gradient(90deg, #2563eb, #60a5fa); }
+    .section-header.architecture { background: linear-gradient(90deg, #7c3aed, #a78bfa); }
+    .section-header.bestpractice { background: linear-gradient(90deg, #16a34a, #4ade80); }
+    .section-header.other { background: linear-gradient(90deg, #64748b, #94a3b8); }
+    
+    .section-icon {
+      font-size: 16pt;
+    }
+    
+    .section-title {
+      flex: 1;
+      font-size: 13pt;
+      font-weight: 600;
+    }
+    
+    .section-count {
+      font-size: 10pt;
+      opacity: 0.9;
+    }
+    
+    .issues-list {
+      padding: 15px;
+    }
+    
+    .issue-item {
+      display: flex;
+      gap: 15px;
+      padding: 15px;
+      background: #f8fafc;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      page-break-inside: avoid;
+    }
+    
+    .issue-item:last-child {
+      margin-bottom: 0;
+    }
+    
+    .issue-number {
+      width: 28px;
+      height: 28px;
+      background: #e2e8f0;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9pt;
+      font-weight: 600;
+      color: #64748b;
+      flex-shrink: 0;
+    }
+    
+    .issue-content {
+      flex: 1;
+    }
+    
+    .issue-location {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    
+    .file-name {
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 9pt;
+      font-weight: 600;
       color: #1e40af;
-      font-size: 16px;
+      background: #eff6ff;
+      padding: 2px 8px;
+      border-radius: 4px;
     }
-    .toc ul {
-      margin: 0;
-      padding-left: 20px;
+    
+    .line-number {
+      font-size: 9pt;
+      color: #64748b;
     }
-    .toc li {
-      margin: 8px 0;
-      font-size: 13px;
+    
+    .issue-description {
+      font-size: 10pt;
+      color: #374151;
+      line-height: 1.5;
+      margin-bottom: 8px;
+    }
+    
+    .issue-suggestion {
+      font-size: 9pt;
+      color: #166534;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 4px;
+      padding: 8px 12px;
+    }
+    
+    .suggestion-label {
+      font-weight: 600;
+      margin-right: 5px;
+    }
+    
+    /* Severity Badges */
+    .severity-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 8pt;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: white;
+    }
+    
+    .severity-critical { background: #dc2626; }
+    .severity-high { background: #ea580c; }
+    .severity-medium { background: #ca8a04; }
+    .severity-low { background: #16a34a; }
+    
+    /* No Issues Card */
+    .no-issues-card .no-issues-content {
+      padding: 40px;
+      text-align: center;
+      color: #16a34a;
+    }
+    
+    .check-icon {
+      display: block;
+      font-size: 24pt;
+      margin-bottom: 10px;
+    }
+    
+    /* ===== Footer ===== */
+    .page-footer {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid #e2e8f0;
+      text-align: center;
+      font-size: 8pt;
+      color: #94a3b8;
+    }
+    
+    .footer-logo {
+      font-size: 11pt;
+      font-weight: 700;
+      color: #1e40af;
+      margin-bottom: 5px;
     }
   </style>
 </head>
 <body>
-  <!-- Header -->
-  <div class="report-header">
-    <h1>📊 Repository Analysis Report</h1>
-    <div class="repo-name">${escapeHtml(report.repository.fullName || report.repository.name)}</div>
-    <div class="meta">
-      ${report.repository.language ? `Language: ${escapeHtml(report.repository.language)} | ` : ''}
-      ${report.repository.branch ? `Branch: ${escapeHtml(report.repository.branch)} | ` : ''}
-      Generated: ${timestamp}
+  <!-- ===== PAGE 1: Cover Page ===== -->
+  <div class="page cover-page">
+    <div class="cover-logo">📊</div>
+    <div class="cover-title">Repository Analysis Report</div>
+    <div class="cover-subtitle">Comprehensive Code Quality Assessment</div>
+    
+    <div class="cover-repo-name">${escapeHtml(report.repository.fullName || report.repository.name)}</div>
+    
+    <div class="cover-meta">
+      ${report.repository.language ? `<div><strong>Language:</strong> ${escapeHtml(report.repository.language)}</div>` : ''}
+      ${report.repository.branch ? `<div><strong>Branch:</strong> ${escapeHtml(report.repository.branch)}</div>` : ''}
+      <div><strong>Total Issues Found:</strong> ${report.summary.totalIssues}</div>
+      <div><strong>Files Analyzed:</strong> ${report.summary.filesAnalyzed}</div>
+    </div>
+    
+    <div class="cover-date">
+      <div>Generated on ${dateStr}</div>
+      <div>${timestamp}</div>
+    </div>
+    
+    <div class="cover-footer">
+      <div class="footer-logo">⚡ RepoIQ</div>
+      Automated Code Analysis Platform
     </div>
   </div>
 
-  <!-- Table of Contents -->
-  <div class="toc no-break">
-    <h2>📋 Table of Contents</h2>
-    <ul>
-      <li>Analysis Scores Overview</li>
-      <li>Issues Summary</li>
-      <li>🔒 Security Vulnerabilities (${securityIssues.length})</li>
-      <li>📝 Code Quality Issues (${qualityIssues.length})</li>
-      <li>🏗️ Architecture Issues (${architectureIssues.length})</li>
-      <li>✅ Best Practices (${bestPracticeIssues.length})</li>
-      ${otherIssues.length > 0 ? `<li>📌 Other Issues (${otherIssues.length})</li>` : ''}
-    </ul>
-  </div>
-
-  <!-- Scores Section -->
-  <div class="scores-section no-break">
-    <h2>📈 Analysis Scores</h2>
-    <div class="scores-grid">
-      <div class="score-item">
-        <div class="score-value">${report.scores.overall}</div>
-        <div class="score-label">Overall</div>
+  <!-- ===== PAGE 2: Executive Summary ===== -->
+  <div class="page summary-page">
+    <div class="page-title">📈 Executive Summary</div>
+    
+    <!-- Scores -->
+    <div class="scores-container no-break">
+      <div class="scores-title">Analysis Scores</div>
+      <div class="scores-grid">
+        <div class="score-card">
+          <div class="score-value">${report.scores.overall}</div>
+          <div class="score-label">Overall</div>
+        </div>
+        <div class="score-card">
+          <div class="score-value">${report.scores.security}</div>
+          <div class="score-label">Security</div>
+        </div>
+        <div class="score-card">
+          <div class="score-value">${report.scores.quality}</div>
+          <div class="score-label">Quality</div>
+        </div>
+        <div class="score-card">
+          <div class="score-value">${report.scores.architecture}</div>
+          <div class="score-label">Architecture</div>
+        </div>
+        <div class="score-card">
+          <div class="score-value">${report.scores.documentation}</div>
+          <div class="score-label">Documentation</div>
+        </div>
       </div>
-      <div class="score-item">
-        <div class="score-value">${report.scores.security}</div>
-        <div class="score-label">Security</div>
+    </div>
+    
+    <!-- Issues Summary -->
+    <div class="summary-grid no-break">
+      <div class="summary-card total">
+        <div class="summary-value">${report.summary.totalIssues}</div>
+        <div class="summary-label">Total Issues</div>
       </div>
-      <div class="score-item">
-        <div class="score-value">${report.scores.quality}</div>
-        <div class="score-label">Quality</div>
+      <div class="summary-card critical">
+        <div class="summary-value">${report.summary.criticalCount}</div>
+        <div class="summary-label">Critical</div>
       </div>
-      <div class="score-item">
-        <div class="score-value">${report.scores.architecture}</div>
-        <div class="score-label">Architecture</div>
+      <div class="summary-card high">
+        <div class="summary-value">${report.summary.highCount}</div>
+        <div class="summary-label">High</div>
       </div>
-      <div class="score-item">
-        <div class="score-value">${report.scores.documentation}</div>
-        <div class="score-label">Documentation</div>
+      <div class="summary-card medium">
+        <div class="summary-value">${report.summary.mediumCount}</div>
+        <div class="summary-label">Medium</div>
       </div>
+      <div class="summary-card low">
+        <div class="summary-value">${report.summary.lowCount}</div>
+        <div class="summary-label">Low</div>
+      </div>
+      <div class="summary-card files">
+        <div class="summary-value">${report.summary.filesAnalyzed}</div>
+        <div class="summary-label">Files</div>
+      </div>
+    </div>
+    
+    <!-- Table of Contents -->
+    <div class="toc-box no-break">
+      <div class="toc-title">📋 Report Contents</div>
+      <ul class="toc-list">
+        <li class="toc-item">
+          <span class="toc-item-name">🔒 Security Vulnerabilities</span>
+          <span class="toc-item-count">${securityIssues.length} issues</span>
+        </li>
+        <li class="toc-item">
+          <span class="toc-item-name">📝 Code Quality Issues</span>
+          <span class="toc-item-count">${qualityIssues.length} issues</span>
+        </li>
+        <li class="toc-item">
+          <span class="toc-item-name">🏗️ Architecture Issues</span>
+          <span class="toc-item-count">${architectureIssues.length} issues</span>
+        </li>
+        <li class="toc-item">
+          <span class="toc-item-name">✅ Best Practice Suggestions</span>
+          <span class="toc-item-count">${bestPracticeIssues.length} issues</span>
+        </li>
+        ${otherIssues.length > 0 ? `
+        <li class="toc-item">
+          <span class="toc-item-name">📌 Other Issues</span>
+          <span class="toc-item-count">${otherIssues.length} issues</span>
+        </li>
+        ` : ''}
+      </ul>
+    </div>
+    
+    <div class="page-footer">
+      <div class="footer-logo">⚡ RepoIQ</div>
+      Page 2 | Executive Summary
     </div>
   </div>
 
-  <!-- Summary Section -->
-  <div class="summary-section no-break">
-    <h2>📊 Issues Summary</h2>
-    <div class="summary-grid">
-      <div class="summary-item">
-        <div class="count" style="color: #1e40af;">${report.summary.totalIssues}</div>
-        <div class="label">Total Issues</div>
-      </div>
-      <div class="summary-item">
-        <div class="count" style="color: #dc2626;">${report.summary.criticalCount}</div>
-        <div class="label">Critical</div>
-      </div>
-      <div class="summary-item">
-        <div class="count" style="color: #ea580c;">${report.summary.highCount}</div>
-        <div class="label">High</div>
-      </div>
-      <div class="summary-item">
-        <div class="count" style="color: #ca8a04;">${report.summary.mediumCount}</div>
-        <div class="label">Medium</div>
-      </div>
-      <div class="summary-item">
-        <div class="count" style="color: #16a34a;">${report.summary.lowCount}</div>
-        <div class="label">Low</div>
-      </div>
-      <div class="summary-item">
-        <div class="count" style="color: #6b7280;">${report.summary.filesAnalyzed}</div>
-        <div class="label">Files Analyzed</div>
-      </div>
+  <!-- ===== PAGE 3+: Issue Details ===== -->
+  <div class="page issues-page">
+    <div class="page-title">🔍 Detailed Findings</div>
+    
+    <!-- Security Vulnerabilities -->
+    ${generateIssueSection(securityIssues, 'Security Vulnerabilities', '🔒', 'security')}
+    
+    <!-- Code Quality -->
+    ${generateIssueSection(qualityIssues, 'Code Quality Issues', '📝', 'quality')}
+    
+    <div class="page-footer">
+      <div class="footer-logo">⚡ RepoIQ</div>
+      Security & Quality Issues
     </div>
   </div>
-
-  <!-- Security Vulnerabilities Section -->
-  <div class="section page-break">
-    <h2>🔒 Security Vulnerabilities <span class="section-count">${securityIssues.length} issues</span></h2>
-    ${securityIssues.length === 0 
-      ? '<div class="no-issues">No security vulnerabilities detected</div>'
-      : securityIssues.map(issue => `
-        <div class="issue-card no-break">
-          <div class="issue-header">
-            <div>
-              <span class="issue-file">${escapeHtml(issue.file)}</span>
-              <span class="issue-line">Line ${issue.line || 'N/A'}</span>
-            </div>
-            ${getSeverityBadge(issue.severity)}
-          </div>
-          <div class="issue-body">
-            <div class="issue-description">${escapeHtml(issue.description)}</div>
-            ${issue.suggestion ? `<div class="issue-suggestion">${escapeHtml(issue.suggestion)}</div>` : ''}
-          </div>
-        </div>
-      `).join('')
-    }
-  </div>
-
-  <!-- Code Quality Section -->
-  <div class="section page-break">
-    <h2>📝 Code Quality Issues <span class="section-count">${qualityIssues.length} issues</span></h2>
-    ${qualityIssues.length === 0 
-      ? '<div class="no-issues">No code quality issues detected</div>'
-      : qualityIssues.map(issue => `
-        <div class="issue-card no-break">
-          <div class="issue-header">
-            <div>
-              <span class="issue-file">${escapeHtml(issue.file)}</span>
-              <span class="issue-line">Line ${issue.line || 'N/A'}</span>
-            </div>
-            ${getSeverityBadge(issue.severity)}
-          </div>
-          <div class="issue-body">
-            <div class="issue-description">${escapeHtml(issue.description)}</div>
-            ${issue.suggestion ? `<div class="issue-suggestion">${escapeHtml(issue.suggestion)}</div>` : ''}
-          </div>
-        </div>
-      `).join('')
-    }
-  </div>
-
-  <!-- Architecture Section -->
-  <div class="section page-break">
-    <h2>🏗️ Architecture Issues <span class="section-count">${architectureIssues.length} issues</span></h2>
-    ${architectureIssues.length === 0 
-      ? '<div class="no-issues">No architecture issues detected</div>'
-      : architectureIssues.map(issue => `
-        <div class="issue-card no-break">
-          <div class="issue-header">
-            <div>
-              <span class="issue-file">${escapeHtml(issue.file)}</span>
-              <span class="issue-line">Line ${issue.line || 'N/A'}</span>
-            </div>
-            ${getSeverityBadge(issue.severity)}
-          </div>
-          <div class="issue-body">
-            <div class="issue-description">${escapeHtml(issue.description)}</div>
-            ${issue.suggestion ? `<div class="issue-suggestion">${escapeHtml(issue.suggestion)}</div>` : ''}
-          </div>
-        </div>
-      `).join('')
-    }
-  </div>
-
-  <!-- Best Practices Section -->
-  <div class="section page-break">
-    <h2>✅ Best Practices <span class="section-count">${bestPracticeIssues.length} suggestions</span></h2>
-    ${bestPracticeIssues.length === 0 
-      ? '<div class="no-issues">All best practices are being followed</div>'
-      : bestPracticeIssues.map(issue => `
-        <div class="issue-card no-break">
-          <div class="issue-header">
-            <div>
-              <span class="issue-file">${escapeHtml(issue.file)}</span>
-              <span class="issue-line">Line ${issue.line || 'N/A'}</span>
-            </div>
-            ${getSeverityBadge(issue.severity)}
-          </div>
-          <div class="issue-body">
-            <div class="issue-description">${escapeHtml(issue.description)}</div>
-            ${issue.suggestion ? `<div class="issue-suggestion">${escapeHtml(issue.suggestion)}</div>` : ''}
-          </div>
-        </div>
-      `).join('')
-    }
-  </div>
-
-  ${otherIssues.length > 0 ? `
-  <!-- Other Issues Section -->
-  <div class="section page-break">
-    <h2>📌 Other Issues <span class="section-count">${otherIssues.length} issues</span></h2>
-    ${otherIssues.map(issue => `
-      <div class="issue-card no-break">
-        <div class="issue-header">
-          <div>
-            <span class="issue-file">${escapeHtml(issue.file)}</span>
-            <span class="issue-line">Line ${issue.line || 'N/A'}</span>
-          </div>
-          ${getSeverityBadge(issue.severity)}
-        </div>
-        <div class="issue-body">
-          <div class="issue-description">${escapeHtml(issue.description)}</div>
-          ${issue.suggestion ? `<div class="issue-suggestion">${escapeHtml(issue.suggestion)}</div>` : ''}
-        </div>
-      </div>
-    `).join('')}
-  </div>
-  ` : ''}
-
-  <!-- Footer -->
-  <div class="report-footer">
-    <div class="logo">⚡ RepoIQ</div>
-    <p>Automated Code Analysis Report | Generated on ${dateStr}</p>
-    <p>This report is confidential and intended for development team use only.</p>
+  
+  <div class="page issues-page">
+    <!-- Architecture -->
+    ${generateIssueSection(architectureIssues, 'Architecture Issues', '🏗️', 'architecture')}
+    
+    <!-- Best Practices -->
+    ${generateIssueSection(bestPracticeIssues, 'Best Practice Suggestions', '✅', 'bestpractice')}
+    
+    ${otherIssues.length > 0 ? generateIssueSection(otherIssues, 'Other Issues', '📌', 'other') : ''}
+    
+    <div class="page-footer">
+      <div class="footer-logo">⚡ RepoIQ</div>
+      Architecture & Best Practices | Generated ${dateStr}
+    </div>
   </div>
 
   <script>
+    // Auto-trigger print dialog
     window.onload = function() {
-      window.print();
+      setTimeout(function() {
+        window.print();
+      }, 500);
     };
   </script>
 </body>
@@ -566,10 +758,12 @@ export function generateFullAnalysisReport(report: AnalysisReport): void {
   }
 }
 
-// Generate Bug Report PDF with professional template
+// Generate Bug Report PDF - Print-Ready Format
 export function generateBugReportPDF(reports: any[], repoName: string): void {
   const timestamp = new Date().toLocaleString();
-  const dateStr = new Date().toLocaleDateString();
+  const dateStr = new Date().toLocaleDateString('en-US', { 
+    year: 'numeric', month: 'long', day: 'numeric' 
+  });
   
   // Calculate stats
   const criticalCount = reports.filter(r => r.severity === 'critical').length;
@@ -577,193 +771,422 @@ export function generateBugReportPDF(reports: any[], repoName: string): void {
   const mediumCount = reports.filter(r => r.severity === 'medium').length;
   const lowCount = reports.filter(r => r.severity === 'low').length;
 
+  // Group bugs by severity for organized printing
+  const criticalBugs = reports.filter(r => r.severity === 'critical');
+  const highBugs = reports.filter(r => r.severity === 'high');
+  const mediumBugs = reports.filter(r => r.severity === 'medium');
+  const lowBugs = reports.filter(r => r.severity === 'low');
+
+  const generateBugList = (bugs: any[], severityLabel: string, colorClass: string) => {
+    if (bugs.length === 0) return '';
+    
+    return `
+      <div class="bug-section">
+        <div class="bug-section-header ${colorClass}">
+          <span class="section-title">${severityLabel} Priority Bugs</span>
+          <span class="section-count">${bugs.length} bug${bugs.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="bug-list">
+          ${bugs.map((bug, idx) => `
+            <div class="bug-item no-break">
+              <div class="bug-number">${idx + 1}</div>
+              <div class="bug-content">
+                <div class="bug-title">${escapeHtml(bug.title || bug.description || 'Issue')}</div>
+                <div class="bug-location">
+                  ${bug.file_path ? `<span class="file-badge">${escapeHtml(bug.file_path)}</span>` : ''}
+                  ${bug.line_number ? `<span class="line-info">Line ${bug.line_number}</span>` : ''}
+                  ${bug.category ? `<span class="category-tag">${escapeHtml(bug.category)}</span>` : ''}
+                </div>
+                <div class="bug-details">${escapeHtml(bug.details || bug.description || 'No details available')}</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  };
+
   const html = `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Bug Report - ${escapeHtml(repoName)}</title>
   <style>
+    /* ===== Print-Optimized Styles ===== */
+    @page {
+      size: A4;
+      margin: 15mm 15mm 20mm 15mm;
+    }
+    
     @media print {
-      body { margin: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .page-break { page-break-before: always; }
+      html, body {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        color-adjust: exact !important;
+      }
+      .page { page-break-after: always; }
+      .page:last-child { page-break-after: avoid; }
       .no-break { page-break-inside: avoid; }
     }
-    * { box-sizing: border-box; }
-    body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      line-height: 1.6;
+    
+    /* ===== Base Styles ===== */
+    * {
+      box-sizing: border-box;
       margin: 0;
-      padding: 20mm;
-      color: #1f2937;
-      background: #fff;
+      padding: 0;
     }
     
-    .report-header {
-      background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
-      color: white;
-      padding: 30px;
-      border-radius: 12px;
-      margin-bottom: 30px;
+    body {
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif;
+      font-size: 11pt;
+      line-height: 1.5;
+      color: #1a1a1a;
+      background: white;
+    }
+    
+    .page {
+      width: 100%;
+      min-height: 100vh;
+      padding: 0;
+      background: white;
+    }
+    
+    /* ===== Cover Page ===== */
+    .cover-page {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      text-align: center;
+      padding: 40px;
+      background: linear-gradient(180deg, #fef2f2 0%, white 100%);
+    }
+    
+    .cover-icon {
+      font-size: 64pt;
+      margin-bottom: 20px;
+    }
+    
+    .cover-title {
+      font-size: 32pt;
+      font-weight: 700;
+      color: #b91c1c;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      margin-bottom: 10px;
+    }
+    
+    .cover-repo-name {
+      font-size: 20pt;
+      font-weight: 600;
+      color: #374151;
+      padding: 15px 40px;
+      border: 3px solid #dc2626;
+      border-radius: 8px;
+      margin: 30px 0;
+    }
+    
+    /* Stats Summary */
+    .cover-stats {
+      display: flex;
+      gap: 20px;
+      margin: 30px 0;
+    }
+    
+    .cover-stat {
+      padding: 20px 30px;
+      border-radius: 8px;
       text-align: center;
     }
-    .report-header h1 {
-      font-size: 28px;
-      margin: 0 0 10px 0;
+    
+    .cover-stat.total { background: #eff6ff; border: 2px solid #3b82f6; }
+    .cover-stat.critical { background: #fef2f2; border: 2px solid #dc2626; }
+    .cover-stat.high { background: #fff7ed; border: 2px solid #ea580c; }
+    .cover-stat.medium { background: #fefce8; border: 2px solid #ca8a04; }
+    .cover-stat.low { background: #f0fdf4; border: 2px solid #16a34a; }
+    
+    .cover-stat-value {
+      font-size: 28pt;
+      font-weight: 700;
+      line-height: 1;
     }
-    .report-header .repo-name {
-      font-size: 20px;
+    
+    .cover-stat.total .cover-stat-value { color: #1d4ed8; }
+    .cover-stat.critical .cover-stat-value { color: #dc2626; }
+    .cover-stat.high .cover-stat-value { color: #ea580c; }
+    .cover-stat.medium .cover-stat-value { color: #ca8a04; }
+    .cover-stat.low .cover-stat-value { color: #16a34a; }
+    
+    .cover-stat-label {
+      font-size: 9pt;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-top: 5px;
+    }
+    
+    .cover-date {
+      margin-top: 40px;
+      margin-bottom: 50px;
+      font-size: 10pt;
+      color: #94a3b8;
+    }
+    
+    .cover-footer {
+      margin-top: auto;
+      padding-top: 30px;
+      border-top: 1px solid #e2e8f0;
+      font-size: 9pt;
+      color: #94a3b8;
+      width: 100%;
+    }
+    
+    .cover-footer .footer-logo {
+      font-size: 10pt;
+      font-weight: 600;
+      color: #64748b;
+      margin-bottom: 3px;
+    }
+    
+    /* ===== Bug List Pages ===== */
+    .bugs-page {
+      padding: 40px;
+    }
+    
+    .page-title {
+      font-size: 18pt;
+      font-weight: 700;
+      color: #b91c1c;
+      border-bottom: 3px solid #dc2626;
+      padding-bottom: 10px;
+      margin-bottom: 30px;
+    }
+    
+    .bug-section {
+      margin-bottom: 30px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    
+    .bug-section-header {
+      padding: 12px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: white;
+      font-weight: 600;
+    }
+    
+    .bug-section-header.critical { background: linear-gradient(90deg, #b91c1c, #dc2626); }
+    .bug-section-header.high { background: linear-gradient(90deg, #c2410c, #ea580c); }
+    .bug-section-header.medium { background: linear-gradient(90deg, #a16207, #ca8a04); }
+    .bug-section-header.low { background: linear-gradient(90deg, #15803d, #16a34a); }
+    
+    .section-title {
+      font-size: 12pt;
+    }
+    
+    .section-count {
+      font-size: 10pt;
       opacity: 0.9;
     }
-    .report-header .meta {
-      font-size: 12px;
-      opacity: 0.8;
-      margin-top: 15px;
+    
+    .bug-list {
+      padding: 15px;
     }
     
-    .stats-bar {
+    .bug-item {
       display: flex;
-      justify-content: space-around;
+      gap: 15px;
+      padding: 15px;
       background: #f8fafc;
-      border: 2px solid #e2e8f0;
-      border-radius: 12px;
-      padding: 20px;
-      margin-bottom: 30px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      border-left: 4px solid #e2e8f0;
     }
-    .stat-item {
-      text-align: center;
+    
+    .bug-item:last-child {
+      margin-bottom: 0;
     }
-    .stat-item .count {
-      font-size: 32px;
-      font-weight: bold;
+    
+    .bug-number {
+      width: 28px;
+      height: 28px;
+      background: #dc2626;
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9pt;
+      font-weight: 700;
+      flex-shrink: 0;
     }
-    .stat-item .label {
-      font-size: 11px;
-      color: #6b7280;
+    
+    .bug-content {
+      flex: 1;
+    }
+    
+    .bug-title {
+      font-size: 11pt;
+      font-weight: 600;
+      color: #1f2937;
+      margin-bottom: 8px;
+    }
+    
+    .bug-location {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    
+    .file-badge {
+      font-family: 'Consolas', monospace;
+      font-size: 9pt;
+      background: #eff6ff;
+      color: #1e40af;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    
+    .line-info {
+      font-size: 9pt;
+      color: #64748b;
+    }
+    
+    .category-tag {
+      font-size: 8pt;
+      background: #f3f4f6;
+      color: #4b5563;
+      padding: 2px 8px;
+      border-radius: 4px;
       text-transform: uppercase;
     }
     
-    .bug-card {
-      border: 2px solid #fecaca;
-      border-radius: 12px;
-      margin-bottom: 20px;
-      overflow: hidden;
-      page-break-inside: avoid;
-    }
-    .bug-header {
-      background: #fef2f2;
-      padding: 15px 20px;
-      border-bottom: 1px solid #fecaca;
-    }
-    .bug-title {
-      font-size: 16px;
-      font-weight: 600;
-      color: #991b1b;
-      margin: 0 0 8px 0;
-    }
-    .bug-meta {
-      font-size: 12px;
-      color: #6b7280;
-    }
-    .bug-body {
-      padding: 20px;
-    }
     .bug-details {
-      background: #f9fafb;
+      font-size: 10pt;
+      color: #374151;
+      background: white;
       border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 15px;
+      border-radius: 4px;
+      padding: 12px;
       font-family: 'Consolas', monospace;
-      font-size: 13px;
       white-space: pre-wrap;
       word-break: break-word;
+      line-height: 1.4;
     }
-    .severity-badge {
-      display: inline-block;
-      padding: 3px 10px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: bold;
-      text-transform: uppercase;
-      color: white;
-    }
-    .severity-critical { background: #dc2626; }
-    .severity-high { background: #ea580c; }
-    .severity-medium { background: #ca8a04; }
-    .severity-low { background: #16a34a; }
     
-    .footer {
+    /* No Bugs */
+    .no-bugs {
+      text-align: center;
+      padding: 60px;
+      background: #f0fdf4;
+      border: 2px solid #86efac;
+      border-radius: 12px;
+    }
+    
+    .no-bugs-icon {
+      font-size: 48pt;
+      margin-bottom: 15px;
+    }
+    
+    .no-bugs-text {
+      font-size: 14pt;
+      color: #16a34a;
+      font-weight: 600;
+    }
+    
+    /* Page Footer */
+    .page-footer {
       margin-top: 40px;
       padding-top: 20px;
-      border-top: 2px solid #e2e8f0;
+      border-top: 1px solid #e2e8f0;
       text-align: center;
-      color: #6b7280;
-      font-size: 11px;
+      font-size: 8pt;
+      color: #94a3b8;
+    }
+    
+    .page-footer .footer-logo {
+      font-size: 10pt;
+      font-weight: 700;
+      color: #dc2626;
+      margin-bottom: 5px;
     }
   </style>
 </head>
 <body>
-  <div class="report-header">
-    <h1>🐛 Bug Report</h1>
-    <div class="repo-name">${escapeHtml(repoName)}</div>
-    <div class="meta">Generated: ${timestamp} | Total Bugs: ${reports.length}</div>
-  </div>
-
-  <div class="stats-bar no-break">
-    <div class="stat-item">
-      <div class="count" style="color: #1e40af;">${reports.length}</div>
-      <div class="label">Total Bugs</div>
-    </div>
-    <div class="stat-item">
-      <div class="count" style="color: #dc2626;">${criticalCount}</div>
-      <div class="label">Critical</div>
-    </div>
-    <div class="stat-item">
-      <div class="count" style="color: #ea580c;">${highCount}</div>
-      <div class="label">High</div>
-    </div>
-    <div class="stat-item">
-      <div class="count" style="color: #ca8a04;">${mediumCount}</div>
-      <div class="label">Medium</div>
-    </div>
-    <div class="stat-item">
-      <div class="count" style="color: #16a34a;">${lowCount}</div>
-      <div class="label">Low</div>
-    </div>
-  </div>
-
-  ${reports.length === 0 
-    ? '<div style="text-align: center; padding: 40px; background: #f0fdf4; border-radius: 12px; color: #16a34a;">✅ No bugs found! Great job!</div>'
-    : reports.map((bug, index) => `
-      <div class="bug-card no-break">
-        <div class="bug-header">
-          <div style="display: flex; justify-content: space-between; align-items: start;">
-            <div>
-              <div class="bug-title">#${index + 1}: ${escapeHtml(bug.title || bug.description || 'Issue')}</div>
-              <div class="bug-meta">
-                ${bug.file_path ? `File: ${escapeHtml(bug.file_path)}` : ''}
-                ${bug.line_number ? ` | Line: ${bug.line_number}` : ''}
-                ${bug.category ? ` | Category: ${escapeHtml(bug.category)}` : ''}
-              </div>
-            </div>
-            <span class="severity-badge severity-${(bug.severity || 'medium').toLowerCase()}">${escapeHtml(bug.severity || 'medium')}</span>
-          </div>
-        </div>
-        <div class="bug-body">
-          <div class="bug-details">${escapeHtml(bug.details || bug.description || 'No details available')}</div>
-        </div>
+  <!-- ===== PAGE 1: Cover Page ===== -->
+  <div class="page cover-page">
+    <div class="cover-icon">🐛</div>
+    <div class="cover-title">Bug Report</div>
+    
+    <div class="cover-repo-name">${escapeHtml(repoName)}</div>
+    
+    <div class="cover-stats">
+      <div class="cover-stat total">
+        <div class="cover-stat-value">${reports.length}</div>
+        <div class="cover-stat-label">Total Bugs</div>
       </div>
-    `).join('')
-  }
+      <div class="cover-stat critical">
+        <div class="cover-stat-value">${criticalCount}</div>
+        <div class="cover-stat-label">Critical</div>
+      </div>
+      <div class="cover-stat high">
+        <div class="cover-stat-value">${highCount}</div>
+        <div class="cover-stat-label">High</div>
+      </div>
+      <div class="cover-stat medium">
+        <div class="cover-stat-value">${mediumCount}</div>
+        <div class="cover-stat-label">Medium</div>
+      </div>
+      <div class="cover-stat low">
+        <div class="cover-stat-value">${lowCount}</div>
+        <div class="cover-stat-label">Low</div>
+      </div>
+    </div>
+    
+    <div class="cover-date">
+      <div>Generated on ${dateStr}</div>
+      <div>${timestamp}</div>
+    </div>
+    
+    <div class="cover-footer">
+      <div class="footer-logo">⚡ RepoIQ Bug Report</div>
+      Address critical and high priority bugs first
+    </div>
+  </div>
 
-  <div class="footer">
-    <div style="font-size: 16px; font-weight: bold; color: #dc2626; margin-bottom: 5px;">⚡ RepoIQ Bug Report</div>
-    <p>Generated on ${dateStr} | Please address critical and high severity bugs first</p>
+  <!-- ===== PAGE 2+: Bug Details ===== -->
+  <div class="page bugs-page">
+    <div class="page-title">🔍 Bug Details</div>
+    
+    ${reports.length === 0 ? `
+      <div class="no-bugs">
+        <div class="no-bugs-icon">✅</div>
+        <div class="no-bugs-text">No bugs found! Great job!</div>
+      </div>
+    ` : `
+      ${generateBugList(criticalBugs, '🔴 Critical', 'critical')}
+      ${generateBugList(highBugs, '🟠 High', 'high')}
+      ${generateBugList(mediumBugs, '🟡 Medium', 'medium')}
+      ${generateBugList(lowBugs, '🟢 Low', 'low')}
+    `}
+    
+    <div class="page-footer">
+      <div class="footer-logo">⚡ RepoIQ Bug Report</div>
+      Generated ${dateStr} | ${reports.length} bugs found
+    </div>
   </div>
 
   <script>
     window.onload = function() {
-      window.print();
+      setTimeout(function() {
+        window.print();
+      }, 500);
     };
   </script>
 </body>

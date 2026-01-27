@@ -1,12 +1,14 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import apiClient from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
+import { useRepositoryStore } from "@/stores/repositoryStore";
 
 export default function GitHubCallback() {
   const navigate = useNavigate();
   const { login } = useAuth();
   const hasRun = useRef(false);
+  const [status, setStatus] = useState("Connecting to GitHub...");
 
   useEffect(() => {
     // Prevent double execution
@@ -31,24 +33,38 @@ export default function GitHubCallback() {
       }
 
       try {
+        setStatus("Authenticating...");
         console.log("[GitHub OAuth] Exchanging code for token...");
-        const response = await apiClient.githubCallback(code);
         
-        // Store tokens
+        const startTime = performance.now();
+        const response = await apiClient.githubCallback(code);
+        console.log(`[GitHub OAuth] Token exchange took ${Math.round(performance.now() - startTime)}ms`);
+        
+        // Store tokens IMMEDIATELY
         localStorage.setItem("token", response.access_token);
         if (response.refresh_token) {
           localStorage.setItem("refresh_token", response.refresh_token);
         }
 
-        // Navigate immediately for instant UX (optimistic)
-        console.log("[GitHub OAuth] Success! Redirecting to repos...");
-        navigate("/repos");
+        setStatus("Loading your repositories...");
 
-        // Store user data in background (non-blocking)
+        // Store user data immediately if available
         if (response.user) {
           login(response.user, response.access_token, response.refresh_token);
-        } else {
-          // Fetch user data in background
+        }
+
+        // Navigate IMMEDIATELY - don't wait for prefetch
+        // Repos will load on the repos page itself (much faster perceived performance)
+        console.log("[GitHub OAuth] ✅ Auth complete - instant navigation");
+        navigate("/repos", { replace: true });
+        
+        // Start prefetch in background AFTER navigation (non-blocking)
+        setTimeout(() => {
+          useRepositoryStore.getState().loadRepositories(1, true).catch(() => {});
+        }, 0);
+
+        // Fetch user data in background if not already available
+        if (!response.user) {
           apiClient.getCurrentUser().then(user => {
             login(user, response.access_token, response.refresh_token);
           }).catch(err => {
@@ -68,7 +84,7 @@ export default function GitHubCallback() {
     <div className="min-h-screen flex items-center justify-center bg-background">
       <div className="text-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-        <p className="text-muted-foreground">Completing GitHub authentication...</p>
+        <p className="text-muted-foreground">{status}</p>
       </div>
     </div>
   );

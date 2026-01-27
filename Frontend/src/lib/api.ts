@@ -12,10 +12,21 @@
  * - Request timeout protection (10s)
  * - Cache-aware error handling
  * - Request throttling to prevent excessive API calls
+ * - AbortController for request cancellation
+ * - Production-optimized logging
  */
 import { RequestThrottler } from '@/utils/throttle';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
+const IS_DEV = import.meta.env.DEV;
+
+// Production-safe logging - only log in development
+const log = {
+  debug: (...args: any[]) => IS_DEV && console.log('[API]', ...args),
+  info: (...args: any[]) => IS_DEV && console.log('[API]', ...args),
+  warn: (...args: any[]) => console.warn('[API]', ...args),
+  error: (...args: any[]) => console.error('[API]', ...args),
+};
 
 interface ApiError {
   detail: string | { msg: string }[];
@@ -67,11 +78,39 @@ class ApiClient {
   
   // Track pending requests to prevent duplicate calls
   private pendingRequests = new Map<string, Promise<any>>();
+  
+  // Track AbortControllers for request cancellation
+  private abortControllers = new Map<string, AbortController>();
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
     // Throttle requests with 300ms minimum delay between same endpoint calls
     this.requestThrottler = new RequestThrottler(300);
+  }
+  
+  /**
+   * Cancel a pending request by its key
+   */
+  cancelRequest(key: string): void {
+    const controller = this.abortControllers.get(key);
+    if (controller) {
+      controller.abort();
+      this.abortControllers.delete(key);
+      this.pendingRequests.delete(key);
+      log.debug('Cancelled request:', key);
+    }
+  }
+  
+  /**
+   * Cancel all pending requests
+   */
+  cancelAllRequests(): void {
+    this.abortControllers.forEach((controller, key) => {
+      controller.abort();
+      log.debug('Cancelled request:', key);
+    });
+    this.abortControllers.clear();
+    this.pendingRequests.clear();
   }
 
   private getToken(): string | null {
@@ -99,6 +138,7 @@ class ApiClient {
     let token = this.getToken();
     
     // Don't throttle critical endpoints that need fresh data
+    // BUT still deduplicate them to prevent multiple simultaneous requests
     const criticalEndpoints = ['/results', '/issues'];
     const isCritical = criticalEndpoints.some(path => endpoint.includes(path));
     
@@ -106,9 +146,10 @@ class ApiClient {
     const shouldThrottle = !isCritical && (options.method === 'GET' || !options.method);
     const key = throttleKey || endpoint;
     
-    if (shouldThrottle && this.pendingRequests.has(key)) {
+    // ALWAYS deduplicate requests (even critical ones) to prevent rate limit issues
+    if (this.pendingRequests.has(key)) {
       // Return existing pending request instead of making a new one
-      console.log('[API] ♻️ Returning existing request for:', endpoint);
+      log.debug('♻️ Deduplicating request for:', endpoint);
       return this.pendingRequests.get(key) as Promise<T>;
     }
     
@@ -124,13 +165,11 @@ class ApiClient {
       requestPromise = makeRequest();
     }
     
-    // Track pending request
-    if (shouldThrottle) {
-      this.pendingRequests.set(key, requestPromise);
-      requestPromise.finally(() => {
-        this.pendingRequests.delete(key);
-      });
-    }
+    // Track pending request for ALL requests (for deduplication)
+    this.pendingRequests.set(key, requestPromise);
+    requestPromise.finally(() => {
+      this.pendingRequests.delete(key);
+    });
     
     return requestPromise;
   }
@@ -150,14 +189,14 @@ class ApiClient {
       };
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
-        console.log('[API] Request with token:', token.substring(0, 20) + '...');
+        log.debug('Request with token:', token.substring(0, 20) + '...');
       } else {
-        console.log('[API] Request without token');
+        log.debug('Request without token');
       }
       return headers;
     };
 
-    console.log('[API] Fetching:', url);
+    log.debug('Fetching:', url);
 
     const doFetch = async (currentToken: string | null = token) => {
       const headers = makeHeaders();
@@ -172,19 +211,19 @@ class ApiClient {
 
     try {
       let response = await doFetch();
-      console.log('[API] Response status:', response.status);
+      log.debug('Response status:', response.status);
 
       // Handle authentication errors
       if (response.status === 401) {
-        console.log('[API] 401 received, attempting token refresh');
+        log.info('401 received, attempting token refresh');
         const refreshed = await this.tryRefreshToken();
         if (refreshed) {
           const newToken = this.getToken();
           response = await doFetch(newToken);
-          console.log('[API] Retried request, status:', response.status);
+          log.debug('Retried request, status:', response.status);
         } else {
           // Token refresh failed - clear auth and redirect to login
-          console.log('[API] Token refresh failed, logging out');
+          log.info('Token refresh failed, logging out');
           this.clearAuthAndCaches();
           window.dispatchEvent(new CustomEvent('authExpired'));
           throw new Error('Authentication expired. Please log in again.');
@@ -193,7 +232,7 @@ class ApiClient {
 
       // Handle forbidden - session expired or invalid
       if (response.status === 403) {
-        console.log('[API] 403 Forbidden - session expired or invalid, logging out');
+        log.info('403 Forbidden - session expired or invalid, logging out');
         this.clearAuthAndCaches();
         window.dispatchEvent(new CustomEvent('authExpired'));
         throw new Error('Session expired. Please log in again.');
@@ -208,15 +247,21 @@ class ApiClient {
           ? errorData.detail.map(e => e.msg).join(', ')
           : errorData.detail;
 
-        console.log('[API] Error:', message);
+        log.warn('Error:', message);
         throw new Error(message || `HTTP ${response.status}`);
       }
 
       const data = await response.json();
-      console.log('[API] Success:', data);
+      log.debug('Success:', typeof data === 'object' ? Object.keys(data) : data);
       return data;
     } catch (error) {
-      console.log('[API] Exception:', error);
+      // Handle AbortError silently (user cancelled request)
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        log.debug('Request aborted');
+        throw error;
+      }
+      
+      log.debug('Exception:', error);
       
       // Detect and enhance CORS errors
       if (isCorsError(error)) {
@@ -226,7 +271,7 @@ class ApiClient {
         );
         (corsError as any).isCorsError = true;
         (corsError as any).originalError = error;
-        console.error('[API] CORS Error detected:', corsError.message);
+        log.error('CORS Error detected:', corsError.message);
         throw corsError;
       }
       
@@ -238,7 +283,7 @@ class ApiClient {
         );
         (networkError as any).isNetworkError = true;
         (networkError as any).originalError = error;
-        console.error('[API] Network Error detected:', networkError.message);
+        log.error('Network Error detected:', networkError.message);
         throw networkError;
       }
       
@@ -254,7 +299,7 @@ class ApiClient {
   private async tryRefreshToken(): Promise<boolean> {
     // If already refreshing, wait for that attempt
     if (this.refreshing && this.refreshPromise) {
-      console.log('[API] Refresh already in progress, waiting...');
+      log.debug('Refresh already in progress, waiting...');
       return this.refreshPromise;
     }
 
@@ -273,7 +318,7 @@ class ApiClient {
   private async _doRefresh(): Promise<boolean> {
     const refreshToken = localStorage.getItem('refresh_token');
     if (!refreshToken) {
-      console.log('[API] No refresh token available');
+      log.info('No refresh token available');
       this.clearAuthAndCaches();
       window.dispatchEvent(new CustomEvent('authExpired'));
       return false;
@@ -287,7 +332,7 @@ class ApiClient {
       });
 
       if (!resp.ok) {
-        console.log('[API] Refresh failed, status:', resp.status);
+        log.info('Refresh failed, status:', resp.status);
         this.clearAuthAndCaches();
         window.dispatchEvent(new CustomEvent('authExpired'));
         return false;
@@ -299,16 +344,16 @@ class ApiClient {
         if (data.refresh_token) {
           localStorage.setItem('refresh_token', data.refresh_token);
         }
-        console.log('[API] Token refreshed successfully');
+        log.info('Token refreshed successfully');
         return true;
       }
       
-      console.log('[API] Refresh response missing access_token');
+      log.warn('Refresh response missing access_token');
       this.clearAuthAndCaches();
       window.dispatchEvent(new CustomEvent('authExpired'));
       return false;
     } catch (err) {
-      console.error('[API] Refresh exception', err);
+      log.error('Refresh exception', err);
       this.clearAuthAndCaches();
       window.dispatchEvent(new CustomEvent('authExpired'));
       return false;
@@ -380,15 +425,27 @@ class ApiClient {
   }
 
   async getAnalysisResults(repoId: string) {
-    return this.request<any>(`/analysis/repositories/${repoId}/results`);
+    // Use repoId in throttle key for proper deduplication
+    return this.request<any>(
+      `/analysis/repositories/${repoId}/results`,
+      {},
+      `analysis_results_${repoId}` // Deduplication key
+    );
   }
 
   async getBatchAnalysisResults() {
     return this.request<{ results: Record<string, any> }>(`/analysis/batch/results`);
   }
 
-  async getAnalysisHistory(repoId: string) {
-    return this.request<any>(`/analysis/repositories/${repoId}/history`);
+  async getAnalysisHistory(repoId: string, forceRefresh: boolean = false) {
+    const params = forceRefresh ? '?refresh=true' : '';
+    // Use repoId in throttle key for proper deduplication (unless force refresh)
+    const throttleKey = forceRefresh ? undefined : `analysis_history_${repoId}`;
+    return this.request<any>(
+      `/analysis/repositories/${repoId}/history${params}`,
+      {},
+      throttleKey
+    );
   }
 
   async getAnalysisById(analysisId: string) {
@@ -404,7 +461,12 @@ class ApiClient {
   }
 
   async getRepositoryFiles(repoId: string) {
-    return this.request<any>(`/github/repositories/${repoId}/files`);
+    // Use repoId in throttle key for proper deduplication
+    return this.request<any>(
+      `/github/repositories/${repoId}/files`,
+      {},
+      `repo_files_${repoId}`
+    );
   }
 
   async getFileContent(repoId: string, filePath: string) {

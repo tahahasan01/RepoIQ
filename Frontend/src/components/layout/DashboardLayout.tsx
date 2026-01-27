@@ -19,10 +19,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
+import NotificationBell from "@/components/NotificationBell";
 import { useState, useEffect } from "react";
 import apiClient from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { runScan, scanStorage, ScanResult } from "@/services/scanService";
+import { formatRelativeTime } from "@/lib/timeUtils";
+import { useNotificationStore, startBackgroundAnalysisPolling } from "@/stores/notificationStore";
 // role is owner-only now; no role hook needed here
 import {
   DropdownMenu,
@@ -42,6 +45,11 @@ interface DashboardLayoutProps {
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
   const { id: repoId } = useParams<{ id: string }>();
+  
+  // Start background analysis polling
+  useEffect(() => {
+    startBackgroundAnalysisPolling();
+  }, []);
 
   // Generate sidebar links dynamically based on repoId
   const sidebarLinks = repoId ? [
@@ -189,67 +197,72 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     };
   }, [repoId]);
 
+  // Get notification store actions
+  const { startBackgroundAnalysis, addNotification, backgroundAnalyses } = useNotificationStore();
+  
+  // Check if there's an active analysis for this repo
+  const activeAnalysis = repoId ? backgroundAnalyses.get(repoId) : undefined;
+  const isAnalysisRunning = activeAnalysis?.status === 'in_progress' || activeAnalysis?.status === 'prefetching';
+  
   const handleRunScan = async () => {
     if (!repoId) {
       console.error('[DashboardLayout] Cannot run scan: no repoId');
       return;
     }
     
+    // Don't start if already running
+    if (isAnalysisRunning) {
+      console.log('[DashboardLayout] Analysis already running');
+      return;
+    }
+    
     setIsScanning(true);
-    console.log('[DashboardLayout] 🚀 Starting analysis for repo:', repoId);
+    console.log('[DashboardLayout] Starting analysis for repo:', repoId);
     
     try {
       // Start the analysis
-      await apiClient.startAnalysis(repoId as string);
-      console.log('[DashboardLayout] ✅ Analysis started successfully');
+      const result = await apiClient.startAnalysis(repoId as string);
+      console.log('[DashboardLayout] Analysis started:', result);
       
-      // Refresh history after starting scan
-      const history = await apiClient.getAnalysisHistory(repoId as string);
-      console.log('[DashboardLayout] Fetched updated history:', history);
-      
-      // Normalize history data (same as in load() function)
-      let historyArray: any[] = [];
-      if (Array.isArray(history)) {
-        historyArray = history;
-      } else if (history && Array.isArray(history.history)) {
-        historyArray = history.history;
+      if (result && result.analysis_id) {
+        // Track in background analysis system for notifications
+        startBackgroundAnalysis(repoId, repoName, result.analysis_id);
+        
+        addNotification({
+          type: 'info',
+          title: 'Analysis Started',
+          message: `${repoName} analysis is running...`,
+          repoId: repoId,
+          repoName: repoName,
+          analysisId: result.analysis_id,
+        });
       }
       
-      const scanItems = historyArray.map((item: any) => ({
-        id: item.id || String(Date.now()),
-        timestamp: new Date(item.completed_at || item.created_at || item.started_at || Date.now()).getTime(),
-        repoName: repoName,
-        branch: branch,
-        issues: item.issues || [],
-        stats: {
-          total: item.total_issues ?? item.total ?? 0,
-          critical: item.critical_issues ?? 0,
-          high: item.high_issues ?? 0,
-          medium: item.medium_issues ?? 0,
-          low: item.low_issues ?? 0,
-        }
-      }));
-      
-      setScanHistory(scanItems);
-      console.log('[DashboardLayout] ✅ Updated scan history with', scanItems.length, 'items');
-      
-      // Update last scan time
-      const latest = scanItems[0];
-      if (latest?.timestamp) {
-        const formattedTime = new Date(latest.timestamp).toLocaleString();
-        setLastScan(formattedTime);
-        console.log('[DashboardLayout] ✅ Updated last scan to:', formattedTime);
-      }
-      
-      // Dispatch event for other components to refresh
-      window.dispatchEvent(new CustomEvent("scanCompleted", { detail: { repository_id: repoId } }));
-      console.log('[DashboardLayout] 📡 Dispatched scanCompleted event');
+      // The notification store's polling will handle completion and refresh
     } catch (error) {
-      console.error("[DashboardLayout] ❌ Scan failed:", error);
-    } finally {
+      console.error("[DashboardLayout] Scan failed:", error);
       setIsScanning(false);
+      addNotification({
+        type: 'error',
+        title: 'Analysis Failed',
+        message: `Failed to start analysis: ${(error as any)?.message || 'Unknown error'}`,
+        repoId: repoId,
+        repoName: repoName,
+      });
     }
   };
+  
+  // Sync scanning state with background analysis
+  useEffect(() => {
+    if (repoId) {
+      const analysis = backgroundAnalyses.get(repoId);
+      if (analysis?.status === 'in_progress' || analysis?.status === 'prefetching') {
+        setIsScanning(true);
+      } else {
+        setIsScanning(false);
+      }
+    }
+  }, [repoId, backgroundAnalyses]);
 
   // role toggle removed for owner-only app
 
@@ -351,7 +364,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
             </div>
             <span className="flex items-center gap-1 text-sm text-muted-foreground">
               <Clock className="h-3 w-3" />
-              Last scan: {lastScan}
+              Last scan: {formatRelativeTime(lastScan === "Never" ? null : lastScan)}
             </span>
           </div>
 
@@ -405,19 +418,27 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               size="sm" 
               className="gap-2" 
               onClick={handleRunScan}
-              disabled={isScanning}
+              disabled={isScanning || isAnalysisRunning}
             >
-              {isScanning ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+              {isScanning || isAnalysisRunning ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {activeAnalysis?.status === 'prefetching' 
+                    ? 'Loading...' 
+                    : `Analyzing... ${activeAnalysis?.elapsedSeconds || 0}s`}
+                </>
               ) : (
-                <Play className="h-4 w-4" />
+                <>
+                  <Play className="h-4 w-4" />
+                  Run Scan
+                </>
               )}
-              {isScanning ? "Scanning..." : "Run Scan"}
             </Button>
             )}
 
             {/* Role toggle removed: app is owner-only */}
 
+            <NotificationBell />
             <ThemeToggle />
             <AccountDropdown />
           </div>
