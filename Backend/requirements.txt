@@ -8,7 +8,7 @@ python-dotenv==1.0.0
 pydantic[email]==2.5.0
 pydantic-settings==2.1.0
 PyGithub==2.1.1
-httpx==0.25.2
+httpx
 openai==1.6.1
 langchain==0.1.0
 langchain-openai==0.0.2
