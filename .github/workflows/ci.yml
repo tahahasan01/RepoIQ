@@ -124,7 +124,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: Frontend
-        run: npm ci
+        run: npm install
 
       - name: Run type check
         working-directory: Frontend
@@ -154,7 +154,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: Frontend
-        run: npm ci
+        run: npm install
 
       - name: Run ESLint
         working-directory: Frontend
