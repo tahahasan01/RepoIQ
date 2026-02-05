@@ -26,15 +26,14 @@ def validate_file_path(file_path: str) -> str:
             detail="File path is required"
         )
     
-    # Normalize the path - remove leading/trailing whitespace
-    normalized_path = file_path.strip()
+    # Normalize the path - remove leading/trailing whitespace and leading slashes
+    # (leading slashes are safe in repo context, they just mean "from repo root")
+    normalized_path = file_path.strip().lstrip('/').lstrip('\\')
     
     # SECURITY: Block path traversal attempts
     traversal_patterns = [
         r'\.\.',        # Parent directory traversal
-        r'^/',          # Absolute path from root
-        r'^\\',         # Windows absolute path
-        r'^[a-zA-Z]:',  # Windows drive letter
+        r'^[a-zA-Z]:',  # Windows drive letter (absolute system path)
         r'~',           # Home directory
         r'\x00',        # Null byte injection
     ]
@@ -57,9 +56,6 @@ def validate_file_path(file_path: str) -> str:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access to this file type is not allowed"
             )
-    
-    # Remove any leading slashes
-    normalized_path = normalized_path.lstrip('/').lstrip('\\')
     
     return normalized_path
 
