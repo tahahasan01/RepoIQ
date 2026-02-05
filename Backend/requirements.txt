@@ -22,6 +22,7 @@ Pillow==10.4.0
 validators==0.22.0
 orjson==3.11.5
 structlog==23.2.0
+loguru==0.7.2
 slowapi==0.1.9
 radon==6.0.1
 bandit==1.7.5

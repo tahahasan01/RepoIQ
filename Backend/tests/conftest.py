@@ -57,7 +57,7 @@ def app():
     mock_redis.ping.return_value = True
     mock_redis.get.return_value = None
     
-    with patch('app.db.database.get_supabase_client', return_value=mock_supabase), \
+    with patch('app.db.get_supabase_client', return_value=mock_supabase), \
          patch('redis.Redis.from_url', return_value=mock_redis):
         try:
             from main import app as _app
