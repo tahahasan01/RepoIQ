@@ -16,25 +16,36 @@ export default function GitHubCallback() {
     hasRun.current = true;
 
     const handleCallback = async () => {
+      // Check if already authenticated (page refresh after login)
+      const existingToken = localStorage.getItem("token");
+      if (existingToken) {
+        console.log("[GitHub OAuth] Already authenticated, redirecting...");
+        navigate("/repos", { replace: true });
+        return;
+      }
+
       const params = new URLSearchParams(window.location.search);
       const code = params.get("code");
       const error = params.get("error");
 
       if (error) {
         console.error("[GitHub OAuth] Error:", error);
-        navigate("/login?error=oauth_failed");
+        navigate("/login?error=oauth_failed", { replace: true });
         return;
       }
 
       if (!code) {
         console.error("[GitHub OAuth] No code in callback");
-        navigate("/login?error=no_code");
+        navigate("/login?error=no_code", { replace: true });
         return;
       }
 
       try {
         setStatus("Authenticating...");
         console.log("[GitHub OAuth] Exchanging code for token...");
+        
+        // Clear the URL parameters immediately to prevent reuse
+        window.history.replaceState({}, document.title, window.location.pathname);
         
         const startTime = performance.now();
         const response = await apiClient.githubCallback(code);
@@ -71,9 +82,17 @@ export default function GitHubCallback() {
             console.error("[GitHub OAuth] Failed to fetch user in background:", err);
           });
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("[GitHub OAuth] Callback failed:", err);
-        navigate("/login?error=callback_failed");
+        // Clear any partially stored data
+        localStorage.removeItem("token");
+        localStorage.removeItem("refresh_token");
+        
+        // Provide more specific error message
+        const errorMsg = err.response?.data?.detail?.includes("expired") 
+          ? "auth_expired" 
+          : "callback_failed";
+        navigate(`/login?error=${errorMsg}`, { replace: true });
       }
     };
 

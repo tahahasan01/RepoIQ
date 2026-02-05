@@ -20,6 +20,10 @@ import { RequestThrottler } from '@/utils/throttle';
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 const IS_DEV = import.meta.env.DEV;
 
+// Token refresh configuration
+const TOKEN_REFRESH_THRESHOLD_MS = 5 * 60 * 1000; // Refresh if < 5 min remaining
+const TOKEN_CHECK_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
+
 // Production-safe logging - only log in development
 const log = {
   debug: (...args: any[]) => IS_DEV && console.log('[API]', ...args),
@@ -27,6 +31,48 @@ const log = {
   warn: (...args: any[]) => console.warn('[API]', ...args),
   error: (...args: any[]) => console.error('[API]', ...args),
 };
+
+/**
+ * Decode JWT token payload without verification (client-side only)
+ */
+function decodeJwtPayload(token: string): { exp?: number; sub?: string } | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(atob(parts[1]));
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get token expiration time in milliseconds
+ */
+function getTokenExpirationMs(token: string): number | null {
+  const payload = decodeJwtPayload(token);
+  if (!payload || !payload.exp) return null;
+  return payload.exp * 1000; // Convert seconds to ms
+}
+
+/**
+ * Check if token is about to expire (within threshold)
+ */
+function isTokenExpiringSoon(token: string, thresholdMs: number = TOKEN_REFRESH_THRESHOLD_MS): boolean {
+  const expMs = getTokenExpirationMs(token);
+  if (!expMs) return true; // If we can't decode, assume expired
+  const remainingMs = expMs - Date.now();
+  return remainingMs < thresholdMs;
+}
+
+/**
+ * Get remaining time until token expires
+ */
+function getTokenRemainingMs(token: string): number {
+  const expMs = getTokenExpirationMs(token);
+  if (!expMs) return 0;
+  return Math.max(0, expMs - Date.now());
+}
 
 interface ApiError {
   detail: string | { msg: string }[];
@@ -81,11 +127,75 @@ class ApiClient {
   
   // Track AbortControllers for request cancellation
   private abortControllers = new Map<string, AbortController>();
+  
+  // Background token refresh interval
+  private tokenCheckInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
     // Throttle requests with 300ms minimum delay between same endpoint calls
     this.requestThrottler = new RequestThrottler(300);
+    
+    // Start background token refresh check
+    this.startTokenRefreshCheck();
+  }
+  
+  /**
+   * Start background interval to check and refresh tokens proactively
+   */
+  private startTokenRefreshCheck(): void {
+    // Clear existing interval if any
+    if (this.tokenCheckInterval) {
+      clearInterval(this.tokenCheckInterval);
+    }
+    
+    // Check token every minute
+    this.tokenCheckInterval = setInterval(() => {
+      this.proactiveTokenRefresh();
+    }, TOKEN_CHECK_INTERVAL_MS);
+    
+    // Also check immediately on startup
+    setTimeout(() => this.proactiveTokenRefresh(), 1000);
+  }
+  
+  /**
+   * Proactively refresh token if it's about to expire
+   */
+  private async proactiveTokenRefresh(): Promise<void> {
+    const token = this.getToken();
+    if (!token) return; // Not logged in
+    
+    if (isTokenExpiringSoon(token)) {
+      const remainingMs = getTokenRemainingMs(token);
+      const remainingMin = Math.round(remainingMs / 60000);
+      log.info(`Token expiring in ${remainingMin}min, proactively refreshing...`);
+      
+      const success = await this.tryRefreshToken();
+      if (success) {
+        log.info('Proactive token refresh successful');
+      } else {
+        log.warn('Proactive token refresh failed');
+        // Don't clear auth yet - let the next request handle it
+      }
+    }
+  }
+  
+  /**
+   * Ensure token is fresh before making a request
+   * Returns true if token is valid (or was refreshed), false if auth failed
+   */
+  private async ensureTokenFresh(): Promise<boolean> {
+    const token = this.getToken();
+    if (!token) return true; // No token = public request
+    
+    // Check if token is expiring very soon (< 30 seconds)
+    // If so, refresh before making the request
+    if (isTokenExpiringSoon(token, 30 * 1000)) {
+      log.info('Token expiring very soon, refreshing before request...');
+      return await this.tryRefreshToken();
+    }
+    
+    return true;
   }
   
   /**
@@ -135,6 +245,13 @@ class ApiClient {
     throttleKey?: string
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
+    
+    // Proactively refresh token if expiring very soon (non-blocking for most requests)
+    // Skip for auth endpoints to avoid infinite loops
+    if (!endpoint.includes('/auth/')) {
+      await this.ensureTokenFresh();
+    }
+    
     let token = this.getToken();
     
     // Don't throttle critical endpoints that need fresh data
@@ -568,6 +685,172 @@ class ApiClient {
   async deleteAccount() {
     return this.request<void>('/users/me', {
       method: 'DELETE',
+    });
+  }
+
+  // Organization endpoints
+  async createOrganization(name: string, planType: string = 'free') {
+    return this.request<any>('/organizations', {
+      method: 'POST',
+      body: JSON.stringify({ name, plan_type: planType }),
+    });
+  }
+
+  async listOrganizations() {
+    return this.request<any[]>('/organizations');
+  }
+
+  async getOrganization(orgId: string) {
+    return this.request<any>(`/organizations/${orgId}`);
+  }
+
+  async updateOrganization(orgId: string, data: { name?: string; plan_type?: string }) {
+    return this.request<any>(`/organizations/${orgId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteOrganization(orgId: string) {
+    return this.request<void>(`/organizations/${orgId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getOrganizationRepositories(orgId: string) {
+    return this.request<any[]>(`/organizations/${orgId}/repositories`);
+  }
+
+  // Team endpoints
+  async createTeam(organizationId: string, name: string, managerId?: string, description?: string) {
+    return this.request<any>('/teams', {
+      method: 'POST',
+      body: JSON.stringify({ organization_id: organizationId, name, manager_id: managerId, description }),
+    });
+  }
+
+  async listOrganizationTeams(orgId: string) {
+    return this.request<any[]>(`/teams/organization/${orgId}`);
+  }
+
+  async getTeam(teamId: string) {
+    return this.request<any>(`/teams/${teamId}`);
+  }
+
+  async deleteTeam(teamId: string) {
+    return this.request<void>(`/teams/${teamId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async addTeamMember(teamId: string, userId: string, role: string = 'member') {
+    return this.request<any>(`/teams/${teamId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, role }),
+    });
+  }
+
+  async removeTeamMember(teamId: string, userId: string) {
+    return this.request<void>(`/teams/${teamId}/members/${userId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getTeamMembers(teamId: string) {
+    return this.request<any[]>(`/teams/${teamId}/members`);
+  }
+
+  async assignRepositoryToTeam(teamId: string, repoId: string) {
+    return this.request<any>(`/teams/${teamId}/repositories/${repoId}`, {
+      method: 'POST',
+    });
+  }
+
+  async getTeamRepositories(teamId: string) {
+    return this.request<any[]>(`/teams/${teamId}/repositories`);
+  }
+
+  // Developer endpoints
+  async getDeveloperPerformance(userId: string, repositoryId?: string, periodDays: number = 30) {
+    const params = new URLSearchParams({ period_days: periodDays.toString() });
+    if (repositoryId) params.append('repository_id', repositoryId);
+    return this.request<any>(`/developers/performance/${userId}?${params}`);
+  }
+
+  async getOrganizationDevelopers(orgId: string, periodDays: number = 30) {
+    return this.request<any[]>(`/developers/organization/${orgId}?period_days=${periodDays}`);
+  }
+
+  async getRepositoryContributors(repoId: string) {
+    return this.request<any[]>(`/developers/repositories/${repoId}/contributors`);
+  }
+
+  async trackRepositoryContributions(repoId: string) {
+    return this.request<any>(`/developers/repositories/${repoId}/track-contributions`, {
+      method: 'POST',
+    });
+  }
+
+  async getRepositoryOwnership(repoId: string) {
+    return this.request<Record<string, any[]>>(`/developers/repositories/${repoId}/ownership`);
+  }
+
+  async getOwnershipHealth(repoId: string) {
+    return this.request<any>(`/developers/repositories/${repoId}/ownership/health`);
+  }
+
+  async getIssueBlame(issueId: string) {
+    return this.request<any[]>(`/developers/issues/${issueId}/blame`);
+  }
+
+  async getOrphanedCode(repoId: string, daysThreshold: number = 90) {
+    return this.request<any[]>(`/developers/repositories/${repoId}/orphaned-code?days_threshold=${daysThreshold}`);
+  }
+
+  async analyzeCodeOwnership(repoId: string) {
+    return this.request<any>(`/developers/repositories/${repoId}/analyze-ownership`, {
+      method: 'POST',
+    });
+  }
+
+  // Executive Dashboard endpoints
+  async getOrganizationOverview(orgId: string) {
+    return this.request<any>(`/executive/organizations/${orgId}/overview`);
+  }
+
+  async getBusinessRiskScore(orgId: string) {
+    return this.request<any>(`/executive/organizations/${orgId}/risk-score`);
+  }
+
+  async getTopRiskAreas(orgId: string, limit: number = 10) {
+    return this.request<any[]>(`/executive/organizations/${orgId}/risk-areas?limit=${limit}`);
+  }
+
+  async getComplianceStatus(orgId: string) {
+    return this.request<any>(`/executive/organizations/${orgId}/compliance`);
+  }
+
+  async compareTeams(orgId: string, teamIds?: string[]) {
+    const params = teamIds ? `?team_ids=${teamIds.join(',')}` : '';
+    return this.request<any[]>(`/executive/organizations/${orgId}/teams/compare${params}`);
+  }
+
+  async getTeamLeaderboard(orgId: string, metric: string = 'overall_score') {
+    return this.request<any[]>(`/executive/organizations/${orgId}/teams/leaderboard?metric=${metric}`);
+  }
+
+  async getTeamHealthTrends(teamId: string, days: number = 30) {
+    return this.request<any[]>(`/executive/teams/${teamId}/trends?days=${days}`);
+  }
+
+  // Alert endpoints
+  async getOrganizationAlerts(orgId: string, days: number = 7) {
+    return this.request<any[]>(`/alerts/organizations/${orgId}?days=${days}`);
+  }
+
+  async checkAlerts(orgId: string) {
+    return this.request<any>(`/alerts/organizations/${orgId}/check`, {
+      method: 'POST',
     });
   }
 }

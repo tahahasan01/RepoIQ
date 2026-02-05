@@ -25,6 +25,20 @@ const Pricing = lazy(() => import("./pages/Pricing"));
 const Docs = lazy(() => import("./pages/Docs"));
 const Settings = lazy(() => import("./pages/Settings"));
 const UserSettings = lazy(() => import("./pages/UserSettings"));
+const Organizations = lazy(() => import("./pages/Organizations"));
+const OrganizationDetail = lazy(() => import("./pages/OrganizationDetail"));
+const Teams = lazy(() => import("./pages/Teams"));
+const TeamDetail = lazy(() => import("./pages/TeamDetail"));
+const ExecutiveDashboard = lazy(() => import("./pages/ExecutiveDashboard"));
+const Features = lazy(() => import("./pages/Features"));
+const Changelog = lazy(() => import("./pages/Changelog"));
+const About = lazy(() => import("./pages/About"));
+const Blog = lazy(() => import("./pages/Blog"));
+const Careers = lazy(() => import("./pages/Careers"));
+const Contact = lazy(() => import("./pages/Contact"));
+const Privacy = lazy(() => import("./pages/Privacy"));
+const Terms = lazy(() => import("./pages/Terms"));
+const Security = lazy(() => import("./pages/Security"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 // Loading fallback component
@@ -87,6 +101,15 @@ const AppInner = () => {
           <Route path="/pricing" element={<Pricing />} />
           <Route path="/signup" element={<SignUp />} />
           <Route path="/docs" element={<Docs />} />
+          <Route path="/features" element={<Features />} />
+          <Route path="/changelog" element={<Changelog />} />
+          <Route path="/about" element={<About />} />
+          <Route path="/blog" element={<Blog />} />
+          <Route path="/careers" element={<Careers />} />
+          <Route path="/contact" element={<Contact />} />
+          <Route path="/privacy" element={<Privacy />} />
+          <Route path="/terms" element={<Terms />} />
+          <Route path="/security" element={<Security />} />
           <Route path="/repos" element={<Repositories />} />
           <Route path="/dashboard/:id" element={<Dashboard />} />
           <Route path="/analyzing/:id" element={<AnalyzeLoading />} />
@@ -95,6 +118,11 @@ const AppInner = () => {
           <Route path="/dashboard/:id/docs" element={<Documentation />} />
           <Route path="/dashboard/:id/settings" element={<Settings />} />
           <Route path="/settings" element={<UserSettings />} />
+          <Route path="/organizations" element={<Organizations />} />
+          <Route path="/organizations/:id" element={<OrganizationDetail />} />
+          <Route path="/teams" element={<Teams />} />
+          <Route path="/teams/:id" element={<TeamDetail />} />
+          <Route path="/executive/:orgId" element={<ExecutiveDashboard />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>

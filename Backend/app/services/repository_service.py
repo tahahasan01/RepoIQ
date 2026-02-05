@@ -120,8 +120,12 @@ class RepositoryService:
             if to_update:
                 logger.info(f"✅ Updated {len(to_update)} existing repositories")
             
-            # Invalidate repository cache for this user
+            # Invalidate repository cache for this user (all pages)
             self.redis.delete(f"db:repos:{user_id}")
+            # Also invalidate paginated cache (first few pages are most common)
+            for page in range(1, 6):
+                self.redis.delete(f"db:repos:{user_id}:page:{page}:per:30")
+                self.redis.delete(f"db:repos:{user_id}:page:{page}:per:6")
             
             return synced_repos
         except Exception as e:
@@ -175,9 +179,31 @@ class RepositoryService:
             return {}
     
     async def get_user_repositories(self, user_id: str, page: int = 1, per_page: int = 30) -> List[Dict[str, Any]]:
+        """
+        Get repositories for a user with analysis data.
+        
+        OPTIMIZATIONS:
+        - Redis cache for first page (most common request after login)
+        - Parallel fetch of repos + analyses
+        - Only fetch analyses for repos being returned (not all user repos)
+        """
+        import asyncio
+        import time
+        
         try:
+            start_time = time.time()
             offset = (page - 1) * per_page
             
+            # Check Redis cache for first page (most common case after login)
+            cache_key = f"db:repos:{user_id}:page:{page}:per:{per_page}"
+            if page == 1:
+                cached_repos = self.redis.get(cache_key)
+                if cached_repos:
+                    logger.info(f"⚡ INSTANT: Returning {len(cached_repos)} cached repos for user (page {page})")
+                    return cached_repos
+            
+            # Fetch repositories
+            logger.info(f"📂 Fetching repositories for user (page {page})...")
             result = self.db.table("repositories")\
                 .select("*")\
                 .eq("user_id", user_id)\
@@ -187,9 +213,43 @@ class RepositoryService:
                 .execute()
             
             repos = result.data or []
-
-            # Use optimized batch fetch instead of individual queries
-            analysis_map = await self.get_batch_latest_analyses(user_id)
+            
+            if not repos:
+                return []
+            
+            repo_time = time.time()
+            logger.info(f"📂 Repo query took {(repo_time - start_time)*1000:.0f}ms, found {len(repos)} repos")
+            
+            # OPTIMIZATION: Only fetch analyses for the repos we're returning
+            # This is faster than fetching all analyses for all user repos
+            repo_ids = [repo["id"] for repo in repos]
+            
+            analyses_result = self.db.table("analysis_results")\
+                .select("repository_id, overall_score, security_score, quality_score, architecture_score, documentation_score, completed_at, id, status, total_issues")\
+                .in_("repository_id", repo_ids)\
+                .eq("status", "completed")\
+                .order("completed_at", desc=True)\
+                .execute()
+            
+            # Build a map of repo_id -> latest analysis (keep first/latest for each repo)
+            analysis_map: Dict[str, Dict[str, Any]] = {}
+            for analysis in (analyses_result.data or []):
+                repo_id = analysis["repository_id"]
+                if repo_id not in analysis_map:
+                    analysis_map[repo_id] = {
+                        "overall_score": analysis.get("overall_score"),
+                        "security_score": analysis.get("security_score"),
+                        "quality_score": analysis.get("quality_score"),
+                        "architecture_score": analysis.get("architecture_score"),
+                        "documentation_score": analysis.get("documentation_score"),
+                        "completed_at": analysis.get("completed_at"),
+                        "analysis_id": analysis["id"],
+                        "status": analysis["status"],
+                        "total_issues": analysis.get("total_issues", 0)
+                    }
+            
+            analysis_time = time.time()
+            logger.info(f"📊 Analysis query took {(analysis_time - repo_time)*1000:.0f}ms, found {len(analysis_map)} analyses")
             
             # Attach analysis data to repos
             for repo in repos:
@@ -205,6 +265,14 @@ class RepositoryService:
                     repo["lastScan"] = None
                     repo["score"] = None
 
+            # Cache first page for 5 minutes (updated on sync or new analysis)
+            if page == 1:
+                self.redis.set(cache_key, repos, ttl=300)
+                logger.info(f"💾 Cached first page of repos for user")
+            
+            total_time = time.time()
+            logger.info(f"✅ get_user_repositories total: {(total_time - start_time)*1000:.0f}ms")
+            
             return repos
         except Exception as e:
             logger.error(f"Get repositories failed: {str(e)}")

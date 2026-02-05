@@ -1,6 +1,6 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Github, Menu, X, Zap } from "lucide-react";
+import { Github, Menu, X, Zap, FolderGit2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
@@ -23,7 +23,8 @@ export function Navbar() {
   const isHomeActive = location.pathname === "/" && (hash === "" || hash === "#" || hash === "#home");
   const isFeaturesActive = (location.pathname === "/" && hash === "#features") || false;
   const isPricingActive = location.pathname === "/pricing" || (location.pathname === "/" && hash === "#pricing");
-  const isDocsActive = location.pathname === "/docs" || (location.pathname === "/" && hash === "#docs");
+  const isSecurityActive = (location.pathname === "/" && hash === "#security") || false;
+  const isDocsActive = location.pathname === "/docs";
 
   useEffect(() => {
     // Check auth on mount
@@ -35,18 +36,6 @@ export function Navbar() {
       });
     }
   }, []);
-
-  function handleDocsClick() {
-    if (location.pathname === "/") {
-      const el = document.getElementById("docs");
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth" });
-        return;
-      }
-    }
-
-    navigate('/#docs');
-  }
 
   function handleFeaturesClick() {
     if (location.pathname === "/") {
@@ -82,6 +71,18 @@ export function Navbar() {
     navigate('/#pricing');
   }
 
+  function handleSecurityClick() {
+    if (location.pathname === "/") {
+      const el = document.getElementById("security");
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth" });
+        return;
+      }
+    }
+
+    navigate('/#security');
+  }
+
   function handleLogout() {
     logout();
     navigate("/");
@@ -108,44 +109,66 @@ export function Navbar() {
           </span>
         </Link>
 
-        {/* Desktop Navigation: Home, Features, Pricing, Docs (explicit order) */}
-        <div className="hidden md:flex items-center gap-1">
-          <button
-            onClick={handleHomeClick}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              isHomeActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-            }`}
-          >
-            Home
-          </button>
+        {/* Desktop Navigation: Show different links based on auth status */}
+        {isAuthenticated ? (
+          <div className="hidden md:flex items-center gap-1">
+            <Link
+              to="/repos"
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                location.pathname === "/repos" ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              }`}
+            >
+              Repositories
+            </Link>
+          </div>
+        ) : (
+          <div className="hidden md:flex items-center gap-1">
+            <button
+              onClick={handleHomeClick}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                isHomeActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              }`}
+            >
+              Home
+            </button>
 
-          <button
-            onClick={handleFeaturesClick}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              isFeaturesActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-            }`}
-          >
-            Features
-          </button>
+            <button
+              onClick={handleFeaturesClick}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                isFeaturesActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              }`}
+            >
+              Features
+            </button>
 
-          <button
-            onClick={handlePricingClick}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              isPricingActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-            }`}
-          >
-            Pricing
-          </button>
+            <button
+              onClick={handlePricingClick}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                isPricingActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              }`}
+            >
+              Pricing
+            </button>
 
-          <button
-            onClick={handleDocsClick}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              isDocsActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-            }`}
-          >
-            Docs
-          </button>
-        </div>
+            <button
+              onClick={handleSecurityClick}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                isSecurityActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              }`}
+            >
+              Security
+            </button>
+
+            <Link
+              to="/docs"
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                isDocsActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              }`}
+            >
+              Docs
+            </Link>
+          </div>
+        )}
 
         {/* Right side actions */}
         <div className="flex items-center gap-3">
@@ -206,53 +229,77 @@ export function Navbar() {
           className="md:hidden glass-panel border-t"
         >
           <div className="container mx-auto px-4 py-4 flex flex-col gap-2">
-            <button
-              onClick={() => {
-                setMobileMenuOpen(false);
-                handleHomeClick();
-              }}
-              className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                  isHomeActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+            {isAuthenticated ? (
+              <Link
+                to="/repos"
+                onClick={() => setMobileMenuOpen(false)}
+                className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
+                  location.pathname === "/repos" ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
                 }`}
-            >
-              Home
-            </button>
+              >
+                Repositories
+              </Link>
+            ) : (
+              <>
+                <button
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    handleHomeClick();
+                  }}
+                  className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
+                      isHomeActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                    }`}
+                >
+                  Home
+                </button>
 
-            <button
-              onClick={() => {
-                setMobileMenuOpen(false);
-                handleFeaturesClick();
-              }}
-              className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                isFeaturesActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
-            >
-              Features
-            </button>
+                <button
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    handleFeaturesClick();
+                  }}
+                  className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
+                    isFeaturesActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  }`}
+                >
+                  Features
+                </button>
 
-            <button
-              onClick={() => {
-                setMobileMenuOpen(false);
-                handlePricingClick();
-              }}
-              className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                isPricingActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
-            >
-              Pricing
-            </button>
+                <button
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    handlePricingClick();
+                  }}
+                  className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
+                    isPricingActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  }`}
+                >
+                  Pricing
+                </button>
 
-            <button
-              onClick={() => {
-                setMobileMenuOpen(false);
-                handleDocsClick();
-              }}
-              className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                isDocsActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
-            >
-              Docs
-            </button>
+                <button
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    handleSecurityClick();
+                  }}
+                  className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
+                    isSecurityActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  }`}
+                >
+                  Security
+                </button>
+
+                <Link
+                  to="/docs"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
+                    isDocsActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  }`}
+                >
+                  Docs
+                </Link>
+              </>
+            )}
             
             <div className="flex gap-2 mt-2 pt-2 border-t border-border">
               {/* Always show Login/Get Started on homepage (mobile) */}

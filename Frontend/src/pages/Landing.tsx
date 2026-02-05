@@ -3,7 +3,7 @@ import { Footer } from "@/components/layout/Footer";
 import { HeroSection } from "@/components/landing/HeroSection";
 import { FeaturesSection } from "@/components/landing/FeaturesSection";
 import { PricingSection } from "@/components/landing/PricingSection";
-import { DocsSection } from "@/components/landing/DocsSection";
+import { SecuritySection } from "@/components/landing/SecuritySection";
 import { CTASection } from "@/components/landing/CTASection";
 import { useEffect } from "react";
 import { useLocation } from "react-router-dom";
@@ -24,9 +24,9 @@ export default function Landing() {
         document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" });
       }, 50);
     }
-    if (location.hash === "#docs") {
+    if (location.hash === "#security") {
       setTimeout(() => {
-        document.getElementById("docs")?.scrollIntoView({ behavior: "smooth" });
+        document.getElementById("security")?.scrollIntoView({ behavior: "smooth" });
       }, 50);
     }
   }, [location]);
@@ -42,7 +42,7 @@ export default function Landing() {
         <HeroSection />
         <FeaturesSection />
         <PricingSection />
-        <DocsSection />
+        <SecuritySection />
         <CTASection />
       </main>
       <Footer />

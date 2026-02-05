@@ -51,7 +51,7 @@ jobs:
         working-directory: Backend
         env:
           REDIS_URL: redis://localhost:6379/0
-          SECRET_KEY: test_secret_key_for_ci_testing_12345
+          SECRET_KEY: test_secret_key_for_ci_testing_12345678901234567890
           SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://test.supabase.co' }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY || 'test_key' }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || 'test_service_key' }}
@@ -59,6 +59,8 @@ jobs:
           GITHUB_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET || 'test_client_secret' }}
           GITHUB_REDIRECT_URI: http://localhost:8000/auth/callback
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'test_openai_key' }}
+          ALLOWED_ORIGINS: http://localhost:3000,http://localhost:8080
+          PYTHONPATH: .
         run: |
           pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing
 

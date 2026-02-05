@@ -38,13 +38,13 @@ class Settings(BaseSettings):
     
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # Increased from 30 to reduce refresh frequency
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     ENVIRONMENT: str = "development"
     API_V1_PREFIX: str = "/api/v1"
     # Include common dev frontend ports (add more in production via .env)
-    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8081"
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8080,http://localhost:8081"
     
     # CORS specific methods (more restrictive than allow all)
     ALLOWED_METHODS: str = "GET,POST,PUT,DELETE,OPTIONS,PATCH"

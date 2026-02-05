@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
-import { Github, Loader2, Quote } from "lucide-react";
+import { Github, Loader2, Quote, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useState, useEffect } from "react";
 import { useRole } from "@/hooks/useRole";
 import apiClient from "@/lib/api";
@@ -17,9 +17,13 @@ const codingQuotes = [
 export default function Login() {
   const [isLoading, setIsLoading] = useState(false);
   const [quoteIndex, setQuoteIndex] = useState(0);
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { setRole } = useRole();
   const auth = useAuth();
+
+  const errorParam = searchParams.get("error");
+  const [showError, setShowError] = useState(!!errorParam);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -27,6 +31,32 @@ export default function Login() {
     }, 4000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (errorParam) {
+      setShowError(true);
+      // Clear error from URL after showing it
+      setTimeout(() => {
+        setSearchParams({});
+        setShowError(false);
+      }, 5000);
+    }
+  }, [errorParam]);
+
+  const getErrorMessage = (error: string) => {
+    switch (error) {
+      case "auth_expired":
+        return "Authentication session expired. Please try logging in again.";
+      case "oauth_failed":
+        return "GitHub authentication was cancelled or failed.";
+      case "no_code":
+        return "Invalid authentication response. Please try again.";
+      case "callback_failed":
+        return "Authentication failed. Please try again.";
+      default:
+        return "An error occurred during login. Please try again.";
+    }
+  };
 
   const handleGitHubLogin = () => {
     setIsLoading(true);
@@ -79,6 +109,19 @@ export default function Login() {
           <div className="bg-gray-900/40 backdrop-blur-sm rounded-2xl border border-gray-800/50 p-10 shadow-2xl">
             <h2 className="text-3xl font-bold text-white">Log in</h2>
             <p className="text-base text-gray-400 mt-2">Sign in to continue to RepoIQ</p>
+            
+            {showError && errorParam && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="mt-4 p-4 bg-red-500/10 border border-red-500/30 rounded-lg flex items-start gap-3"
+              >
+                <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
+                <p className="text-sm text-red-400">{getErrorMessage(errorParam)}</p>
+              </motion.div>
+            )}
+            
             <div className="mt-8 space-y-6">
               <Button
                 variant="outline"

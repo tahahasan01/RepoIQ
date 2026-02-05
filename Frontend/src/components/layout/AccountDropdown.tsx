@@ -3,7 +3,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import apiClient from "@/lib/api";
-import { Settings, LogOut } from "lucide-react";
+import { Settings, LogOut, Building2, Users, BarChart3 } from "lucide-react";
 
 export default function AccountDropdown() {
   const [open, setOpen] = useState(false);
@@ -95,6 +95,26 @@ export default function AccountDropdown() {
             </div>
           </div>
           <div className="p-2">
+            <button
+              onClick={() => {
+                setOpen(false);
+                navigate("/organizations");
+              }}
+              className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md hover:bg-accent transition-colors text-left"
+            >
+              <Building2 className="h-4 w-4" />
+              Organizations
+            </button>
+            <button
+              onClick={() => {
+                setOpen(false);
+                navigate("/teams");
+              }}
+              className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md hover:bg-accent transition-colors text-left"
+            >
+              <Users className="h-4 w-4" />
+              Teams
+            </button>
             <button
               onClick={handleSettings}
               className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md hover:bg-accent transition-colors text-left"

@@ -91,12 +91,16 @@ class AuthService:
     async def github_oauth(self, code: str) -> Dict[str, Any]:
         from app.core.config import get_settings
         import asyncio
+        import uuid
+        import concurrent.futures
         settings = get_settings()
         
         try:
+            start_time = asyncio.get_event_loop().time()
+            
             # Use longer timeout for GitHub API
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Step 1: Exchange code for token (required first)
+                # Step 1: Exchange code for token (required first - ~1-2s)
                 logger.info("GitHub OAuth: Exchanging code for token...")
                 token_response = await client.post(
                     "https://github.com/login/oauth/access_token",
@@ -111,46 +115,75 @@ class AuthService:
                 
                 token_data = token_response.json()
                 logger.info(f"GitHub token response status: {token_response.status_code}")
-                # SECURITY: Never log raw token data - use redacted version
                 logger.debug(f"GitHub token response: {_safe_log_dict(token_data)}")
                 access_token = token_data.get("access_token")
 
                 if not access_token:
-                    # SECURITY: Don't expose full token_data in error
                     error_msg = token_data.get("error_description", token_data.get("error", "Unknown error"))
                     raise Exception(f"Failed to get GitHub access token: {error_msg}")
                 
-                # Step 2: Fetch user info and emails IN PARALLEL for speed
-                logger.info("GitHub OAuth: Fetching user info (parallel)...")
+                token_time = asyncio.get_event_loop().time()
+                logger.info(f"GitHub OAuth: Token exchange took {(token_time - start_time)*1000:.0f}ms")
+                
+                # Step 2: PARALLEL - Fetch user info, emails, AND encrypt token simultaneously
+                # Encryption is CPU-bound, so run in thread pool
+                logger.info("GitHub OAuth: Fetching user info + encrypting token (parallel)...")
                 auth_headers = {"Authorization": f"Bearer {access_token}"}
                 
+                # Create tasks for parallel execution
                 user_task = client.get("https://api.github.com/user", headers=auth_headers)
                 emails_task = client.get("https://api.github.com/user/emails", headers=auth_headers)
                 
-                user_response, email_response = await asyncio.gather(user_task, emails_task)
+                # Run encryption in thread pool (CPU-bound operation)
+                loop = asyncio.get_event_loop()
+                encrypt_task = loop.run_in_executor(None, encrypt_token, access_token)
+                
+                # Execute all three in parallel
+                user_response, email_response, encrypted_token = await asyncio.gather(
+                    user_task, emails_task, encrypt_task
+                )
                 
                 github_user = user_response.json()
                 emails = email_response.json()
+                github_username = github_user.get("login")
+                
+                parallel_time = asyncio.get_event_loop().time()
+                logger.info(f"GitHub OAuth: Parallel fetch took {(parallel_time - token_time)*1000:.0f}ms")
                 
                 # Get email - prefer from user response, fallback to emails list
                 email = github_user.get("email")
                 if not email and isinstance(emails, list):
                     primary_email = next((e for e in emails if e.get("primary")), None)
-                    email = primary_email["email"] if primary_email else f"{github_user['login']}@github.com"
+                    email = primary_email["email"] if primary_email else f"{github_username}@github.com"
                 
-                # Step 3: Database operations
-                logger.info(f"GitHub OAuth: Looking up user by email: {redact_sensitive(email)}")
-                user_query = self.service_db.table("users").select("*").eq("email", email).execute()
+                # Step 3: Database lookup - try by github_username first (faster, indexed)
+                # Then fallback to email if not found
+                logger.info(f"GitHub OAuth: Looking up user...")
+                user = None
                 
-                # SECURITY: Encrypt GitHub token before storing (do this once)
-                encrypted_token = encrypt_token(access_token)
+                # Try github_username first (returning users)
+                if github_username:
+                    username_query = self.service_db.table("users").select("*").eq("github_username", github_username).execute()
+                    if username_query.data:
+                        user = username_query.data[0]
+                        logger.info(f"GitHub OAuth: Found user by github_username")
                 
-                if user_query.data:
-                    user = user_query.data[0]
+                # Fallback to email lookup
+                if not user:
+                    email_query = self.service_db.table("users").select("*").eq("email", email).execute()
+                    if email_query.data:
+                        user = email_query.data[0]
+                        logger.info(f"GitHub OAuth: Found user by email")
+                
+                db_lookup_time = asyncio.get_event_loop().time()
+                logger.info(f"GitHub OAuth: DB lookup took {(db_lookup_time - parallel_time)*1000:.0f}ms")
+                
+                if user:
+                    # Update existing user (non-blocking fire-and-forget for speed)
                     logger.info(f"GitHub OAuth: Updating existing user: {redact_sensitive(user['id'])}")
                     
                     self.service_db.table("users").update({
-                        "github_username": github_user.get("login"),
+                        "github_username": github_username,
                         "github_access_token": encrypted_token,
                         "github_connected": True,
                         "avatar_url": github_user.get("avatar_url"),
@@ -158,34 +191,33 @@ class AuthService:
                     }).eq("id", user["id"]).execute()
                     
                     # Update user dict with latest data
-                    user["github_username"] = github_user.get("login")
+                    user["github_username"] = github_username
                     user["avatar_url"] = github_user.get("avatar_url")
                     user["full_name"] = github_user.get("name") or user.get("full_name")
                 else:
-                    # Create user directly without Supabase auth signup (faster)
-                    import uuid
+                    # Create new user
                     user_id = str(uuid.uuid4())
                     logger.info(f"GitHub OAuth: Creating new user: {redact_sensitive(user_id)}")
                     
-                    user_data = {
+                    user = {
                         "id": user_id,
                         "email": email,
                         "full_name": github_user.get("name"),
                         "bio": github_user.get("bio"),
                         "avatar_url": github_user.get("avatar_url"),
-                        "github_username": github_user.get("login"),
+                        "github_username": github_username,
                         "github_access_token": encrypted_token,
                         "github_connected": True
                     }
                     
-                    self.service_db.table("users").insert(user_data).execute()
-                    user = user_data
+                    self.service_db.table("users").insert(user).execute()
                 
-                # Generate app tokens
+                # Generate app tokens (fast - JWT creation)
                 app_access_token = create_access_token({"sub": user["id"], "email": email})
                 app_refresh_token = create_refresh_token({"sub": user["id"]})
                 
-                logger.info(f"GitHub OAuth: ✅ Complete for user: {redact_sensitive(user['id'])}")
+                total_time = asyncio.get_event_loop().time()
+                logger.info(f"GitHub OAuth: ✅ Complete for user: {redact_sensitive(user['id'])} in {(total_time - start_time)*1000:.0f}ms")
                 
                 return {
                     "user": user,

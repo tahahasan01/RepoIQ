@@ -9,7 +9,7 @@ import time
 from loguru import logger
 
 from app.core.config import get_settings
-from app.api.routes import auth, users, github, analysis, chat, webhooks
+from app.api.routes import auth, users, github, analysis, chat, webhooks, organizations, teams, developers, executive, alerts
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.middleware.compression import CompressionMiddleware, JSONOptimizationMiddleware
 from app.middleware.cache_middleware import ResponseCacheMiddleware
@@ -325,6 +325,11 @@ app.include_router(github.router, prefix=settings.api_prefix)
 app.include_router(analysis.router, prefix=settings.api_prefix)
 app.include_router(chat.router, prefix=settings.api_prefix)
 app.include_router(webhooks.router, prefix=settings.api_prefix)
+app.include_router(organizations.router, prefix=settings.api_prefix)
+app.include_router(teams.router, prefix=settings.api_prefix)
+app.include_router(developers.router, prefix=settings.api_prefix)
+app.include_router(executive.router, prefix=settings.api_prefix)
+app.include_router(alerts.router, prefix=settings.api_prefix)
 
 
 if __name__ == "__main__":
