@@ -1,8 +1,8 @@
 # Railway Configuration for RepoIQ Monorepo
-# This file tells Railway we have multiple services
-
-[build]
-builder = "NIXPACKS"
-
-[deploy]
-startCommand = "echo 'This is a monorepo. Deploy Backend and Frontend as separate services.'"
+# NOTE: This is a monorepo with Backend and Frontend as separate services.
+# You MUST set the Root Directory in Railway service settings:
+# - Backend service: Root Directory = "Backend"
+# - Frontend service: Root Directory = "Frontend"
+# 
+# This root-level file is informational only.
+# Railway will use Backend/railway.toml and Frontend/nixpacks.toml when Root Directory is set correctly.
