@@ -3,6 +3,7 @@ Sample tests for the API
 """
 import pytest
 from httpx import AsyncClient
+from unittest.mock import patch, MagicMock
 
 
 @pytest.mark.asyncio
@@ -18,12 +19,27 @@ async def test_root(app):
 
 @pytest.mark.asyncio
 async def test_health_check(app):
-    """Test health check endpoint"""
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        response = await client.get("/health")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "healthy"
+    """Test health check endpoint with mocked dependencies"""
+    # Mock Redis connection
+    mock_redis = MagicMock()
+    mock_redis.ping.return_value = True
+    
+    # Mock Supabase/Database connection
+    mock_db = MagicMock()
+    mock_result = MagicMock()
+    mock_result.data = []
+    mock_db.table.return_value.select.return_value.limit.return_value.execute.return_value = mock_result
+    
+    with patch('redis.Redis.from_url', return_value=mock_redis), \
+         patch('app.db.supabase.Database.get_client', return_value=mock_db):
+        async with AsyncClient(app=app, base_url="http://test") as client:
+            response = await client.get("/health")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "healthy"
+            assert "dependencies" in data
+            assert data["dependencies"]["redis"]["status"] == "healthy"
+            assert data["dependencies"]["database"]["status"] == "healthy"
 
 
 @pytest.mark.asyncio
