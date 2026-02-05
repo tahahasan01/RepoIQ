@@ -7,8 +7,18 @@ from pathlib import Path
 import pytest
 
 # Add Backend directory to Python path so imports work
-backend_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(backend_dir))
+# This must happen BEFORE any imports of our modules
+backend_dir = Path(__file__).parent.parent.resolve()
+backend_dir_str = str(backend_dir)
+
+# Remove if already exists and add to front
+if backend_dir_str in sys.path:
+    sys.path.remove(backend_dir_str)
+sys.path.insert(0, backend_dir_str)
+
+# Debug: Print sys.path for troubleshooting (will show in CI logs)
+print(f"[TEST SETUP] Added to sys.path: {backend_dir_str}", file=sys.stderr)
+print(f"[TEST SETUP] Full sys.path: {sys.path[:3]}...", file=sys.stderr)
 
 # Set environment variables for testing
 os.environ.setdefault("SECRET_KEY", "test_secret_key_for_testing_12345678901234567890")

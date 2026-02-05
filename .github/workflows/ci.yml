@@ -60,9 +60,9 @@ jobs:
           GITHUB_REDIRECT_URI: http://localhost:8000/auth/callback
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'test_openai_key' }}
           ALLOWED_ORIGINS: http://localhost:3000,http://localhost:8080
-          PYTHONPATH: .
+          PYTHONPATH: ${{ github.workspace }}/Backend
         run: |
-          pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing
+          python -m pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage
         uses: codecov/codecov-action@v3
