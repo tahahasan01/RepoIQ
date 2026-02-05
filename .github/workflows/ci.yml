@@ -220,7 +220,7 @@ jobs:
         env:
           VITE_API_BASE_URL: ${{ secrets.API_BASE_URL || 'http://localhost:8000/api/v1' }}
         run: |
-          npm ci
+          npm ci --include=optional
           npm run build
 
       - name: Upload build artifacts
