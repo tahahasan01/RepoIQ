@@ -158,7 +158,7 @@ async def health_check():
     Returns detailed status for each component.
     """
     from redis import Redis
-    from app.db.supabase import get_supabase_client
+    from app.db.supabase import Database
     
     health_status = {
         "status": "healthy",
@@ -180,7 +180,7 @@ async def health_check():
     
     # Check Supabase/Database
     try:
-        supabase = get_supabase_client()
+        supabase = Database.get_client()
         # Simple query to verify connection
         result = supabase.table("repositories").select("id").limit(1).execute()
         health_status["dependencies"]["database"] = {"status": "healthy"}
