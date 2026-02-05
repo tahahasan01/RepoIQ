@@ -9,10 +9,17 @@ Railway is failing with: "Nixpacks was unable to generate a build plan" because 
 1. Go to your Railway project: https://railway.app
 2. Click on the **"RepoIQ"** service (the one that failed)
 3. Click on **"Settings"** tab (top right)
-4. Scroll down to **"Root Directory"** section
-5. Change from empty/default to: **`Backend`**
-6. Click **"Save"**
-7. Railway will automatically trigger a new deployment
+4. **Set Root Directory:**
+   - Scroll down to **"Source"** section (in the right sidebar)
+   - Find **"Root Directory"** field
+   - Change from empty/default to: **`Backend`**
+   - Click **"Save"**
+5. **Optional - Config-as-code (if Root Directory doesn't work):**
+   - In Settings, click **"Config-as-code"** (right sidebar)
+   - Click **"+ Add File Path"**
+   - Enter: **`Backend/railway.toml`**
+   - Click **"Save"**
+6. Railway will automatically trigger a new deployment
 
 ### Step 2: Verify Build
 - Watch the deployment logs
