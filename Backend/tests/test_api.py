@@ -3,11 +3,10 @@ Sample tests for the API
 """
 import pytest
 from httpx import AsyncClient
-from main import app
 
 
 @pytest.mark.asyncio
-async def test_root():
+async def test_root(app):
     """Test root endpoint"""
     async with AsyncClient(app=app, base_url="http://test") as client:
         response = await client.get("/")
@@ -18,7 +17,7 @@ async def test_root():
 
 
 @pytest.mark.asyncio
-async def test_health_check():
+async def test_health_check(app):
     """Test health check endpoint"""
     async with AsyncClient(app=app, base_url="http://test") as client:
         response = await client.get("/health")
@@ -28,7 +27,7 @@ async def test_health_check():
 
 
 @pytest.mark.asyncio
-async def test_signup_validation():
+async def test_signup_validation(app):
     """Test signup with invalid data"""
     async with AsyncClient(app=app, base_url="http://test") as client:
         response = await client.post(
@@ -42,7 +41,7 @@ async def test_signup_validation():
 
 
 @pytest.mark.asyncio
-async def test_protected_route_without_auth():
+async def test_protected_route_without_auth(app):
     """Test accessing protected route without authentication"""
     async with AsyncClient(app=app, base_url="http://test") as client:
         response = await client.get("/api/v1/users/me")
