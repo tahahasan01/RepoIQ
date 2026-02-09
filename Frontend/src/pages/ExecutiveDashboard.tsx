@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import {
   TrendingUp,
@@ -41,54 +41,49 @@ import {
 import apiClient from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
+import { 
+  useOrganizationOverview, 
+  useBusinessRiskScore, 
+  useTopRiskAreas, 
+  useComplianceStatus, 
+  useTeamLeaderboard 
+} from "@/hooks/useApiQueries";
 
 const COLORS = ["#0ea5e9", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6"];
 
 export default function ExecutiveDashboard() {
   const { orgId } = useParams<{ orgId: string }>();
-  const [overview, setOverview] = useState<any>(null);
-  const [riskScore, setRiskScore] = useState<any>(null);
-  const [riskAreas, setRiskAreas] = useState<any[]>([]);
-  const [compliance, setCompliance] = useState<any>(null);
-  const [teamLeaderboard, setTeamLeaderboard] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const { toast } = useToast();
+  
+  // Use React Query for instant loading with cached data
+  const { data: overview, isLoading: overviewLoading } = useOrganizationOverview(orgId || "", {
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: false, // Don't refetch if we have cached data
+  });
+  const { data: riskScore, isLoading: riskLoading } = useBusinessRiskScore(orgId || "", {
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: false,
+  });
+  const { data: riskAreas = [], isLoading: riskAreasLoading } = useTopRiskAreas(orgId || "", 10, {
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: false,
+  });
+  const { data: compliance, isLoading: complianceLoading } = useComplianceStatus(orgId || "", {
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: false,
+  });
+  const { data: teamLeaderboard = [], isLoading: leaderboardLoading } = useTeamLeaderboard(orgId || "", "overall_score", {
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: false,
+  });
+  
+  // Show loading only if we have NO cached data at all
+  // If any data exists, show it immediately
+  const loading = (overviewLoading && !overview && !riskScore && !compliance) || 
+                  (riskLoading && !riskScore && !overview) || 
+                  (complianceLoading && !compliance && !overview);
 
-  useEffect(() => {
-    if (orgId) {
-      loadData();
-    }
-  }, [orgId]);
-
-  const loadData = async () => {
-    if (!orgId) return;
-    try {
-      setLoading(true);
-      const [overviewData, riskData, riskAreasData, complianceData, leaderboardData] =
-        await Promise.all([
-          apiClient.getOrganizationOverview(orgId),
-          apiClient.getBusinessRiskScore(orgId),
-          apiClient.getTopRiskAreas(orgId, 10),
-          apiClient.getComplianceStatus(orgId),
-          apiClient.getTeamLeaderboard(orgId, "overall_score"),
-        ]);
-      setOverview(overviewData);
-      setRiskScore(riskData);
-      setRiskAreas(riskAreasData);
-      setCompliance(complianceData);
-      setTeamLeaderboard(leaderboardData);
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to load dashboard data",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (loading) {
+  if (loading && !overview && !riskScore) {
     return (
       <div className="min-h-screen bg-background">
         <Navbar />

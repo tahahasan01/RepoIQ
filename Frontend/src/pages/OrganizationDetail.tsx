@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import {
   Building2,
@@ -49,94 +49,140 @@ import {
 import apiClient from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
+import { useOrganization, useOrganizationTeams, useOrganizationRepositories, queryKeys } from "@/hooks/useApiQueries";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 export default function OrganizationDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [organization, setOrganization] = useState<any>(null);
-  const [teams, setTeams] = useState<any[]>([]);
-  const [repositories, setRepositories] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [editingName, setEditingName] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const queryClient = useQueryClient();
   const { toast } = useToast();
+  
+  // Use React Query for instant loading with cached data
+  const { data: organization, isLoading: orgLoading, error: orgError } = useOrganization(id || "", {
+    placeholderData: (previousData) => previousData,
+  });
+  const { data: teams = [], isLoading: teamsLoading } = useOrganizationTeams(id || "", {
+    placeholderData: (previousData) => previousData,
+  });
+  const { data: repositories = [], isLoading: reposLoading } = useOrganizationRepositories(id || "", {
+    placeholderData: (previousData) => previousData,
+  });
+  
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState(organization?.name || "");
+  
+  // Show loading only if we have no cached data
+  const loading = orgLoading && !organization;
+  
+  // Update newName when organization loads
+  if (organization && newName !== organization.name) {
+    setNewName(organization.name);
+  }
 
-  useEffect(() => {
-    if (id) {
-      loadData();
-    }
-  }, [id]);
-
-  const loadData = async () => {
-    if (!id) return;
-    try {
-      setLoading(true);
-      const [org, orgTeams, orgRepos] = await Promise.all([
-        apiClient.getOrganization(id),
-        apiClient.listOrganizationTeams(id),
-        apiClient.getOrganizationRepositories(id),
-      ]);
-      setOrganization(org);
-      setTeams(orgTeams);
-      setRepositories(orgRepos);
-      setNewName(org.name);
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to load organization data",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleUpdateName = async () => {
-    if (!id || !newName.trim()) return;
-    try {
-      setSaving(true);
-      await apiClient.updateOrganization(id, newName);
-      setOrganization({ ...organization, name: newName });
+  const updateOrgMutation = useMutation({
+    mutationFn: ({ orgId, name }: { orgId: string; name: string }) =>
+      apiClient.updateOrganization(orgId, { name: name }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.organization(id!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.organizations });
       setEditingName(false);
       toast({
         title: "Success",
         description: "Organization name updated",
       });
-    } catch (error: any) {
+    },
+    onError: (error: any) => {
       toast({
         title: "Error",
         description: error.message || "Failed to update organization",
         variant: "destructive",
       });
-    } finally {
-      setSaving(false);
-    }
-  };
+    },
+  });
 
-  const handleDelete = async () => {
-    if (!id) return;
-    try {
-      setDeleting(true);
-      await apiClient.deleteOrganization(id);
+  const deleteOrgMutation = useMutation({
+    mutationFn: async (orgId: string) => {
+      // Add timeout to prevent hanging
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Delete request timed out')), 10000)
+      );
+      const deletePromise = apiClient.deleteOrganization(orgId);
+      return Promise.race([deletePromise, timeoutPromise]) as Promise<void>;
+    },
+    onMutate: async (orgId) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: queryKeys.organizations });
+      await queryClient.cancelQueries({ queryKey: queryKeys.organization(orgId) });
+      
+      // Snapshot previous values
+      const previousOrgs = queryClient.getQueryData(queryKeys.organizations);
+      const previousOrg = queryClient.getQueryData(queryKeys.organization(orgId));
+      
+      // Optimistically remove organization from cache
+      queryClient.setQueryData(queryKeys.organizations, (old: any[] = []) => 
+        old.filter((org: any) => org.id !== orgId)
+      );
+      
+      // Navigate immediately for instant feedback
+      navigate("/organizations");
+      
+      return { previousOrgs, previousOrg };
+    },
+    onError: (error: any, orgId, context) => {
+      const isTimeout = error?.message?.includes('timeout');
+      const is404 = error?.message?.includes('404') || error?.status === 404;
+      
+      // Rollback on error (unless timeout or 404)
+      if (!isTimeout && !is404) {
+        if (context?.previousOrgs) {
+          queryClient.setQueryData(queryKeys.organizations, context.previousOrgs);
+        }
+        if (context?.previousOrg) {
+          queryClient.setQueryData(queryKeys.organization(orgId), context.previousOrg);
+        }
+        // Navigate back if error
+        navigate(`/organizations/${orgId}`);
+      }
+      
+      // If 404 or timeout, the org might already be deleted - show success message
+      if (is404 || isTimeout) {
+        toast({
+          title: isTimeout ? "Timeout" : "Success",
+          description: isTimeout 
+            ? "Delete request timed out. Organization may have been deleted."
+            : "Organization removed (may have already been deleted)",
+        });
+      } else {
+        toast({
+          title: "Error",
+          description: error.message || "Failed to delete organization",
+          variant: "destructive",
+        });
+      }
+    },
+    onSuccess: () => {
+      // Invalidate to ensure consistency
+      queryClient.invalidateQueries({ queryKey: queryKeys.organizations });
+      queryClient.invalidateQueries({ queryKey: queryKeys.teams() });
       toast({
         title: "Success",
-        description: "Organization deleted",
+        description: "Organization deleted successfully",
       });
-      navigate("/organizations");
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to delete organization",
-        variant: "destructive",
-      });
-    } finally {
-      setDeleting(false);
-    }
+    },
+  });
+
+  const handleUpdateName = () => {
+    if (!id || !newName.trim()) return;
+    updateOrgMutation.mutate({ orgId: id, name: newName });
   };
 
-  if (loading) {
+  const handleDelete = () => {
+    if (!id) return;
+    deleteOrgMutation.mutate(id);
+  };
+
+  if (loading && !organization) {
     return (
       <div className="min-h-screen bg-background">
         <Navbar />
@@ -147,7 +193,7 @@ export default function OrganizationDetail() {
     );
   }
 
-  if (!organization) {
+  if (orgError || (!organization && !orgLoading)) {
     return (
       <div className="min-h-screen bg-background">
         <Navbar />
@@ -526,8 +572,8 @@ export default function OrganizationDetail() {
                           onChange={(e) => setNewName(e.target.value)}
                           className="max-w-xs"
                         />
-                        <Button onClick={handleUpdateName} disabled={saving} size="sm">
-                          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+                        <Button onClick={handleUpdateName} disabled={updateOrgMutation.isPending} size="sm">
+                          {updateOrgMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
                         </Button>
                         <Button variant="ghost" onClick={() => {
                           setEditingName(false);
@@ -661,9 +707,9 @@ export default function OrganizationDetail() {
                         <AlertDialogAction
                           onClick={handleDelete}
                           className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                          disabled={deleting}
+                          disabled={deleteOrgMutation.isPending}
                         >
-                          {deleting ? (
+                          {deleteOrgMutation.isPending ? (
                             <Loader2 className="h-4 w-4 animate-spin mr-2" />
                           ) : (
                             <Trash2 className="h-4 w-4 mr-2" />

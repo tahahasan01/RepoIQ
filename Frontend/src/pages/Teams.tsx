@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Link, useSearchParams, useNavigate } from "react-router-dom";
 import { Plus, Users, Building2, ArrowRight, Loader2, UserPlus, Info, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -30,114 +30,191 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import apiClient from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
-
-// Cache keys
-const TEAMS_CACHE_KEY = "repoiq_teams_cache";
-const ORGS_CACHE_KEY = "repoiq_orgs_cache";
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+import { useTeams, useOrganizations, usePrefetchTeam, queryKeys } from "@/hooks/useApiQueries";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 export default function Teams() {
   const [searchParams] = useSearchParams();
   const orgId = searchParams.get("org");
-  const [teams, setTeams] = useState<any[]>([]);
-  const [organizations, setOrganizations] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const navigate = useNavigate();
+  const prefetchTeam = usePrefetchTeam();
+  
+  // Use React Query for instant loading with cached data
+  const { data: organizations = [], isLoading: orgsLoading, refetch: refetchOrgs } = useOrganizations({
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: true, // Always refetch on mount to get latest data
+  });
+  // Only call useTeams if orgId is valid (not null/undefined/empty string)
+  const validOrgId = orgId && orgId !== 'undefined' && orgId !== 'null' ? orgId : undefined;
+  const { data: teams = [], isLoading: teamsLoading, refetch: refetchTeams } = useTeams(validOrgId, {
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: true, // Always refetch on mount to get latest data
+    enabled: true, // Always enabled - useTeams handles undefined internally
+  });
+  
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newTeamName, setNewTeamName] = useState("");
   const [newTeamOrgId, setNewTeamOrgId] = useState(orgId || "");
   const [newTeamDescription, setNewTeamDescription] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [deletingTeamId, setDeletingTeamId] = useState<string | null>(null);
-  const { toast } = useToast();
-  const navigate = useNavigate();
+  
+  // Show loading only if we have no cached data
+  const loading = (orgsLoading && organizations.length === 0) || (teamsLoading && teams.length === 0);
 
-  // Load from cache first for instant display
-  useEffect(() => {
-    const cachedOrgs = sessionStorage.getItem(ORGS_CACHE_KEY);
-    const cachedTeams = sessionStorage.getItem(TEAMS_CACHE_KEY);
-    
-    if (cachedOrgs) {
-      try {
-        const { data, timestamp } = JSON.parse(cachedOrgs);
-        if (Date.now() - timestamp < CACHE_TTL) {
-          setOrganizations(data);
-        }
-      } catch {}
-    }
-    
-    if (cachedTeams && !orgId) {
-      try {
-        const { data, timestamp } = JSON.parse(cachedTeams);
-        if (Date.now() - timestamp < CACHE_TTL) {
-          setTeams(data);
-          setLoading(false);
-        }
-      } catch {}
-    }
-    
-    loadData();
-  }, [orgId]);
-
-  const loadData = async () => {
-    try {
-      // Only show loading if no cached data
-      if (teams.length === 0) {
-        setLoading(true);
-      }
+  const createTeamMutation = useMutation({
+    mutationFn: ({ name, orgId, description }: { name: string; orgId: string; description?: string }) =>
+      apiClient.createTeam(orgId, name, undefined, description),
+    onMutate: async () => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: queryKeys.teams() });
+      await queryClient.cancelQueries({ queryKey: queryKeys.teams(orgId || undefined) });
+    },
+    onSuccess: (newTeam) => {
+      console.log('[Teams] ✅ Created team:', newTeam);
       
-      const orgs = await apiClient.listOrganizations();
-      setOrganizations(orgs);
-      sessionStorage.setItem(ORGS_CACHE_KEY, JSON.stringify({ data: orgs, timestamp: Date.now() }));
+      // Optimistically add new team to cache
+      queryClient.setQueryData(queryKeys.teams(), (old: any[] = []) => {
+        if (old.some((team: any) => team.id === newTeam.id)) {
+          console.log('[Teams] ⚠️ Team already in cache, skipping add');
+          return old;
+        }
+        console.log('[Teams] ➕ Adding new team to cache:', newTeam.name);
+        return [...old, newTeam];
+      });
       
       if (orgId) {
-        const orgTeams = await apiClient.listOrganizationTeams(orgId);
-        setTeams(orgTeams);
-      } else {
-        // Load teams from all organizations IN PARALLEL for faster loading
-        const teamsArrays = await Promise.all(
-          orgs.map(org => 
-            apiClient.listOrganizationTeams(org.id).catch(() => [])
-          )
-        );
-        const allTeams = teamsArrays.flat();
-        setTeams(allTeams);
-        sessionStorage.setItem(TEAMS_CACHE_KEY, JSON.stringify({ data: allTeams, timestamp: Date.now() }));
+        queryClient.setQueryData(queryKeys.teams(orgId), (old: any[] = []) => {
+          if (old.some((team: any) => team.id === newTeam.id)) {
+            return old;
+          }
+          return [...old, newTeam];
+        });
       }
-    } catch (error: any) {
+      
+      setCreateDialogOpen(false);
+      setNewTeamName("");
+      setNewTeamDescription("");
+      setNewTeamOrgId(orgId || "");
+      toast({
+        title: "Success",
+        description: "Team created successfully",
+      });
+      
+      // Force refetch to ensure we have latest data from backend
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: queryKeys.teams() });
+        queryClient.invalidateQueries({ queryKey: queryKeys.teams(orgId || undefined) });
+        refetchTeams();
+      }, 100);
+    },
+    onError: (error: any) => {
+      console.error('[Teams] ❌ Failed to create team:', error);
       toast({
         title: "Error",
-        description: error.message || "Failed to load teams",
+        description: error.message || "Failed to create team",
         variant: "destructive",
       });
-    } finally {
-      setLoading(false);
-    }
-  };
+    },
+  });
 
-  const handleDeleteTeam = async (teamId: string) => {
-    try {
-      setDeletingTeamId(teamId);
-      await apiClient.deleteTeam(teamId);
-      setTeams(teams.filter(t => t.id !== teamId));
-      // Update cache
-      const updatedTeams = teams.filter(t => t.id !== teamId);
-      sessionStorage.setItem(TEAMS_CACHE_KEY, JSON.stringify({ data: updatedTeams, timestamp: Date.now() }));
+  const deleteTeamMutation = useMutation({
+    mutationFn: async (teamId: string) => {
+      console.log('[Teams] 🗑️ Deleting team:', teamId);
+      // Add timeout to prevent hanging
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Delete request timed out')), 10000)
+      );
+      const deletePromise = apiClient.deleteTeam(teamId);
+      return Promise.race([deletePromise, timeoutPromise]) as Promise<void>;
+    },
+    onMutate: async (teamId) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: queryKeys.teams() });
+      await queryClient.cancelQueries({ queryKey: queryKeys.teams(orgId || undefined) });
+      
+      // Snapshot previous values
+      const previousTeamsAll = queryClient.getQueryData(queryKeys.teams());
+      const previousTeamsOrg = queryClient.getQueryData(queryKeys.teams(orgId || undefined));
+      
+      console.log('[Teams] 📸 Snapshot before delete. All teams:', previousTeamsAll?.length, 'Org teams:', previousTeamsOrg?.length);
+      
+      // Optimistically remove team from cache
+      queryClient.setQueryData(queryKeys.teams(), (old: any[] = []) => {
+        const filtered = old.filter((team: any) => team.id !== teamId);
+        console.log('[Teams] ➖ Removed team from all teams cache. Before:', old.length, 'After:', filtered.length);
+        return filtered;
+      });
+      queryClient.setQueryData(queryKeys.teams(orgId || undefined), (old: any[] = []) => {
+        const filtered = old.filter((team: any) => team.id !== teamId);
+        console.log('[Teams] ➖ Removed team from org teams cache. Before:', old.length, 'After:', filtered.length);
+        return filtered;
+      });
+      
+      return { previousTeamsAll, previousTeamsOrg };
+    },
+    onError: (error: any, teamId, context) => {
+      console.error('[Teams] ❌ Delete failed:', error, 'teamId:', teamId);
+      
+      const isTimeout = error?.message?.includes('timeout');
+      const is404 = error?.message?.includes('404') || error?.status === 404;
+      
+      // Rollback on error (unless timeout or 404)
+      if (!isTimeout && !is404) {
+        if (context?.previousTeamsAll) {
+          console.log('[Teams] 🔄 Rolling back cache');
+          queryClient.setQueryData(queryKeys.teams(), context.previousTeamsAll);
+        }
+        if (context?.previousTeamsOrg) {
+          queryClient.setQueryData(queryKeys.teams(orgId || undefined), context.previousTeamsOrg);
+        }
+      }
+      
+      // If 404 or timeout, the team might already be deleted - remove it from cache anyway
+      if (is404 || isTimeout) {
+        console.log('[Teams] ⚠️', isTimeout ? 'Timeout' : '404', '- removing from cache anyway');
+        queryClient.setQueryData(queryKeys.teams(), (old: any[] = []) => 
+          old.filter((team: any) => team.id !== teamId)
+        );
+        queryClient.setQueryData(queryKeys.teams(orgId || undefined), (old: any[] = []) => 
+          old.filter((team: any) => team.id !== teamId)
+        );
+        toast({
+          title: isTimeout ? "Timeout" : "Success",
+          description: isTimeout 
+            ? "Delete request timed out. Team may have been deleted. Refreshing..."
+            : "Team removed (may have already been deleted)",
+        });
+        // Force refetch after timeout/404
+        setTimeout(() => {
+          refetchTeams();
+        }, 500);
+      } else {
+        toast({
+          title: "Error",
+          description: error.message || "Failed to delete team",
+          variant: "destructive",
+        });
+      }
+    },
+    onSuccess: () => {
+      console.log('[Teams] ✅ Delete successful');
+      // Invalidate to ensure consistency
+      queryClient.invalidateQueries({ queryKey: queryKeys.teams() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.teams(orgId || undefined) });
+      refetchTeams(); // Force refetch
       toast({
         title: "Success",
         description: "Team deleted successfully",
       });
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to delete team",
-        variant: "destructive",
-      });
-    } finally {
-      setDeletingTeamId(null);
-    }
+    },
+  });
+
+  const handleDeleteTeam = (teamId: string) => {
+    deleteTeamMutation.mutate(teamId);
   };
 
-  const handleCreateTeam = async () => {
+  const handleCreateTeam = () => {
     if (!newTeamName.trim()) {
       toast({
         title: "Error",
@@ -166,31 +243,26 @@ export default function Teams() {
       return;
     }
 
-    try {
-      setCreating(true);
-      const team = await apiClient.createTeam(
-        newTeamOrgId,
-        newTeamName,
-        undefined,
-        newTeamDescription || undefined
-      );
-      setTeams([...teams, team]);
-      setCreateDialogOpen(false);
-      setNewTeamName("");
-      setNewTeamDescription("");
+    // Check for duplicate team name in the same organization
+    const orgTeams = teams.filter((team: any) => team.organization_id === newTeamOrgId);
+    const duplicateTeam = orgTeams.find((team: any) => 
+      team.name.toLowerCase().trim() === newTeamName.toLowerCase().trim()
+    );
+    
+    if (duplicateTeam) {
       toast({
-        title: "Success",
-        description: "Team created successfully",
-      });
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to create team",
+        title: "Duplicate Team Name",
+        description: `A team named "${newTeamName}" already exists in this organization. Please choose a different name.`,
         variant: "destructive",
       });
-    } finally {
-      setCreating(false);
+      return;
     }
+
+    createTeamMutation.mutate({
+      name: newTeamName,
+      orgId: newTeamOrgId,
+      description: newTeamDescription || undefined,
+    });
   };
 
   if (loading) {
@@ -284,8 +356,8 @@ export default function Teams() {
                 <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>
                   Cancel
                 </Button>
-                <Button onClick={handleCreateTeam} disabled={creating || organizations.length === 0}>
-                  {creating ? (
+                <Button onClick={handleCreateTeam} disabled={createTeamMutation.isPending || organizations.length === 0}>
+                  {createTeamMutation.isPending ? (
                     <>
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                       Creating...
@@ -341,9 +413,9 @@ export default function Teams() {
                             variant="ghost" 
                             size="icon" 
                             className="text-muted-foreground hover:text-destructive"
-                            disabled={deletingTeamId === team.id}
+                            disabled={deleteTeamMutation.isPending && deleteTeamMutation.variables === team.id}
                           >
-                            {deletingTeamId === team.id ? (
+                            {deleteTeamMutation.isPending && deleteTeamMutation.variables === team.id ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
                             ) : (
                               <Trash2 className="h-4 w-4" />
@@ -378,7 +450,10 @@ export default function Teams() {
                         {team.description}
                       </p>
                     )}
-                    <Link to={`/teams/${team.id}`}>
+                    <Link 
+                      to={`/teams/${team.id}`}
+                      onMouseEnter={() => prefetchTeam.prefetch(team.id)}
+                    >
                       <Button variant="outline" className="w-full">
                         View Team
                         <ArrowRight className="h-4 w-4 ml-2" />

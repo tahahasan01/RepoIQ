@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { useState, useEffect } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,10 +13,15 @@ import {
   CheckCircle2,
   Info,
   Loader2,
+  Copy,
+  Check,
+  Lightbulb,
+  Code,
+  Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useParams, useLocation } from "react-router-dom";
-import apiClient from "@/lib/api";
+import { useRepositoryFiles, useFileContent, useAnalysisResults, useAnalysisById } from "@/hooks/useApiQueries";
 
 // Helper function to build a file tree from a flat list of file paths
 function buildFileTree(files: any[]): any[] {
@@ -44,7 +49,6 @@ function buildFileTree(files: any[]): any[] {
     });
   });
   
-  // Convert tree object to array
   function objectToArray(obj: any): any[] {
     return Object.values(obj).map((item: any) => ({
       ...item,
@@ -55,66 +59,9 @@ function buildFileTree(files: any[]): any[] {
   return objectToArray(tree);
 }
 
-// Cache helper functions at module scope for instant access
-const FILES_CACHE_KEY = (id: string) => `repoiq_files_${id}`;
-
-function getCachedFiles(id: string) {
-  try {
-    const raw = sessionStorage.getItem(FILES_CACHE_KEY(id));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    // Cache for 30 minutes
-    if (Date.now() - (parsed.timestamp || 0) > 30 * 60 * 1000) {
-      sessionStorage.removeItem(FILES_CACHE_KEY(id));
-      return null;
-    }
-    return parsed.data;
-  } catch {
-    return null;
-  }
-}
-
-function setCachedFiles(id: string, data: any) {
-  try {
-    sessionStorage.setItem(FILES_CACHE_KEY(id), JSON.stringify({ data, timestamp: Date.now() }));
-  } catch {}
-}
-
-const FILE_CONTENT_CACHE_KEY = (repoId: string, filePath: string) => 
-  `repoiq_file_content_${repoId}_${encodeURIComponent(filePath)}`;
-
-function getCachedFileContent(repoId: string, filePath: string) {
-  try {
-    // Normalize path for consistent cache lookups
-    const normalizedPath = filePath.replace(/^\/+/, '').replace(/\/+/g, '/');
-    const cacheKey = FILE_CONTENT_CACHE_KEY(repoId, normalizedPath);
-    const raw = sessionStorage.getItem(cacheKey);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    // Cache for 30 minutes
-    if (Date.now() - (parsed.timestamp || 0) > 30 * 60 * 1000) {
-      sessionStorage.removeItem(cacheKey);
-      return null;
-    }
-    return parsed.content;
-  } catch {
-    return null;
-  }
-}
-
-function setCachedFileContent(repoId: string, filePath: string, content: string) {
-  try {
-    // Normalize path for consistent cache storage
-    const normalizedPath = filePath.replace(/^\/+/, '').replace(/\/+/g, '/');
-    const cacheKey = FILE_CONTENT_CACHE_KEY(repoId, normalizedPath);
-    sessionStorage.setItem(
-      cacheKey,
-      JSON.stringify({ content, timestamp: Date.now() })
-    );
-  } catch (err) {
-    // Storage quota might be exceeded - log but don't break
-    console.warn('[Files] Failed to cache file content:', err);
-  }
+// Normalize path for consistent matching
+function normalizePath(p: string): string {
+  return p.replace(/^\/+/, '').replace(/\/+/g, '/').toLowerCase();
 }
 
 interface FileTreeItemProps {
@@ -135,12 +82,31 @@ function FileTreeItem({
   const [isOpen, setIsOpen] = useState(depth === 0);
   const isFolder = item.type === "folder";
   const isSelected = selectedFile === item.path || selectedFile === item.name;
-  const issueCount = issuesByFile[item.path] || issuesByFile[item.name] || 0;
   
-  // Debug log for files with issues
-  if (!isFolder && issueCount > 0 && depth === 0) {
-    console.log('[Files] 🔴 File has', issueCount, 'issues:', item.path || item.name);
-  }
+  // Calculate issue count: for files match exact path, for folders sum all nested issues
+  const normalizedItemPath = normalizePath(item.path || item.name || '');
+  const issueCount = Object.entries(issuesByFile).reduce((count, [filePath, num]) => {
+    const normalizedIssuePath = normalizePath(filePath);
+    
+    if (isFolder) {
+      // For folders: count all issues in files that are inside this folder
+      if (normalizedIssuePath.startsWith(normalizedItemPath + '/')) return count + num;
+      return count;
+    }
+    
+    // For files: exact or suffix match
+    if (normalizedIssuePath === normalizedItemPath) return count + num;
+    if (normalizedIssuePath.endsWith('/' + normalizedItemPath) || normalizedItemPath.endsWith('/' + normalizedIssuePath)) return count + num;
+    // Same filename + same parent folder
+    const issueFile = normalizedIssuePath.split('/').pop() || '';
+    const itemFile = normalizedItemPath.split('/').pop() || '';
+    if (issueFile && issueFile === itemFile) {
+      const issueParent = normalizedIssuePath.split('/').slice(-2, -1)[0] || '';
+      const itemParent = normalizedItemPath.split('/').slice(-2, -1)[0] || '';
+      if (issueParent === itemParent || !issueParent || !itemParent) return count + num;
+    }
+    return count;
+  }, 0);
 
   return (
     <div>
@@ -153,35 +119,40 @@ function FileTreeItem({
           }
         }}
         className={cn(
-          "flex items-center gap-2 py-1.5 px-2 rounded-md cursor-pointer transition-colors",
+          "flex items-center gap-1.5 py-1.5 px-1.5 rounded-md cursor-pointer transition-colors",
           isSelected
             ? "bg-primary/10 text-primary"
             : "hover:bg-muted text-muted-foreground hover:text-foreground"
         )}
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
+        style={{ paddingLeft: `${depth * 10 + 6}px` }}
       >
         {isFolder ? (
           <>
             {isOpen ? (
-              <ChevronDown className="h-4 w-4" />
+              <ChevronDown className="h-3.5 w-3.5 shrink-0" />
             ) : (
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-3.5 w-3.5 shrink-0" />
             )}
             {isOpen ? (
-              <FolderOpen className="h-4 w-4 text-primary" />
+              <FolderOpen className="h-3.5 w-3.5 text-primary shrink-0" />
             ) : (
-              <Folder className="h-4 w-4" />
+              <Folder className="h-3.5 w-3.5 shrink-0" />
             )}
           </>
         ) : (
           <>
-            <span className="w-4" />
-            <File className="h-4 w-4" />
+            <span className="w-3.5 shrink-0" />
+            <File className="h-3.5 w-3.5 shrink-0" />
           </>
         )}
-        <span className="text-sm flex-1">{item.name}</span>
-        {!isFolder && issueCount > 0 && (
-          <span className="text-xs px-1.5 py-0.5 rounded-full bg-destructive/10 text-destructive">
+        <span className="text-xs flex-1 truncate">{item.name}</span>
+        {issueCount > 0 && (
+          <span className={cn(
+            "text-[10px] px-1.5 py-0.5 rounded-full shrink-0 font-medium",
+            isFolder 
+              ? "bg-amber-500/15 text-amber-500" 
+              : "bg-destructive/15 text-destructive"
+          )}>
             {issueCount}
           </span>
         )}
@@ -204,455 +175,289 @@ function FileTreeItem({
   );
 }
 
+// Code fix suggestion component
+function CodeFixSuggestion({ issue, fileContent }: { issue: any; fileContent: string }) {
+  const [copied, setCopied] = useState(false);
+  
+  const suggestion = issue.suggestion || issue.fix || '';
+  const lines = fileContent.split('\n');
+  const lineNum = issue.line_number || issue.line || 0;
+  
+  const startLine = Math.max(0, lineNum - 2);
+  const endLine = Math.min(lines.length - 1, lineNum + 1);
+  const codeContext = lines.slice(startLine, endLine + 1);
+  
+  const handleCopy = () => {
+    navigator.clipboard.writeText(suggestion);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="p-2.5 bg-muted/30 rounded-lg border border-border/50">
+      {/* Issue header */}
+      <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+          issue.type === 'error' ? 'bg-destructive/20 text-destructive' :
+          issue.type === 'warning' ? 'bg-warning/20 text-warning' :
+          'bg-primary/20 text-primary'
+        }`}>
+          Line {lineNum}
+        </span>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+          issue.type === 'error' ? 'bg-destructive/10 text-destructive' :
+          issue.type === 'warning' ? 'bg-warning/10 text-warning' :
+          'bg-primary/10 text-primary'
+        }`}>
+          {issue.severity || issue.type}
+        </span>
+      </div>
+      
+      {/* Issue description */}
+      <p className="text-xs text-foreground mb-2 leading-relaxed">{issue.message}</p>
+      
+      {/* Current code (problematic) */}
+      {lineNum > 0 && codeContext.length > 0 && fileContent && (
+        <div className="mb-2">
+          <div className="flex items-center gap-1 mb-1">
+            <AlertTriangle className="h-3 w-3 text-destructive" />
+            <span className="text-[10px] font-medium text-destructive">Current Code</span>
+          </div>
+          <pre className="text-[11px] bg-destructive/5 border border-destructive/20 rounded p-2 overflow-x-auto font-mono leading-relaxed">
+            {codeContext.map((line, i) => (
+              <div key={i} className={cn(
+                "flex",
+                startLine + i + 1 === lineNum && "bg-destructive/10 -mx-2 px-2"
+              )}>
+                <span className="text-muted-foreground w-6 text-right mr-2 select-none shrink-0">{startLine + i + 1}</span>
+                <span className="break-all">{line || ' '}</span>
+              </div>
+            ))}
+          </pre>
+        </div>
+      )}
+      
+      {/* Fix suggestion */}
+      {suggestion && (
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-1">
+              <Wrench className="h-3 w-3 text-green-500" />
+              <span className="text-[10px] font-medium text-green-500">Suggested Fix</span>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 px-1.5 text-[10px]"
+              onClick={handleCopy}
+            >
+              {copied ? (
+                <><Check className="h-2.5 w-2.5 mr-0.5" /> Copied</>
+              ) : (
+                <><Copy className="h-2.5 w-2.5 mr-0.5" /> Copy</>
+              )}
+            </Button>
+          </div>
+          <div className="text-[11px] bg-green-500/5 border border-green-500/20 rounded p-2 overflow-x-auto">
+            <pre className="font-mono whitespace-pre-wrap text-foreground leading-relaxed break-words">{suggestion}</pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Files() {
   const params = useParams();
-  // routes may provide :id or :repoId depending on the router setup
   const repoId = (params as any).id || (params as any).repoId;
   
-  // Extract analysis_id from query params for historical analysis viewing
   const location = useLocation();
   const queryParams = new URLSearchParams(location.search);
   const analysisId = queryParams.get('analysis_id');
   
-  // Initialize from cache for INSTANT loading on first render
-  const cachedFiles = repoId ? getCachedFiles(repoId) : null;
-  const hasCache = cachedFiles && Array.isArray(cachedFiles) && cachedFiles.length > 0;
-  
-  const [filesList, setFilesList] = useState<any[] | null>(cachedFiles);
-  const [fileTree, setFileTree] = useState<any[]>(hasCache ? buildFileTree(cachedFiles) : []);
-  const [loading, setLoading] = useState(!hasCache); // false if we have cache - instant display!
-  const initialSelectedFile = hasCache ? (cachedFiles[0]?.path || cachedFiles[0]?.name || cachedFiles[0]) : null;
-  const [selectedFile, setSelectedFile] = useState<string | null>(initialSelectedFile);
-  
-  // Also try to get cached file content for instant display
-  const initialFileContent = (repoId && initialSelectedFile) 
-    ? getCachedFileContent(repoId, initialSelectedFile.replace(/^\/+/, '').replace(/\/+/g, '/')) 
-    : '';
-  const [fileContent, setFileContent] = useState<string>(initialFileContent || '');
-  const [issuesByFile, setIssuesByFile] = useState<Record<string, number>>({});
-  const [fileIssues, setFileIssues] = useState<any[]>([]);
-  const [loadingFile, setLoadingFile] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [analysisCollapsed, setAnalysisCollapsed] = useState(false);
 
-  useEffect(() => {
-    let mounted = true;
+  // ── React Query: file list (persists across navigations) ──
+  const { data: filesData, isLoading: loadingFiles } = useRepositoryFiles(repoId || '', {
+    enabled: !!repoId,
+  });
+  
+  // ── React Query: analysis data for issues ──
+  const { data: analysisById } = useAnalysisById(analysisId || '', {
+    enabled: !!analysisId,
+  });
+  const { data: analysisLatest } = useAnalysisResults(repoId || '', {
+    enabled: !!repoId && !analysisId,
+  });
+  const analysisData = analysisId ? analysisById : analysisLatest;
 
-    async function loadFilesAndIssues() {
-      if (!repoId) {
-        console.warn('[Files] No repoId in URL params');
-        setLoading(false);
-        return;
-      }
-      
-      // Check if we already displayed cache on initial render
-      const cached = getCachedFiles(repoId as string);
-      const hasCachedFiles = cached && Array.isArray(cached) && cached.length > 0;
-      
-      if (hasCachedFiles) {
-        console.log('[Files] ⚡ INSTANT: Already showing', cached.length, 'cached files');
-        // Don't show loading spinner - cached data is already displayed!
-        // Continue to fetch fresh data in background...
-      } else {
-        // No files cached - try to get from analysis cache
-        const ANALYSIS_CACHE_KEY = `repoiq_analysis_${repoId}`;
-        try {
-          const cachedAnalysis = sessionStorage.getItem(ANALYSIS_CACHE_KEY);
-          if (cachedAnalysis) {
-            const parsed = JSON.parse(cachedAnalysis);
-            const cacheAge = Date.now() - (parsed.timestamp || 0);
-            if (cacheAge < 30 * 60 * 1000) { // 30 min cache
-              if (parsed.data?.issues && Array.isArray(parsed.data.issues)) {
-                const uniqueFiles = new Set<string>();
-                parsed.data.issues.forEach((issue: any) => {
-                  const filePath = issue.file_path || issue.file;
-                  if (filePath) uniqueFiles.add(filePath);
-                });
-                
-                if (uniqueFiles.size > 0) {
-                  const files = Array.from(uniqueFiles).map(path => ({ 
-                    path, 
-                    name: path.split('/').pop() || path 
-                  }));
-                  console.log('[Files] ⚡ INSTANT from analysis cache:', files.length, 'files');
-                  setFilesList(files);
-                  const firstFile = files[0];
-                  setSelectedFile(
-                    typeof firstFile === 'string' ? firstFile : (firstFile?.path || firstFile?.name || '')
-                  );
-                  setFileTree(buildFileTree(files));
-                  
-                  // Build issue counts
-                  const issueCount: Record<string, number> = {};
-                  parsed.data.issues.forEach((issue: any) => {
-                    const filePath = issue.file_path || issue.file;
-                    if (filePath) issueCount[filePath] = (issueCount[filePath] || 0) + 1;
-                  });
-                  setIssuesByFile(issueCount);
-                  (window as any).__allFileIssues = parsed.data.issues;
-                  
-                  setLoading(false);
-                  // Continue to fetch fresh data in background...
-                }
-              }
-            }
-          }
-        } catch (err) {
-          console.log('[Files] No cached analysis available');
-        }
-        
-        // Only show loading if we have NO cached data at all
-        if (!hasCachedFiles && filesList === null) {
-          setLoading(true);
-        }
-      }
-      
-      try {
-        console.log('[Files] 🔄 Loading files for repo:', repoId);
-        
-        // FIXED: Increased timeout to 15s - backend can take 10+ seconds for large repos
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Request timeout')), 15000)
-        );
+  // Helper to validate a file entry is actually a real file (not garbage like "... and 33 more items")
+  const isValidFile = (file: any): boolean => {
+    const path = typeof file === 'string' ? file : (file?.path || file?.name || '');
+    if (!path || typeof path !== 'string') return false;
+    // Filter out non-file entries (pagination messages, empty strings, etc.)
+    if (path.startsWith('...') || path.includes(' and ') || path.includes(' more ')) return false;
+    if (path.length < 2) return false;
+    return true;
+  };
 
-        // Try files endpoint first (with short timeout)
-        const filesPromise = apiClient.getRepositoryFiles(repoId as string).catch((err) => {
-          console.log('[Files] ⚠️ Files endpoint not available:', err?.message);
-          return null;
-        });
-        
-        const filesRes = await Promise.race([filesPromise, timeoutPromise]).catch((err) => {
-          console.log('[Files] ⏱️ Files endpoint timeout or error:', err?.message);
-          return null;
-        });
-        
-        // Debug: Log what we received from the API
-        console.log('[Files] 📦 Files API response:', filesRes ? 'received' : 'null/error');
-        if (filesRes) {
-          console.log('[Files] 📦 Response type:', typeof filesRes);
-          console.log('[Files] 📦 Is array?', Array.isArray(filesRes));
-          console.log('[Files] 📦 Has .files?', filesRes?.files ? `yes (${filesRes.files.length} items)` : 'no');
-        }
-        
-        // ALWAYS load analysis (for issues and as fallback for files) - WITH TIMEOUT
-        console.log('[Files] 📊 Loading analysis results...');
-        console.log('[Files] Analysis data:', analysisId ? `specific (${analysisId})` : 'latest');
-        const analysisTimeout = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Analysis timeout')), 20000) // Increased from 5s to 20s
-        );
-        
-        // Use specific analysis if analysis_id provided, otherwise get latest
-        const analysisPromise = (analysisId 
-          ? apiClient.getAnalysisById(analysisId)
-          : apiClient.getAnalysisResults(repoId as string)
-        ).catch((err) => {
-          console.error('[Files] ❌ Failed to fetch analysis:', err);
-          return null;
-        });
-        
-        const analysisRes = await Promise.race([analysisPromise, analysisTimeout]).catch((err) => {
-          console.error('[Files] ⏱️ Analysis request timeout:', err);
-          return null;
-        });
-        
-        console.log('[Files] 📦 Analysis response:', analysisRes ? 'Success' : 'Failed');
-        
-        if (!mounted) return;
-        
-        // Process files with multiple fallback strategies
-        let files: any[] = [];
-        
-        // DEBUG: Log the raw response structure
-        console.log('[Files] 🔍 Processing files response...');
-        console.log('[Files] 🔍 filesRes type:', typeof filesRes);
-        console.log('[Files] 🔍 filesRes is null/undefined?', filesRes == null);
-        if (filesRes) {
-          console.log('[Files] 🔍 filesRes keys:', Object.keys(filesRes));
-          console.log('[Files] 🔍 filesRes.files exists?', 'files' in filesRes);
-          console.log('[Files] 🔍 filesRes.files is array?', Array.isArray(filesRes?.files));
-          console.log('[Files] 🔍 filesRes.files length:', filesRes?.files?.length);
-        }
-        
-        // Strategy 1: Direct files array response
-        if (filesRes && Array.isArray(filesRes) && filesRes.length > 0) {
-          files = filesRes;
-          console.log('[Files] ✅ Strategy 1: Loaded', files.length, 'files from direct array');
-        }
-        // Strategy 2: Files in nested object (Backend returns {"files": [...]})
-        else if (filesRes && filesRes.files && Array.isArray(filesRes.files) && filesRes.files.length > 0) {
-          files = filesRes.files;
-          console.log('[Files] ✅ Strategy 2: Loaded', files.length, 'files from nested object');
-        }
-        // Strategy 3: Extract from analysis issues (PRIMARY METHOD - most reliable!)
-        else if (analysisRes && analysisRes.issues && Array.isArray(analysisRes.issues)) {
-          const uniqueFiles = new Set<string>();
-          analysisRes.issues.forEach((issue: any) => {
-            const filePath = issue.file_path || issue.file;
-            if (filePath) uniqueFiles.add(filePath);
-          });
-          if (uniqueFiles.size > 0) {
-            files = Array.from(uniqueFiles).map(path => ({ 
-              path, 
-              name: path.split('/').pop() || path 
-            }));
-            console.log('[Files] ✅ Strategy 3 (PRIMARY): Extracted', files.length, 'files from issues');
-          } else {
-            console.log('[Files] ⚠️ Analysis has', analysisRes.issues.length, 'issues but no file paths');
-          }
-        }
-        
-        // Strategy 4: LAST RESORT - If analysis has any data at all
-        if (files.length === 0 && analysisRes) {
-          console.log('[Files] 🔍 Trying last resort - checking analysis object structure');
-          console.log('[Files] 📋 Analysis keys:', analysisRes ? Object.keys(analysisRes) : 'none');
-          
-          // Check if there are any files mentioned anywhere in the analysis
-          const analysisStr = JSON.stringify(analysisRes);
-          const filePathMatches = analysisStr.match(/["']([^"']*\.(py|js|ts|tsx|jsx|java|go|rb|php|css|html|md)[^"']*)["']/gi);
-          if (filePathMatches && filePathMatches.length > 0) {
-            const uniquePaths = new Set(filePathMatches.map(m => m.replace(/['"]/g, '')));
-            files = Array.from(uniquePaths).slice(0, 50).map(path => ({
-              path,
-              name: path.split('/').pop() || path
-            }));
-            console.log('[Files] ✅ Strategy 4 (EXTRACTED): Found', files.length, 'files from analysis text');
-          }
-        }
-        
-        // If we got files, update the UI
-        if (files.length > 0) {
-          console.log('[Files] 📁 Processing', files.length, 'files...');
-          setFilesList(files);
-          
-          // Only set selected file if we don't have a cached selection
-          if (!cached || !selectedFile) {
-            const firstFile = files[0]?.path || files[0]?.name || files[0];
-            setSelectedFile(firstFile);
-            console.log('[Files] 📄 Selected first file:', firstFile);
-          }
-          
-          // Build file tree from flat list
-          const tree = buildFileTree(files);
-          setFileTree(tree);
-          console.log('[Files] 🌳 Built file tree with', tree.length, 'root nodes');
-          
-          // Cache for instant loading next time
-          try { 
-            setCachedFiles(repoId as string, files); 
-            console.log('[Files] 💾 Cached', files.length, 'files for instant future loads');
-          } catch (err) {
-            console.warn('[Files] ⚠️ Failed to cache files:', err);
-          }
-        } 
-        // No files found anywhere
-        else {
-          console.warn('[Files] ⚠️ No files found from any strategy');
-          if (!cached || !filesList || filesList.length === 0) {
-            setFilesList([]);
-            setFileTree([]);
-            console.log('[Files] 📭 Set empty file list');
-          }
-        }
-        
-        // Process issues by file
-        if (analysisRes && analysisRes.issues) {
-          const issueCount: Record<string, number> = {};
-          analysisRes.issues.forEach((issue: any) => {
-            const filePath = issue.file_path || issue.file;
-            if (filePath) {
-              issueCount[filePath] = (issueCount[filePath] || 0) + 1;
-            }
-          });
-          setIssuesByFile(issueCount);
-          console.log('[Files] ✅ Built issue counts for', Object.keys(issueCount).length, 'files');
-          console.log('[Files] 📊 Issue counts by file:', issueCount);
-          console.log('[Files] 📁 Files in tree:', files.map(f => f.path || f.name));
-          
-          // Store all issues for filtering by file later
-          if (mounted && analysisRes.issues) {
-            (window as any).__allFileIssues = analysisRes.issues;
-            console.log('[Files] 💾 Stored', analysisRes.issues.length, 'total issues for file filtering');
-          }
-        } else {
-          console.log('[Files] ⚠️ No issues found in analysis results');
-        }
-        
-        // BACKGROUND PRE-FETCH: Load content for first 5 files to cache them
-        if (files.length > 0 && mounted) {
-          console.log('[Files] 🚀 Background pre-fetching content for first 5 files...');
-          const filesToPrefetch = files.slice(0, 5);
-          
-          // Pre-fetch in background (don't await - fire and forget)
-          filesToPrefetch.forEach(async (file, index) => {
-            setTimeout(async () => {
-              const filePath = typeof file === 'string' ? file : (file.path || file.name || file);
-              const normalizedPath = filePath.replace(/^\/+/, '').replace(/\/+/g, '/');
-              
-              // Skip if already cached
-              const cached = getCachedFileContent(repoId as string, normalizedPath);
-              if (cached) {
-                console.log(`[Files] ⚡ File ${index + 1}/5 already cached:`, filePath);
-                return;
-              }
-              
-              try {
-                const content = await apiClient.getFileContent(repoId as string, filePath).catch(() => null);
-                if (content && typeof content === 'string') {
-                  setCachedFileContent(repoId as string, normalizedPath, content);
-                  console.log(`[Files] ✅ Pre-cached ${index + 1}/5:`, filePath);
-                } else if (content && content.content) {
-                  setCachedFileContent(repoId as string, normalizedPath, content.content);
-                  console.log(`[Files] ✅ Pre-cached ${index + 1}/5:`, filePath);
-                }
-              } catch (err) {
-                console.log(`[Files] ⚠️ Pre-fetch failed for ${index + 1}/5:`, filePath);
-              }
-            }, index * 500); // Stagger requests by 500ms each
-          });
-        }
-      } catch (err) {
-        console.error('[Files] ❌ Critical error loading files:', err);
-        // Ensure UI shows something even on critical error
-        if (mounted && (!filesList || filesList.length === 0)) {
-          setFilesList([]);
-          setFileTree([]);
-        }
-      } finally {
-        if (mounted) {
-          setLoading(false);
-          console.log('[Files] ✅ Loading complete (success or failure)');
-        }
+  // ── Process files from multiple sources ──
+  const files = useMemo(() => {
+    let rawFiles: any[] = [];
+    
+    if (filesData) {
+      if (Array.isArray(filesData) && filesData.length > 0) rawFiles = filesData;
+      else if (filesData.files && Array.isArray(filesData.files) && filesData.files.length > 0) rawFiles = filesData.files;
+    }
+    
+    // Fallback: Extract unique files from analysis issues
+    if (rawFiles.length === 0 && analysisData?.issues && Array.isArray(analysisData.issues)) {
+      const uniqueFiles = new Set<string>();
+      analysisData.issues.forEach((issue: any) => {
+        const filePath = issue.file_path || issue.file;
+        if (filePath) uniqueFiles.add(filePath);
+      });
+      if (uniqueFiles.size > 0) {
+        rawFiles = Array.from(uniqueFiles).map(path => ({
+          path,
+          name: path.split('/').pop() || path,
+        }));
       }
     }
+    
+    // Filter out invalid entries
+    return rawFiles.filter(isValidFile);
+  }, [filesData, analysisData]);
 
-    loadFilesAndIssues();
-    return () => { mounted = false };
-  }, [repoId]);
+  // ── Build file tree ──
+  const fileTree = useMemo(() => buildFileTree(files), [files]);
 
-  useEffect(() => {
-    let mounted = true;
-    async function loadContent() {
-      if (!selectedFile) return;
-      
-      // Normalize file path for consistent cache keys
-      const normalizedPath = selectedFile.replace(/^\/+/, '').replace(/\/+/g, '/');
-      
-      // Check cache FIRST synchronously to avoid loading flicker
-      const cached = getCachedFileContent(repoId as string, normalizedPath);
-      
-      if (cached) {
-        // INSTANT load from cache - no spinner needed
-        console.log('[Files] ⚡ INSTANT load from cache:', selectedFile);
-        setFileContent(cached);
-        setLoadingFile(false);
-        
-        // Filter issues for this specific file
-        const allIssues = (window as any).__allFileIssues || [];
-        const filteredIssues = allIssues.filter((issue: any) => {
-          const filePath = issue.file_path || issue.file;
-          return filePath === selectedFile || filePath === normalizedPath;
-        }).map((issue: any) => ({
-          line: issue.line_number || issue.line || 0,
-          type: (issue.severity === 'critical' || issue.severity === 'high') ? 'error' : 
-                (issue.severity === 'medium') ? 'warning' : 'info',
-          message: issue.description || issue.message || '',
-          fix: issue.suggestion || issue.fix || '',
-        }));
-        setFileIssues(filteredIssues);
-        console.log('[Files] ⚡ Loaded', filteredIssues.length, 'issues for file from cache');
-        return;
-      }
-      
-      // No cache - show loading spinner and fetch from API with timeout
-      setLoadingFile(true);
-      setFileContent(''); // Clear previous content
-      console.log('[Files] 🔄 Fetching from API (first load, will cache):', selectedFile);
-      
-      try {
-        const startTime = Date.now();
-        
-        // Add 10s timeout to prevent hanging
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('File content timeout')), 10000)
-        );
-        
-        const contentPromise = apiClient.getFileContent(repoId as string, selectedFile).catch(() => null);
-        const res = await Promise.race([contentPromise, timeoutPromise]).catch((err) => {
-          console.error('[Files] ⏱️ File content timeout:', err);
-          return null;
-        });
-        
-        const loadTime = Date.now() - startTime;
-        
-        if (!mounted) return;
-        
-        let content = '';
-        if (res && typeof res === 'string') {
-          content = res;
-        } else if (res && res.content) {
-          content = res.content;
-        }
-        
-        setFileContent(content);
-        
-        // Cache the content for instant future loads
-        if (content) {
-          setCachedFileContent(repoId as string, normalizedPath, content);
-          console.log(`[Files] ✅ Fetched and cached in ${loadTime}ms. Next load will be instant!`);
-        } else {
-          console.log(`[Files] ⚠️ No content received for ${selectedFile}`);
-        }
-        
-        // Filter issues for this specific file
-        const allIssues = (window as any).__allFileIssues || [];
-        const filteredIssues = allIssues.filter((issue: any) => {
-          const filePath = issue.file_path || issue.file;
-          return filePath === selectedFile || filePath === normalizedPath;
-        }).map((issue: any) => ({
-          line: issue.line_number || issue.line || 0,
-          type: (issue.severity === 'critical' || issue.severity === 'high') ? 'error' : 
-                (issue.severity === 'medium') ? 'warning' : 'info',
-          message: issue.description || issue.message || '',
-          fix: issue.suggestion || issue.fix || '',
-        }));
-        setFileIssues(filteredIssues);
-        console.log('[Files] ✅ Loaded', filteredIssues.length, 'issues for file');
-      } catch (err) {
-        console.error('[Files] ❌ Failed to load file content:', err);
-      } finally {
-        if (mounted) setLoadingFile(false);
+  // ── Auto-select first file that has issues (or just the first file) ──
+  const effectiveSelectedFile = useMemo(() => {
+    if (selectedFile) return selectedFile;
+    if (files.length === 0) return null;
+    
+    // Try to select the first file that has issues for better UX
+    if (analysisData?.issues && Array.isArray(analysisData.issues)) {
+      const issueFilePaths = new Set(
+        analysisData.issues.map((i: any) => normalizePath(i.file_path || i.file || ''))
+      );
+      const fileWithIssue = files.find((f: any) => {
+        const p = normalizePath(typeof f === 'string' ? f : (f.path || f.name || ''));
+        return issueFilePaths.has(p);
+      });
+      if (fileWithIssue) {
+        return typeof fileWithIssue === 'string' ? fileWithIssue : (fileWithIssue.path || fileWithIssue.name);
       }
     }
+    
+    // Fallback to first file
+    const first = files[0];
+    return typeof first === 'string' ? first : (first?.path || first?.name || null);
+  }, [selectedFile, files, analysisData]);
 
-    loadContent();
-    return () => { mounted = false };
-  }, [selectedFile, repoId]);
+  // ── React Query: file content ──
+  // placeholderData: undefined → clears old content immediately when switching files
+  const { data: fileContentRaw, isLoading: loadingFile, isFetching: fetchingFile } = useFileContent(
+    repoId || '', 
+    effectiveSelectedFile || '',
+    { 
+      enabled: !!repoId && !!effectiveSelectedFile,
+      placeholderData: undefined,
+    }
+  );
+
+  // Normalize file content
+  const fileContent = useMemo(() => {
+    if (!fileContentRaw) return '';
+    if (typeof fileContentRaw === 'string') return fileContentRaw;
+    if (fileContentRaw.content) return fileContentRaw.content;
+    return '';
+  }, [fileContentRaw]);
+
+  // ── Issue counts by file ──
+  const issuesByFile = useMemo(() => {
+    const counts: Record<string, number> = {};
+    if (analysisData?.issues && Array.isArray(analysisData.issues)) {
+      analysisData.issues.forEach((issue: any) => {
+        const filePath = issue.file_path || issue.file;
+        if (filePath) counts[filePath] = (counts[filePath] || 0) + 1;
+      });
+    }
+    return counts;
+  }, [analysisData]);
+
+  // ── Issues for the currently selected file ──
+  const fileIssues = useMemo(() => {
+    if (!effectiveSelectedFile || !analysisData?.issues || !Array.isArray(analysisData.issues)) return [];
+    const normalizedSelected = normalizePath(effectiveSelectedFile);
+    const selectedFileName = normalizedSelected.split('/').pop() || '';
+    
+    return analysisData.issues
+      .filter((issue: any) => {
+        const filePath = issue.file_path || issue.file;
+        if (!filePath) return false;
+        const normalizedIssue = normalizePath(filePath);
+        const issueFileName = normalizedIssue.split('/').pop() || '';
+        
+        // Exact match
+        if (normalizedIssue === normalizedSelected) return true;
+        // One path is a suffix of the other (handles missing/different root prefixes)
+        if (normalizedIssue.endsWith(normalizedSelected) || normalizedSelected.endsWith(normalizedIssue)) return true;
+        // Same filename in same parent folder
+        if (selectedFileName && issueFileName === selectedFileName) {
+          // Check that at least the parent folder matches to avoid false positives
+          const issueParts = normalizedIssue.split('/');
+          const selectedParts = normalizedSelected.split('/');
+          if (issueParts.length >= 2 && selectedParts.length >= 2) {
+            return issueParts[issueParts.length - 2] === selectedParts[selectedParts.length - 2];
+          }
+          // If no parent folder, just match filename
+          return issueParts.length === 1 || selectedParts.length === 1;
+        }
+        return false;
+      })
+      .map((issue: any) => ({
+        line: issue.line_number || issue.line || 0,
+        type: (issue.severity === 'critical' || issue.severity === 'high') ? 'error' : 
+              (issue.severity === 'medium') ? 'warning' : 'info',
+        severity: issue.severity || 'low',
+        message: issue.description || issue.message || '',
+        suggestion: issue.suggestion || issue.fix || '',
+        category: issue.category || '',
+        line_number: issue.line_number || issue.line || 0,
+      }));
+  }, [effectiveSelectedFile, analysisData]);
+
+  const handleSelectFile = useCallback((path: string) => {
+    setSelectedFile(path);
+  }, []);
 
   const lines = fileContent.split("\n");
-  
-  // Log issue summary when rendering
-  const totalFilesWithIssues = Object.keys(issuesByFile).length;
-  const totalIssues = Object.values(issuesByFile).reduce((sum, count) => sum + count, 0);
-  if (totalFilesWithIssues > 0) {
-    console.log(`[Files] 🎯 Rendering tree: ${totalFilesWithIssues} files with ${totalIssues} total issues`);
-  }
+  const loading = loadingFiles && files.length === 0;
+  // Show loading when switching files (no data yet for the new file)
+  const showFileLoading = (loadingFile || fetchingFile) && !fileContent;
 
   return (
     <DashboardLayout>
-      <div className="flex gap-4 h-[calc(100vh-8rem)] overflow-hidden">
-        {/* File tree */}
-        <motion.div
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          className="w-56 glass-panel rounded-xl overflow-hidden flex flex-col flex-shrink-0"
-        >
-          <div className="p-3 border-b border-border">
-            <h3 className="font-semibold text-sm">Files</h3>
+      {/* Negative margin to reclaim parent padding for full-width layout */}
+      <div className="-mx-3 -mt-3">
+        <div className="flex gap-1.5 h-[calc(100vh-5.5rem)] w-full overflow-hidden px-1.5">
+          {/* File tree - compact, can shrink */}
+          <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            className="w-44 min-w-[160px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
+          >
+          <div className="p-2.5 border-b border-border">
+            <h3 className="font-semibold text-xs">Files</h3>
           </div>
-          <div className="flex-1 overflow-auto p-2">
+          <div className="flex-1 overflow-auto p-1.5">
             {loading ? (
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 {[...Array(8)].map((_, i) => (
-                  <div key={i} className="h-8 bg-muted/50 rounded animate-pulse" style={{ paddingLeft: `${(i % 3) * 12 + 8}px` }} />
+                  <div key={i} className="h-7 bg-muted/50 rounded animate-pulse" style={{ paddingLeft: `${(i % 3) * 10 + 6}px` }} />
                 ))}
               </div>
             ) : fileTree.length > 0 ? (
@@ -660,21 +465,20 @@ export default function Files() {
                 <FileTreeItem
                   key={index}
                   item={item}
-                  onSelect={setSelectedFile}
-                  selectedFile={selectedFile}
+                  onSelect={handleSelectFile}
+                  selectedFile={effectiveSelectedFile}
                   issuesByFile={issuesByFile}
                 />
               ))
             ) : (
-              <div className="text-center text-muted-foreground py-12 px-4">
-                <File className="h-12 w-12 mx-auto mb-3 opacity-50" />
-                <p className="text-sm font-medium mb-1">No files found</p>
-                <p className="text-xs mb-4">The repository may be empty or files couldn't be loaded</p>
+              <div className="text-center text-muted-foreground py-8 px-2">
+                <File className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p className="text-xs font-medium mb-1">No files found</p>
                 <Button 
                   variant="outline" 
                   size="sm" 
                   onClick={() => window.location.reload()}
-                  className="gap-2"
+                  className="gap-1 text-xs h-7 mt-2"
                 >
                   <Loader2 className="h-3 w-3" />
                   Retry
@@ -684,7 +488,7 @@ export default function Files() {
           </div>
         </motion.div>
 
-        {/* Code viewer */}
+        {/* Code viewer - takes remaining space */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -692,28 +496,40 @@ export default function Files() {
           className="flex-1 glass-panel rounded-xl overflow-hidden flex flex-col min-w-0"
         >
           {/* Header */}
-          <div className="p-3 border-b border-border flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <File className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-medium">src/api/{selectedFile}</span>
+          <div className="p-2.5 border-b border-border flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <File className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <span className="text-xs font-medium truncate">{effectiveSelectedFile || 'No file selected'}</span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
+              {fileIssues.length > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-destructive/10 text-destructive">
+                  {fileIssues.length} issue{fileIssues.length !== 1 ? 's' : ''}
+                </span>
+              )}
               <span className="text-xs text-muted-foreground">
-                {lines.length} lines
+                {fileContent ? lines.length : 0} lines
               </span>
             </div>
           </div>
 
           {/* Code */}
           <div className="flex-1 overflow-auto">
-            {loadingFile ? (
+            {showFileLoading ? (
               <div className="p-4 space-y-2">
                 {[...Array(15)].map((_, i) => (
-                  <div key={i} className="flex gap-4">
-                    <div className="w-12 h-5 bg-muted/50 rounded animate-pulse" />
-                    <div className="flex-1 h-5 bg-muted/30 rounded animate-pulse" style={{ width: `${Math.random() * 40 + 60}%` }} />
+                  <div key={i} className="flex gap-3">
+                    <div className="w-10 h-5 bg-muted/50 rounded animate-pulse" />
+                    <div className="flex-1 h-5 bg-muted/30 rounded animate-pulse" style={{ width: `${Math.random() * 40 + 40}%` }} />
                   </div>
                 ))}
+              </div>
+            ) : !fileContent ? (
+              <div className="flex items-center justify-center h-full text-muted-foreground">
+                <div className="text-center">
+                  <File className="h-10 w-10 mx-auto mb-2 opacity-30" />
+                  <p className="text-sm">Select a file to view its content</p>
+                </div>
               </div>
             ) : (
               <pre className="text-sm font-mono">
@@ -731,12 +547,10 @@ export default function Files() {
                         analysis?.type === "warning" && "bg-warning/5"
                       )}
                     >
-                      {/* Line number */}
-                      <span className="w-12 text-right pr-4 text-muted-foreground select-none py-0.5 border-r border-border">
+                      <span className="w-10 text-right pr-3 text-muted-foreground select-none py-0.5 border-r border-border text-xs shrink-0">
                         {lineNumber}
                       </span>
-                      {/* Issue indicator */}
-                      <span className="w-8 flex items-center justify-center">
+                      <span className="w-6 flex items-center justify-center shrink-0">
                         {analysis?.type === "error" && (
                           <AlertTriangle className="h-3 w-3 text-destructive" />
                         )}
@@ -747,8 +561,7 @@ export default function Files() {
                           <Info className="h-3 w-3 text-primary" />
                         )}
                       </span>
-                      {/* Code */}
-                      <code className="flex-1 py-0.5 pl-2">{line || " "}</code>
+                      <code className="flex-1 py-0.5 pl-1 whitespace-pre">{line || " "}</code>
                     </div>
                   );
                 })}
@@ -757,112 +570,99 @@ export default function Files() {
           </div>
         </motion.div>
 
-        {/* Analysis panel */}
+        {/* Analysis + AI Suggestions panel - compact, can shrink */}
         <motion.div
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.2 }}
-          className="w-80 glass-panel rounded-xl overflow-hidden flex flex-col flex-shrink-0"
+          className="w-60 min-w-[220px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
         >
-          <div className="p-3 border-b border-border flex items-center justify-between">
-            <h3 className="font-semibold text-sm">Analysis</h3>
+          <div className="p-2.5 border-b border-border flex items-center justify-between">
+            <h3 className="font-semibold text-xs">Analysis</h3>
             <Button
               variant="ghost"
               size="sm"
               onClick={() => setAnalysisCollapsed(!analysisCollapsed)}
-              className="h-7 w-7 p-0"
+              className="h-6 w-6 p-0"
             >
               {analysisCollapsed ? (
-                <ChevronDown className="h-4 w-4" />
+                <ChevronDown className="h-3.5 w-3.5" />
               ) : (
-                <ChevronUp className="h-4 w-4" />
+                <ChevronUp className="h-3.5 w-3.5" />
               )}
             </Button>
           </div>
           
           {!analysisCollapsed && (
-            <div className="flex-1 overflow-auto p-3 space-y-3">
+            <div className="flex-1 overflow-auto p-2.5 space-y-2">
+              {/* Issues list */}
               {fileIssues.length > 0 ? (
                 fileIssues.map((item, index) => (
-                <div
-                  key={index}
-                  className={cn(
-                    "p-3 rounded-lg",
-                    item.type === "error" && "bg-destructive/10",
-                    item.type === "warning" && "bg-warning/10",
-                    item.type === "info" && "bg-primary/10"
-                  )}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    {item.type === "error" && (
-                      <AlertTriangle className="h-4 w-4 text-destructive" />
+                  <div
+                    key={index}
+                    className={cn(
+                      "p-2.5 rounded-lg",
+                      item.type === "error" && "bg-destructive/10",
+                      item.type === "warning" && "bg-warning/10",
+                      item.type === "info" && "bg-primary/10"
                     )}
-                    {item.type === "warning" && (
-                      <AlertTriangle className="h-4 w-4 text-warning" />
-                    )}
-                    {item.type === "info" && (
-                      <Info className="h-4 w-4 text-primary" />
-                    )}
-                    <span className="text-xs text-muted-foreground">
-                      Line {item.line}
-                    </span>
+                  >
+                    <div className="flex items-center gap-1.5 mb-1">
+                      {item.type === "error" && (
+                        <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
+                      )}
+                      {item.type === "warning" && (
+                        <AlertTriangle className="h-3.5 w-3.5 text-warning" />
+                      )}
+                      {item.type === "info" && (
+                        <Info className="h-3.5 w-3.5 text-primary" />
+                      )}
+                      <span className="text-[10px] text-muted-foreground">
+                        Line {item.line}
+                      </span>
+                    </div>
+                    <p className="text-xs leading-relaxed">{item.message}</p>
                   </div>
-                  <p className="text-sm">{item.message}</p>
-                </div>
-              ))
+                ))
               ) : (
-                <div className="text-center text-muted-foreground py-8">
-                  <p className="text-sm">No issues found in this file</p>
+                <div className="text-center text-muted-foreground py-6">
+                  <CheckCircle2 className="h-6 w-6 mx-auto mb-1.5 opacity-50" />
+                  <p className="text-xs">No issues found in this file</p>
                 </div>
               )}
 
-              {/* AI Suggestions */}
-              <div className="pt-4 border-t border-border">
-                <h4 className="text-sm font-medium mb-3">AI Suggestions</h4>
+              {/* AI Suggestions with Code Fixes */}
+              <div className="pt-3 border-t border-border">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Lightbulb className="h-3.5 w-3.5 text-amber-500" />
+                  <h4 className="text-xs font-medium">AI Suggestions</h4>
+                  {fileIssues.length > 0 && (
+                    <span className="text-[10px] bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">
+                      {fileIssues.length}
+                    </span>
+                  )}
+                </div>
                 {fileIssues.length > 0 ? (
                   <div className="space-y-2">
-                    {fileIssues.slice(0, 3).map((issue, idx) => {
-                      // Extract fix/suggestion from the issue
-                      const allIssues = (window as any).__allFileIssues || [];
-                      const fullIssue = allIssues.find((i: any) => 
-                        (i.file_path || i.file) === selectedFile && 
-                        (i.line_number || i.line) === issue.line
-                      );
-                      const suggestion = fullIssue?.suggestion || fullIssue?.fix || issue.message;
-                      
-                      return (
-                        <div key={idx} className="p-3 bg-muted/30 rounded-lg">
-                          <div className="flex items-start gap-2 mb-2">
-                            <span className={`text-xs px-2 py-1 rounded-full ${
-                              issue.type === 'error' ? 'bg-destructive/20 text-destructive' :
-                              issue.type === 'warning' ? 'bg-warning/20 text-warning' :
-                              'bg-primary/20 text-primary'
-                            }`}>
-                              Line {issue.line}
-                            </span>
-                          </div>
-                          <p className="text-sm text-muted-foreground mb-2">
-                            {issue.message}
-                          </p>
-                          {suggestion && suggestion !== issue.message && (
-                            <div className="mt-2 p-2 bg-background/50 rounded text-xs">
-                              <div className="font-medium text-primary mb-1">Suggestion:</div>
-                              <div className="text-muted-foreground">{suggestion}</div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                    {fileIssues.map((issue, idx) => (
+                      <CodeFixSuggestion 
+                        key={idx} 
+                        issue={issue} 
+                        fileContent={fileContent} 
+                      />
+                    ))}
                   </div>
                 ) : (
-                  <div className="p-4 text-center text-sm text-muted-foreground">
-                    No suggestions for this file
+                  <div className="py-4 text-center text-xs text-muted-foreground">
+                    <Code className="h-5 w-5 mx-auto mb-1.5 opacity-50" />
+                    <p>No suggestions for this file</p>
                   </div>
                 )}
               </div>
             </div>
           )}
         </motion.div>
+        </div>
       </div>
     </DashboardLayout>
   );

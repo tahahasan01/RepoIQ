@@ -6,8 +6,41 @@ from app.core.logging import get_logger
 from app.services.encryption_service import encrypt_token, decrypt_token, redact_sensitive
 from supabase import Client
 import httpx
+import asyncio
+import time
 
 logger = get_logger(__name__)
+
+
+def _retry_db_operation(operation, max_retries=3, delay=1.0):
+    """
+    Retry a database operation with exponential backoff.
+    Helps handle intermittent DNS/network issues on Windows.
+    """
+    for attempt in range(max_retries):
+        try:
+            return operation()
+        except Exception as e:
+            error_msg = str(e).lower()
+            is_network_error = (
+                "getaddrinfo" in error_msg or 
+                "11001" in error_msg or 
+                "dns" in error_msg or
+                "connection" in error_msg or
+                "network" in error_msg
+            )
+            
+            if is_network_error and attempt < max_retries - 1:
+                wait_time = delay * (2 ** attempt)  # Exponential backoff
+                logger.warning(
+                    f"Database operation failed (attempt {attempt + 1}/{max_retries}): {e}. "
+                    f"Retrying in {wait_time:.1f}s..."
+                )
+                time.sleep(wait_time)
+                continue
+            else:
+                # Not a network error or last attempt - re-raise
+                raise
 
 
 def _safe_log_dict(data: dict, sensitive_keys: set = None) -> dict:
@@ -93,29 +126,112 @@ class AuthService:
         import asyncio
         import uuid
         import concurrent.futures
+        import socket
         settings = get_settings()
         
         try:
             start_time = asyncio.get_event_loop().time()
             
+            # Test DNS resolution first (helps diagnose Windows DNS issues)
+            try:
+                socket.gethostbyname("github.com")
+                logger.debug("DNS resolution test: github.com resolved successfully")
+            except socket.gaierror as dns_error:
+                logger.error(f"DNS resolution test failed: {dns_error}")
+                raise Exception(
+                    "DNS resolution error: Cannot resolve 'github.com'. "
+                    "This indicates a network/DNS configuration issue. "
+                    "Try: 1) Check internet connection 2) Run 'ipconfig /flushdns' as admin "
+                    "3) Restart backend 4) Check firewall/antivirus settings"
+                )
+            
+            # Test Supabase DNS resolution (database connection)
+            try:
+                from urllib.parse import urlparse
+                supabase_host = urlparse(settings.SUPABASE_URL).netloc
+                socket.gethostbyname(supabase_host)
+                logger.debug(f"DNS resolution test: {supabase_host} resolved successfully")
+            except socket.gaierror as dns_error:
+                logger.error(f"Supabase DNS resolution test failed: {dns_error}")
+                raise Exception(
+                    f"DNS resolution error: Cannot resolve Supabase hostname. "
+                    "This indicates a network/DNS configuration issue. "
+                    "Try: 1) Check internet connection 2) Run 'ipconfig /flushdns' as admin "
+                    "3) Restart backend 4) Check firewall/antivirus settings"
+                )
+            
             # Use longer timeout for GitHub API
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            # Configure httpx with better error handling for Windows DNS issues
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 # Step 1: Exchange code for token (required first - ~1-2s)
                 logger.info("GitHub OAuth: Exchanging code for token...")
-                token_response = await client.post(
-                    "https://github.com/login/oauth/access_token",
-                    data={
-                        "client_id": settings.GITHUB_CLIENT_ID,
-                        "client_secret": settings.GITHUB_CLIENT_SECRET,
-                        "code": code,
-                        "redirect_uri": settings.GITHUB_REDIRECT_URI
-                    },
-                    headers={"Accept": "application/json"}
-                )
+                try:
+                    token_response = await client.post(
+                        "https://github.com/login/oauth/access_token",
+                        data={
+                            "client_id": settings.GITHUB_CLIENT_ID,
+                            "client_secret": settings.GITHUB_CLIENT_SECRET,
+                            "code": code,
+                            "redirect_uri": settings.GITHUB_REDIRECT_URI
+                        },
+                        headers={"Accept": "application/json"}
+                    )
+                except (httpx.ConnectError, httpx.ConnectTimeout, OSError) as conn_error:
+                    # More specific error handling for network/DNS issues
+                    error_msg = str(conn_error)
+                    error_code = getattr(conn_error, 'errno', None)
+                    
+                    if "getaddrinfo" in error_msg.lower() or error_code == 11001 or "11001" in error_msg:
+                        logger.error("DNS resolution failed - cannot resolve github.com")
+                        logger.error("Troubleshooting steps:")
+                        logger.error("1. Check internet connection: ping github.com")
+                        logger.error("2. Flush DNS cache: ipconfig /flushdns (run as admin)")
+                        logger.error("3. Check firewall/antivirus blocking Python")
+                        logger.error("4. Try restarting the backend server")
+                        logger.error("5. Check if using VPN/proxy - may need to configure")
+                        raise Exception(
+                            "Network error: Cannot resolve GitHub's domain name. "
+                            "This is a DNS/network issue, not a credentials problem. "
+                            "Please check your internet connection and DNS settings. "
+                            "Run 'ipconfig /flushdns' in admin PowerShell and restart the backend."
+                        )
+                    raise
                 
                 token_data = token_response.json()
                 logger.info(f"GitHub token response status: {token_response.status_code}")
                 logger.debug(f"GitHub token response: {_safe_log_dict(token_data)}")
+                
+                # Check for GitHub API errors first
+                if "error" in token_data:
+                    error_code = token_data.get("error", "")
+                    error_description = token_data.get("error_description", "")
+                    
+                    # Handle common GitHub OAuth errors
+                    if error_code == "bad_verification_code":
+                        logger.warning("GitHub OAuth: Authorization code expired or already used")
+                        raise Exception(
+                            "GitHub authorization code expired or already used. "
+                            "Please start a new GitHub login - authorization codes expire quickly and can only be used once."
+                        )
+                    elif error_code == "incorrect_client_credentials":
+                        logger.error("GitHub OAuth: Invalid client credentials")
+                        raise Exception(
+                            "GitHub OAuth configuration error. Please check GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET in .env file."
+                        )
+                    elif error_code == "redirect_uri_mismatch":
+                        logger.error(f"GitHub OAuth: Redirect URI mismatch. Expected: {settings.GITHUB_REDIRECT_URI}")
+                        raise Exception(
+                            f"GitHub redirect URI mismatch. Please ensure your GitHub OAuth app's callback URL matches: {settings.GITHUB_REDIRECT_URI}"
+                        )
+                    else:
+                        logger.error(f"GitHub OAuth error: {error_code} - {error_description}")
+                        raise Exception(
+                            f"GitHub authentication failed: {error_description or error_code}. "
+                            "Please try logging in again with GitHub."
+                        )
+                
                 access_token = token_data.get("access_token")
 
                 if not access_token:
@@ -161,19 +277,39 @@ class AuthService:
                 logger.info(f"GitHub OAuth: Looking up user...")
                 user = None
                 
-                # Try github_username first (returning users)
-                if github_username:
-                    username_query = self.service_db.table("users").select("*").eq("github_username", github_username).execute()
-                    if username_query.data:
-                        user = username_query.data[0]
-                        logger.info(f"GitHub OAuth: Found user by github_username")
-                
-                # Fallback to email lookup
-                if not user:
-                    email_query = self.service_db.table("users").select("*").eq("email", email).execute()
-                    if email_query.data:
-                        user = email_query.data[0]
-                        logger.info(f"GitHub OAuth: Found user by email")
+                try:
+                    # Try github_username first (returning users) - with retry for network issues
+                    if github_username:
+                        username_query = _retry_db_operation(
+                            lambda: self.service_db.table("users").select("*").eq("github_username", github_username).execute()
+                        )
+                        if username_query.data:
+                            user = username_query.data[0]
+                            logger.info(f"GitHub OAuth: Found user by github_username")
+                    
+                    # Fallback to email lookup - with retry for network issues
+                    if not user:
+                        email_query = _retry_db_operation(
+                            lambda: self.service_db.table("users").select("*").eq("email", email).execute()
+                        )
+                        if email_query.data:
+                            user = email_query.data[0]
+                            logger.info(f"GitHub OAuth: Found user by email")
+                except Exception as db_error:
+                    error_msg = str(db_error)
+                    # Check if it's a network/DNS error
+                    if "getaddrinfo" in error_msg.lower() or "11001" in error_msg or "dns" in error_msg.lower():
+                        logger.error(f"Database connection failed (DNS/network issue): {db_error}")
+                        logger.error("This might be a Supabase connection issue. Check:")
+                        logger.error("1. Internet connection")
+                        logger.error("2. SUPABASE_URL in .env file")
+                        logger.error("3. Firewall/antivirus blocking connections")
+                        raise Exception(
+                            "Database connection failed. Please check your internet connection "
+                            "and Supabase configuration. Error: Network/DNS resolution issue."
+                        )
+                    # Re-raise other database errors
+                    raise
                 
                 db_lookup_time = asyncio.get_event_loop().time()
                 logger.info(f"GitHub OAuth: DB lookup took {(db_lookup_time - parallel_time)*1000:.0f}ms")
@@ -182,13 +318,25 @@ class AuthService:
                     # Update existing user (non-blocking fire-and-forget for speed)
                     logger.info(f"GitHub OAuth: Updating existing user: {redact_sensitive(user['id'])}")
                     
-                    self.service_db.table("users").update({
-                        "github_username": github_username,
-                        "github_access_token": encrypted_token,
-                        "github_connected": True,
-                        "avatar_url": github_user.get("avatar_url"),
-                        "full_name": github_user.get("name") or user.get("full_name")
-                    }).eq("id", user["id"]).execute()
+                    try:
+                        _retry_db_operation(
+                            lambda: self.service_db.table("users").update({
+                                "github_username": github_username,
+                                "github_access_token": encrypted_token,
+                                "github_connected": True,
+                                "avatar_url": github_user.get("avatar_url"),
+                                "full_name": github_user.get("name") or user.get("full_name")
+                            }).eq("id", user["id"]).execute()
+                        )
+                    except Exception as update_error:
+                        error_msg = str(update_error)
+                        if "getaddrinfo" in error_msg.lower() or "11001" in error_msg:
+                            logger.error(f"Database update failed (DNS/network issue): {update_error}")
+                            raise Exception(
+                                "Failed to update user in database. Network/DNS issue. "
+                                "Please check your internet connection and try again."
+                            )
+                        raise
                     
                     # Update user dict with latest data
                     user["github_username"] = github_username
@@ -210,7 +358,19 @@ class AuthService:
                         "github_connected": True
                     }
                     
-                    self.service_db.table("users").insert(user).execute()
+                    try:
+                        _retry_db_operation(
+                            lambda: self.service_db.table("users").insert(user).execute()
+                        )
+                    except Exception as insert_error:
+                        error_msg = str(insert_error)
+                        if "getaddrinfo" in error_msg.lower() or "11001" in error_msg:
+                            logger.error(f"Database insert failed (DNS/network issue): {insert_error}")
+                            raise Exception(
+                                "Failed to create user in database. Network/DNS issue. "
+                                "Please check your internet connection and try again."
+                            )
+                        raise
                 
                 # Generate app tokens (fast - JWT creation)
                 app_access_token = create_access_token({"sub": user["id"], "email": email})

@@ -232,10 +232,16 @@ class ApiClient {
       localStorage.removeItem('token');
       localStorage.removeItem('refresh_token');
       localStorage.removeItem('user');
+      localStorage.removeItem('access_token'); // Also clear access_token if stored separately
     } catch {}
     try {
       // clear repo list cache so UI doesn't look "logged in" with stale data
       sessionStorage.removeItem('repoiq_repositories_cache');
+    } catch {}
+    try {
+      // Clear React Query cache on logout
+      const { clearQueryCache } = require('@/lib/queryPersister');
+      clearQueryCache();
     } catch {}
   }
 
@@ -621,9 +627,14 @@ class ApiClient {
   }
 
   async logout() {
-    return this.request<void>('/auth/logout', {
-      method: 'POST',
-    });
+    try {
+      await this.request<void>('/auth/logout', {
+        method: 'POST',
+      });
+    } finally {
+      // Always clear cache even if logout request fails
+      this.clearAuthAndCaches();
+    }
   }
 
   // Chat endpoints (repo-based)

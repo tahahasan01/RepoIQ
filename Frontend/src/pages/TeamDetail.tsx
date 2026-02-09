@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import {
   Users,
@@ -49,87 +49,81 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import apiClient from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
+import { useTeam, useTeamMembers, useTeamRepositories, queryKeys } from "@/hooks/useApiQueries";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 export default function TeamDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [team, setTeam] = useState<any>(null);
-  const [members, setMembers] = useState<any[]>([]);
-  const [repositories, setRepositories] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  
+  // Use React Query for instant loading with cached data
+  const { data: team, isLoading: teamLoading, error: teamError, isFetching: teamFetching } = useTeam(id || "", {
+    // Show cached data immediately, refetch in background
+    placeholderData: (previousData) => previousData,
+    // Don't refetch on mount if we have cached data
+    refetchOnMount: false,
+  });
+  const { data: members = [], isLoading: membersLoading, isFetching: membersFetching } = useTeamMembers(id || "", {
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: false,
+  });
+  const { data: repositories = [], isLoading: reposLoading, isFetching: reposFetching } = useTeamRepositories(id || "", {
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: false,
+  });
+  
   const [addMemberDialogOpen, setAddMemberDialogOpen] = useState(false);
   const [newMemberUserId, setNewMemberUserId] = useState("");
   const [newMemberRole, setNewMemberRole] = useState("member");
-  const [addingMember, setAddingMember] = useState(false);
-  const [deletingTeam, setDeletingTeam] = useState(false);
-  const { toast } = useToast();
+  
+  // Show loading only if we have no cached data at all
+  // If we have cached data, show it immediately even if refetching in background
+  const loading = (teamLoading && !team) || (membersLoading && members.length === 0 && !team) || (reposLoading && repositories.length === 0 && !team);
 
-  useEffect(() => {
-    if (id) {
-      loadData();
-    }
-  }, [id]);
-
-  const loadData = async () => {
-    if (!id) return;
-    try {
-      setLoading(true);
-      const [teamData, membersData, reposData] = await Promise.all([
-        apiClient.getTeam(id),
-        apiClient.getTeamMembers(id),
-        apiClient.getTeamRepositories(id),
-      ]);
-      setTeam(teamData);
-      setMembers(membersData);
-      setRepositories(reposData);
-    } catch (error: any) {
+  // Optimistic mutations for instant UI updates
+  const removeMemberMutation = useMutation({
+    mutationFn: (userId: string) => apiClient.removeTeamMember(id!, userId),
+    onMutate: async (userId) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: queryKeys.teamMembers(id!) });
+      
+      // Snapshot previous value
+      const previousMembers = queryClient.getQueryData(queryKeys.teamMembers(id!));
+      
+      // Optimistically update
+      queryClient.setQueryData(queryKeys.teamMembers(id!), (old: any[]) => 
+        old?.filter((m: any) => m.user_id !== userId) || []
+      );
+      
+      return { previousMembers };
+    },
+    onError: (err, userId, context) => {
+      // Rollback on error
+      if (context?.previousMembers) {
+        queryClient.setQueryData(queryKeys.teamMembers(id!), context.previousMembers);
+      }
       toast({
         title: "Error",
-        description: error.message || "Failed to load team data",
+        description: "Failed to remove member",
         variant: "destructive",
       });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleRemoveMember = async (userId: string) => {
-    if (!id) return;
-    try {
-      await apiClient.removeTeamMember(id, userId);
-      setMembers(members.filter((m) => m.user_id !== userId));
+    },
+    onSuccess: () => {
       toast({
         title: "Success",
         description: "Member removed successfully",
       });
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to remove member",
-        variant: "destructive",
-      });
-    }
-  };
+    },
+  });
 
-  const handleAddMember = async () => {
-    if (!id) return;
-    if (!newMemberUserId.trim()) {
-      toast({
-        title: "Error",
-        description: "Please enter a user ID or GitHub username",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    try {
-      setAddingMember(true);
-      await apiClient.addTeamMember(id, newMemberUserId.trim(), newMemberRole);
-      
-      // Refresh members list
-      const updatedMembers = await apiClient.getTeamMembers(id);
-      setMembers(updatedMembers);
-      
+  const addMemberMutation = useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: string }) => 
+      apiClient.addTeamMember(id!, userId, role),
+    onSuccess: () => {
+      // Invalidate to refetch
+      queryClient.invalidateQueries({ queryKey: queryKeys.teamMembers(id!) });
       setAddMemberDialogOpen(false);
       setNewMemberUserId("");
       setNewMemberRole("member");
@@ -137,41 +131,97 @@ export default function TeamDetail() {
         title: "Success",
         description: "Member added successfully",
       });
-    } catch (error: any) {
+    },
+    onError: (error: any) => {
       toast({
         title: "Error",
         description: error.message || "Failed to add member",
         variant: "destructive",
       });
-    } finally {
-      setAddingMember(false);
-    }
-  };
+    },
+  });
 
-  const handleDeleteTeam = async () => {
-    if (!id) return;
-    try {
-      setDeletingTeam(true);
-      await apiClient.deleteTeam(id);
-      toast({
-        title: "Success",
-        description: "Team deleted successfully",
-      });
-      // Clear teams cache
-      sessionStorage.removeItem("repoiq_teams_cache");
+  const deleteTeamMutation = useMutation({
+    mutationFn: () => apiClient.deleteTeam(id!),
+    onMutate: async () => {
+      if (!id) return;
+      
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: queryKeys.teams() });
+      await queryClient.cancelQueries({ queryKey: queryKeys.team(id) });
+      
+      // Snapshot previous values
+      const previousTeamsAll = queryClient.getQueryData(queryKeys.teams());
+      const previousTeam = queryClient.getQueryData(queryKeys.team(id));
+      
+      // Optimistically remove team from cache
+      queryClient.setQueryData(queryKeys.teams(), (old: any[] = []) => 
+        old.filter((team: any) => team.id !== id)
+      );
+      
+      // Navigate immediately for instant feedback
       navigate("/teams");
-    } catch (error: any) {
+      
+      return { previousTeamsAll, previousTeam };
+    },
+    onError: (error: any, _, context) => {
+      // Rollback on error
+      if (context?.previousTeamsAll) {
+        queryClient.setQueryData(queryKeys.teams(), context.previousTeamsAll);
+      }
+      if (context?.previousTeam && id) {
+        queryClient.setQueryData(queryKeys.team(id), context.previousTeam);
+      }
+      // Navigate back if error
+      if (id) navigate(`/teams/${id}`);
       toast({
         title: "Error",
         description: error.message || "Failed to delete team",
         variant: "destructive",
       });
-    } finally {
-      setDeletingTeam(false);
-    }
+    },
+    onSuccess: () => {
+      // Invalidate to ensure consistency
+      queryClient.invalidateQueries({ queryKey: queryKeys.teams() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.organizations });
+      toast({
+        title: "Success",
+        description: "Team deleted successfully",
+      });
+    },
+  });
+
+  const handleRemoveMember = (userId: string) => {
+    if (!id) return;
+    removeMemberMutation.mutate(userId);
   };
 
-  if (loading) {
+  const handleAddMember = () => {
+    if (!id) return;
+    const trimmedIdentifier = newMemberUserId.trim();
+    
+    if (!trimmedIdentifier) {
+      toast({
+        title: "Error",
+        description: "Please enter a user name, username, email, or user ID",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    addMemberMutation.mutate({ 
+      userId: trimmedIdentifier, 
+      role: newMemberRole 
+    });
+  };
+
+  const handleDeleteTeam = () => {
+    if (!id) return;
+    deleteTeamMutation.mutate();
+  };
+
+  // Show page immediately with cached data, loading indicator only if no data at all
+  if (loading && !team) {
     return (
       <div className="min-h-screen bg-background">
         <Navbar />
@@ -185,7 +235,7 @@ export default function TeamDetail() {
     );
   }
 
-  if (!team) {
+  if (teamError || (!team && !teamLoading)) {
     return (
       <div className="min-h-screen bg-background">
         <Navbar />
@@ -280,10 +330,10 @@ export default function TeamDetail() {
                   <AlertDialogCancel>Cancel</AlertDialogCancel>
                   <AlertDialogAction
                     onClick={handleDeleteTeam}
-                    disabled={deletingTeam}
+                    disabled={deleteTeamMutation.isPending}
                     className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                   >
-                    {deletingTeam ? (
+                    {deleteTeamMutation.isPending ? (
                       <>
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                         Deleting...
@@ -304,20 +354,20 @@ export default function TeamDetail() {
             <DialogHeader>
               <DialogTitle>Add Team Member</DialogTitle>
               <DialogDescription>
-                Add a new member to {team.name}. Enter their user ID to add them to the team.
+                Add a new member to {team.name}. Enter their name, username, email, or user ID.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="userId">User ID</Label>
+                <Label htmlFor="userId">User Name, Username, Email, or ID</Label>
                 <Input
                   id="userId"
                   value={newMemberUserId}
                   onChange={(e) => setNewMemberUserId(e.target.value)}
-                  placeholder="Enter user ID (UUID)"
+                  placeholder="e.g., john, john@example.com, or user ID"
                 />
                 <p className="text-xs text-muted-foreground">
-                  The user must already have a RepoIQ account.
+                  Enter the user's name, GitHub username, email address, or user ID. The user must already have a RepoIQ account.
                 </p>
               </div>
               <div className="space-y-2">
@@ -338,8 +388,8 @@ export default function TeamDetail() {
               <Button variant="outline" onClick={() => setAddMemberDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button onClick={handleAddMember} disabled={addingMember}>
-                {addingMember ? (
+              <Button onClick={handleAddMember} disabled={addMemberMutation.isPending}>
+                {addMemberMutation.isPending ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     Adding...

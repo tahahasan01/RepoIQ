@@ -7,6 +7,8 @@ import { ThemeProvider } from "@/hooks/useTheme";
 import { RoleProvider } from "@/hooks/useRole";
 import { useEffect, Suspense, lazy } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { persistQueryCache, clearQueryCache } from "@/lib/queryPersister";
+import { usePrefetchOnLogin } from "@/hooks/usePrefetchOnLogin";
 
 // Eager load critical pages (landing, login)
 import Landing from "./pages/Landing";
@@ -51,16 +53,21 @@ const PageLoader = () => (
   </div>
 );
 
-// Configure React Query with optimized settings
+// Configure React Query with optimized settings for instant navigation
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 5 * 60 * 1000, // 5 minutes - data considered fresh
-      gcTime: 30 * 60 * 1000, // 30 minutes - cache garbage collection (formerly cacheTime)
+      staleTime: 10 * 60 * 1000, // 10 minutes - data considered fresh
+      gcTime: 60 * 60 * 1000, // 60 minutes - keep cache longer
       refetchOnWindowFocus: false, // Don't refetch on window focus
-      refetchOnReconnect: true, // Refetch on reconnect
+      refetchOnReconnect: false, // Don't refetch on reconnect (use cached data)
+      refetchOnMount: false, // Don't refetch on mount - use cached data if available
       retry: 2, // Retry failed requests twice
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+      // Use cached data immediately, don't refetch if data exists
+      placeholderData: (previousData) => previousData,
+      // Only refetch if data is stale AND no cached data exists
+      refetchInterval: false, // Don't auto-refetch
     },
     mutations: {
       retry: 1,
@@ -69,11 +76,16 @@ const queryClient = new QueryClient({
 });
 
 const AppInner = () => {
+  // Prefetch critical data on login for instant loading
+  usePrefetchOnLogin();
+
   // If API can't refresh (missing/expired refresh token), it will fire authExpired.
-  // We force-route to /login to avoid the UI silently showing "0 runs / 0 stats".
+  // We force-route to /login and clear cache to avoid stale data.
   useEffect(() => {
     const handler = () => {
       try {
+        // Clear cache on logout/auth expiration
+        clearQueryCache();
         if (window.location.pathname !== "/login") {
           window.location.href = "/login";
         }
@@ -130,20 +142,59 @@ const AppInner = () => {
   );
 };
 
-const App = () => (
-  <ErrorBoundary>
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <RoleProvider>
-          <TooltipProvider>
-            <Toaster />
-            <Sonner />
-            <AppInner />
-          </TooltipProvider>
-        </RoleProvider>
-      </ThemeProvider>
-    </QueryClientProvider>
-  </ErrorBoundary>
-);
+const App = () => {
+  // Initialize cache persistence
+  useEffect(() => {
+    // Get current user ID from localStorage token (if available)
+    const getUserId = (): string | undefined => {
+      try {
+        const token = localStorage.getItem('token');
+        if (token) {
+          // Extract user ID from JWT token payload
+          const payload = JSON.parse(atob(token.split('.')[1]));
+          return payload?.sub || payload?.user_id || payload?.id;
+        }
+      } catch {}
+      return undefined;
+    };
+    
+    // Start persisting cache (will restore on mount)
+    const userId = getUserId();
+    const cleanup = persistQueryCache(queryClient, userId);
+    
+    // Re-initialize persistence when token changes (user logs in/out)
+    const handleStorageChange = () => {
+      const newUserId = getUserId();
+      if (newUserId !== userId) {
+        // User changed - reinitialize persistence
+        cleanup();
+        persistQueryCache(queryClient, newUserId);
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    
+    return () => {
+      cleanup();
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+
+  return (
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <RoleProvider>
+            <TooltipProvider>
+              <Toaster />
+              <Sonner />
+              <AppInner />
+            </TooltipProvider>
+          </RoleProvider>
+        </ThemeProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
+  );
+};
 
 export default App;

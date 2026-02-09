@@ -106,3 +106,69 @@ async def delete_account(current_user: dict = Depends(get_current_user)):
         )
     
     return {"message": "Account deleted successfully"}
+
+
+@router.get("/search")
+async def search_users(
+    query: str,
+    limit: int = 10,
+    current_user: dict = Depends(get_current_user)
+):
+    """Search for users by name, username, or email. Returns limited public info."""
+    from app.db.supabase import get_service_db
+    from app.core.logging import get_logger
+    
+    logger = get_logger(__name__)
+    
+    if not query or len(query.strip()) < 2:
+        return []
+    
+    try:
+        db = get_service_db()
+        search_term = f"%{query.strip()}%"
+        
+        # Search by email, full_name, or github_username
+        # Try each field separately and combine results
+        results = []
+        seen_ids = set()
+        
+        # Search by email
+        email_result = db.table("users").select("id, email, full_name, github_username, avatar_url").ilike("email", search_term).limit(limit).execute()
+        for user in (email_result.data or []):
+            if user["id"] not in seen_ids:
+                results.append(user)
+                seen_ids.add(user["id"])
+        
+        # Search by full_name (if we haven't reached limit)
+        if len(results) < limit:
+            name_result = db.table("users").select("id, email, full_name, github_username, avatar_url").not_.is_("full_name", "null").ilike("full_name", search_term).limit(limit - len(results)).execute()
+            for user in (name_result.data or []):
+                if user["id"] not in seen_ids:
+                    results.append(user)
+                    seen_ids.add(user["id"])
+        
+        # Search by github_username (if we haven't reached limit)
+        if len(results) < limit:
+            username_result = db.table("users").select("id, email, full_name, github_username, avatar_url").not_.is_("github_username", "null").ilike("github_username", search_term).limit(limit - len(results)).execute()
+            for user in (username_result.data or []):
+                if user["id"] not in seen_ids:
+                    results.append(user)
+                    seen_ids.add(user["id"])
+        
+        result = type('obj', (object,), {'data': results})()
+        
+        # Filter out sensitive data and return safe user info
+        users = []
+        for user in (result.data or []):
+            users.append({
+                "id": user.get("id"),
+                "email": user.get("email"),
+                "full_name": user.get("full_name"),
+                "github_username": user.get("github_username"),
+                "avatar_url": user.get("avatar_url"),
+            })
+        
+        return users
+    except Exception as e:
+        logger.error(f"Error searching users: {e}")
+        return []

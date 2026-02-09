@@ -13,7 +13,7 @@
 [![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io/)
 [![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](https://supabase.com/)
 
-[Features](#-features) • [Demo](#-demo) • [Tech Stack](#-tech-stack) • [Installation](#-installation) • [Usage](#-usage) • [API](#-api-documentation)
+[Features](#-features) • [Demo & Screenshots](#-demo) • [Tech Stack](#-tech-stack) • [Installation](#-installation) • [Usage](#-usage) • [API](#-api-documentation)
 
 </div>
 
@@ -23,7 +23,7 @@
 
 - [Overview](#-overview)
 - [Features](#-features)
-- [Demo](#-demo)
+- [Demo & Screenshots](#-demo)
 - [Tech Stack](#-tech-stack)
 - [System Architecture](#-system-architecture)
 - [Installation](#-installation)
@@ -94,37 +94,116 @@
 
 ---
 
-## 🎬 Demo
+## 🎬 Demo & Screenshots
 
-### Dashboard Overview
-```
-┌─────────────────────────────────────────────────────────┐
-│  RepoIQ Dashboard                                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │ Overall: 72 │  │Security: 68│  │Quality: 75 │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘      │
-│                                                          │
-│  Recent Issues                      Files Analyzed: 127  │
-│  🔴 Critical: 3                    Total Issues: 24      │
-│  🟠 High: 8                        Last Scan: 2m ago     │
-│  🟡 Medium: 10                                           │
-│  🟢 Low: 3                                               │
-└─────────────────────────────────────────────────────────┘
-```
+> **Visual Tour of RepoIQ** - Explore all the key features and sections of the platform through these screenshots.
 
-### Issue Analysis
-```
-Issues (24 found)
-┌──────────────────────────────────────────────────────────┐
-│ frontend/src/services/api.ts          Line 2    [HIGH]   │
-│ API base URL is hardcoded, making it less flexible       │
-│ 💡 Use environment variables for configuration           │
-├──────────────────────────────────────────────────────────┤
-│ backend/app/api/routes/auth.py        Line 45  [CRITICAL]│
-│ SQL injection vulnerability in user query                │
-│ 💡 Use parameterized queries or ORM                      │
-└──────────────────────────────────────────────────────────┘
-```
+### 🔐 Login & Authentication
+
+![Login Page](pics/Loginpage.png)
+
+**GitHub OAuth Integration** - Secure login with your GitHub account. No passwords needed! Simply authorize RepoIQ to access your repositories and start analyzing.
+
+---
+
+### 🏠 Homepage & Dashboard
+
+![Homepage](pics/Homepage.png)
+
+**Welcome Dashboard** - Clean, modern interface showing your repositories and quick access to key features.
+
+---
+
+### 📚 Repositories Page
+
+![Repositories](pics/repos_page.png)
+
+**Repository Management** - View all your GitHub repositories, sync status, and initiate analyses with a single click.
+
+---
+
+### 📊 Repository Analysis Dashboard
+
+![Analysis Dashboard 1](pics/repoanalysisDasboard.png)
+
+![Analysis Dashboard 2](pics/repoanalysisDashboard2.png)
+
+**Comprehensive Analysis Overview** - Real-time analysis progress, security scores, quality metrics, and detailed insights. Track your repository health at a glance with interactive charts and visualizations.
+
+---
+
+### 🐛 Issues Section
+
+![Issues Section](pics/issues%20section.png)
+
+**Detailed Issue Tracking** - Browse all detected issues with severity filters, file navigation, and actionable recommendations. Each issue includes:
+- **Severity Level** (Critical, High, Medium, Low)
+- **File Location** with line numbers
+- **Issue Description** and impact
+- **AI-Generated Fix Suggestions**
+
+---
+
+### 📁 Files Section
+
+![Files Section](pics/filesSection.png)
+
+**File Browser with Issue Mapping** - Navigate your codebase structure with visual indicators showing which files have issues. Features include:
+- **Tree View** of repository structure
+- **File Content Viewer** with syntax highlighting
+- **Issue Badges** on files with problems
+- **Inline Issue Display** while browsing code
+
+---
+
+### 📄 Documentation & Reports
+
+![Documentation Section](pics/DocumentationSection.png)
+
+**Comprehensive Documentation** - Access detailed analysis reports, architecture diagrams, and documentation insights.
+
+![Bug Report](pics/BugsReport.png)
+
+**Professional Bug Reports** - Generate and download PDF reports for stakeholders, including:
+- Executive summary
+- Detailed issue breakdown
+- Code snippets and fixes
+- Risk assessment
+- Recommendations
+
+---
+
+### 🏢 Organizations & Teams
+
+![Organizations Page](pics/Organization_page.png)
+
+**Organization Management** - Create and manage organizations to group repositories and teams together. Monitor overall health across multiple teams.
+
+![Teams Page](pics/Teams.png)
+
+**Team Management** - Organize your development teams, assign repositories, and track team performance.
+
+![Team Performance](pics/TeamPerformance.png)
+
+**Team Analytics** - View team performance metrics, contribution statistics, and health scores.
+
+![View Details](pics/view_details.png)
+
+**Detailed Team View** - See team members, assigned repositories, and performance breakdowns.
+
+---
+
+### 📈 Executive Dashboard
+
+![Executive Dashboard](pics/Executive_Dashboard.png)
+
+**High-Level Business Metrics** - Executive view with:
+- Overall organization health score
+- Business risk assessment
+- Compliance status
+- Team leaderboards
+- Top risk areas
+- Trend analysis
 
 ---
 
@@ -438,54 +517,108 @@ TIMEOUT = 90  # Seconds
 
 ## 📖 Usage
 
-### 1. **Login with GitHub**
+### Quick Start Guide
+
+#### 1. **Login with GitHub**
+
+![Login Page](pics/Loginpage.png)
 
 1. Navigate to `http://localhost:8081`
 2. Click **"Sign in with GitHub"**
 3. Authorize RepoIQ to access your repositories
+4. You'll be redirected to the homepage
 
-### 2. **Analyze Repository**
+#### 2. **Browse Your Repositories**
 
-1. Go to **Repositories** page
-2. Select a repository
-3. Click **"Analyze Now"** button
-4. Watch real-time progress
-5. View results on Dashboard
+![Repositories Page](pics/repos_page.png)
 
-### 3. **View Analysis Results**
+1. Go to **Repositories** page from the navigation
+2. View all your GitHub repositories
+3. See sync status and last analysis date
+4. Click on any repository to view details
 
-**Dashboard** - Overview with scores and metrics
-```
-http://localhost:8081/dashboard/{repo_id}
-```
+#### 3. **Analyze Repository**
 
-**Issues** - Detailed issue list with filters
-```
-http://localhost:8081/dashboard/{repo_id}/issues
-```
+![Analysis Dashboard](pics/repoanalysisDasboard.png)
 
-**Files** - File browser with issue counts
-```
-http://localhost:8081/dashboard/{repo_id}/files
-```
+1. Select a repository from the list
+2. Click **"Analyze Now"** button
+3. Watch real-time progress in the dashboard
+4. View live updates as analysis progresses
+5. Results appear automatically when complete
 
-**Documentation** - Reports and architecture
-```
-http://localhost:8081/dashboard/{repo_id}/docs
-```
+#### 4. **Explore Analysis Results**
 
-### 4. **Generate Reports**
+**📊 Dashboard Tab** - Overview with scores and metrics
+- Overall health score
+- Security, Quality, and Architecture scores
+- Issue breakdown by severity
+- Recent activity timeline
+
+![Analysis Dashboard 2](pics/repoanalysisDashboard2.png)
+
+**🐛 Issues Tab** - Detailed issue list with filters
+- Filter by severity (Critical, High, Medium, Low)
+- Filter by type (Security, Quality, Architecture)
+- Search issues by description
+- View code snippets and fix suggestions
+
+![Issues Section](pics/issues%20section.png)
+
+**📁 Files Tab** - File browser with issue counts
+- Navigate repository structure
+- See issue counts per file
+- View file content with syntax highlighting
+- Click files to see associated issues
+
+![Files Section](pics/filesSection.png)
+
+**📄 Documentation Tab** - Reports and architecture
+- Full analysis report
+- Bug report
+- Architecture diagrams
+- Downloadable PDFs
+
+![Documentation Section](pics/DocumentationSection.png)
+
+#### 5. **Generate & Download Reports**
+
+![Bug Report](pics/BugsReport.png)
 
 1. Navigate to **Documentation** tab
-2. Click **"Download PDF Report"** for full analysis
-3. Or click **"Download Bug Report PDF"** for bugs only
+2. Click **"Download PDF Report"** for comprehensive analysis
+3. Or click **"Download Bug Report PDF"** for focused bug report
+4. Share reports with stakeholders or development teams
 
-### 5. **Filter & Search**
+#### 6. **Manage Organizations & Teams**
 
-- **By Severity**: Critical, High, Medium, Low
-- **By Type**: Security, Quality, Architecture
-- **By File**: Select specific files
-- **Search**: Find issues by description
+![Organizations Page](pics/Organization_page.png)
+
+**Organizations:**
+- Create organizations to group repositories
+- Monitor overall health across teams
+- Compare team performance
+
+![Teams Page](pics/Teams.png)
+
+**Teams:**
+- Create teams within organizations
+- Add team members by name, username, or email
+- Assign repositories to teams
+- Track team performance metrics
+
+![Team Performance](pics/TeamPerformance.png)
+
+#### 7. **Executive Dashboard**
+
+![Executive Dashboard](pics/Executive_Dashboard.png)
+
+For organization owners and managers:
+- Business risk score
+- Compliance status
+- Team leaderboards
+- Top risk areas identification
+- Trend analysis over time
 
 ---
 

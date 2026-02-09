@@ -153,19 +153,23 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     const analysis = get().backgroundAnalyses.get(repoId);
     if (!analysis) return;
     
+    // Always remove from tracking immediately so the UI updates instantly
+    get().removeBackgroundAnalysis(repoId);
+    get().addNotification({
+      type: 'info',
+      title: 'Analysis Cancelled',
+      message: `${analysis.repoName} analysis was cancelled.`,
+      repoId,
+      repoName: analysis.repoName,
+    });
+    
+    // Then tell the backend to cancel the running task
     try {
       const { default: apiClient } = await import('@/lib/api');
       await apiClient.cancelAnalysis(analysis.analysisId);
-      get().removeBackgroundAnalysis(repoId);
-      get().addNotification({
-        type: 'info',
-        title: 'Analysis Cancelled',
-        message: `${analysis.repoName} analysis was cancelled.`,
-        repoId,
-        repoName: analysis.repoName,
-      });
+      console.log('[NotificationStore] Backend cancel confirmed for', analysis.repoName);
     } catch (err) {
-      console.error('[NotificationStore] Failed to cancel analysis:', err);
+      console.error('[NotificationStore] Failed to cancel analysis on backend (UI already cleaned up):', err);
     }
   },
 }));
@@ -342,6 +346,14 @@ export function startBackgroundAnalysisPolling() {
             repoId: analysis.repoId,
             repoName: analysis.repoName,
           });
+        } else if (result.status === 'cancelled') {
+          console.log('[BackgroundAnalysis] Analysis CANCELLED for', analysis.repoName);
+          store.removeBackgroundAnalysis(analysis.repoId);
+          // Clear the analyzing UI state
+          const { useUIStore } = await import('./uiStore');
+          useUIStore.getState().setAnalyzingRepo(analysis.repoId, false);
+          // Dispatch event so Repositories page can clean up
+          window.dispatchEvent(new CustomEvent('analysisCancelled', { detail: { repoId: analysis.repoId } }));
         }
         // If still 'in_progress', continue polling
       } catch (err) {

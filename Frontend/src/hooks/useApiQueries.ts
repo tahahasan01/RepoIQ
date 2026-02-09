@@ -50,6 +50,37 @@ export const queryKeys = {
   // Chat
   chatHistory: (repoId: string) => 
     ['chatHistory', repoId] as const,
+  
+  // Organizations
+  organizations: ['organizations'] as const,
+  organization: (orgId: string) => 
+    ['organization', orgId] as const,
+  organizationTeams: (orgId: string) => 
+    ['organizationTeams', orgId] as const,
+  organizationRepositories: (orgId: string) => 
+    ['organizationRepositories', orgId] as const,
+  
+  // Teams
+  teams: (orgId?: string) => 
+    ['teams', orgId] as const,
+  team: (teamId: string) => 
+    ['team', teamId] as const,
+  teamMembers: (teamId: string) => 
+    ['teamMembers', teamId] as const,
+  teamRepositories: (teamId: string) => 
+    ['teamRepositories', teamId] as const,
+  
+  // Executive Dashboard
+  organizationOverview: (orgId: string) => 
+    ['organizationOverview', orgId] as const,
+  businessRiskScore: (orgId: string) => 
+    ['businessRiskScore', orgId] as const,
+  topRiskAreas: (orgId: string, limit?: number) => 
+    ['topRiskAreas', orgId, limit] as const,
+  complianceStatus: (orgId: string) => 
+    ['complianceStatus', orgId] as const,
+  teamLeaderboard: (orgId: string, metric?: string) => 
+    ['teamLeaderboard', orgId, metric] as const,
 };
 
 // ============================================
@@ -315,6 +346,152 @@ export function useInvalidateAnalysis() {
   };
 }
 
+// ============================================
+// ORGANIZATION QUERIES
+// ============================================
+
+export function useOrganizations(options?: Partial<UseQueryOptions<any[]>>) {
+  return useQuery({
+    queryKey: queryKeys.organizations,
+    queryFn: () => apiClient.listOrganizations(),
+    staleTime: 10 * 60 * 1000, // 10 minutes
+    gcTime: 60 * 60 * 1000, // 60 minutes - keep longer
+    placeholderData: (previousData) => previousData,
+    refetchInterval: false, // Don't auto-refetch
+    ...options,
+  });
+}
+
+export function useOrganization(orgId: string, options?: Partial<UseQueryOptions<any>>) {
+  return useQuery({
+    queryKey: queryKeys.organization(orgId),
+    queryFn: () => apiClient.getOrganization(orgId),
+    staleTime: 10 * 60 * 1000, // 10 minutes
+    gcTime: 60 * 60 * 1000, // 60 minutes
+    enabled: !!orgId,
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: options?.refetchOnMount ?? false,
+    ...options,
+  });
+}
+
+export function useOrganizationTeams(orgId: string, options?: Partial<UseQueryOptions<any[]>>) {
+  return useQuery({
+    queryKey: queryKeys.organizationTeams(orgId),
+    queryFn: () => {
+      if (!orgId || orgId === 'undefined' || orgId === 'null') {
+        throw new Error('Invalid organization ID');
+      }
+      return apiClient.listOrganizationTeams(orgId);
+    },
+    staleTime: 10 * 60 * 1000, // 10 minutes
+    gcTime: 60 * 60 * 1000, // 60 minutes
+    enabled: !!orgId && orgId !== 'undefined' && orgId !== 'null',
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: options?.refetchOnMount ?? false,
+    ...options,
+  });
+}
+
+export function useOrganizationRepositories(orgId: string, options?: Partial<UseQueryOptions<any[]>>) {
+  return useQuery({
+    queryKey: queryKeys.organizationRepositories(orgId),
+    queryFn: () => {
+      if (!orgId || orgId === 'undefined' || orgId === 'null') {
+        throw new Error('Invalid organization ID');
+      }
+      return apiClient.getOrganizationRepositories(orgId);
+    },
+    staleTime: 10 * 60 * 1000, // 10 minutes
+    gcTime: 60 * 60 * 1000, // 60 minutes
+    enabled: !!orgId && orgId !== 'undefined' && orgId !== 'null',
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: options?.refetchOnMount ?? false,
+    ...options,
+  });
+}
+
+// ============================================
+// TEAM QUERIES
+// ============================================
+
+export function useTeams(orgId?: string, options?: Partial<UseQueryOptions<any[]>>) {
+  return useQuery({
+    queryKey: queryKeys.teams(orgId),
+    queryFn: async () => {
+      if (orgId && orgId !== 'undefined') {
+        return apiClient.listOrganizationTeams(orgId);
+      } else {
+        // Load teams from all organizations
+        const orgs = await apiClient.listOrganizations();
+        const teamsArrays = await Promise.all(
+          orgs
+            .filter(org => org.id && org.id !== 'undefined') // Filter out invalid orgs
+            .map(org => 
+              apiClient.listOrganizationTeams(org.id).catch(() => [])
+            )
+        );
+        return teamsArrays.flat();
+      }
+    },
+    staleTime: 10 * 60 * 1000, // 10 minutes
+    gcTime: 60 * 60 * 1000, // 60 minutes - keep longer
+    placeholderData: (previousData) => previousData,
+    refetchInterval: false, // Don't auto-refetch
+    enabled: orgId !== 'undefined', // Don't run if orgId is the string "undefined"
+    ...options,
+  });
+}
+
+export function useTeam(teamId: string, options?: Partial<UseQueryOptions<any>>) {
+  return useQuery({
+    queryKey: queryKeys.team(teamId),
+    queryFn: () => apiClient.getTeam(teamId),
+    staleTime: 10 * 60 * 1000, // 10 minutes - data considered fresh
+    gcTime: 60 * 60 * 1000, // 60 minutes - keep in cache longer
+    enabled: !!teamId,
+    // Use cached data immediately if available
+    placeholderData: (previousData) => previousData,
+    // Don't refetch on mount if data exists (use cached data)
+    refetchOnMount: options?.refetchOnMount ?? false,
+    // Don't refetch in background - use cached data until explicitly invalidated
+    refetchInterval: false,
+    ...options,
+  });
+}
+
+export function useTeamMembers(teamId: string, options?: Partial<UseQueryOptions<any[]>>) {
+  return useQuery({
+    queryKey: queryKeys.teamMembers(teamId),
+    queryFn: () => apiClient.getTeamMembers(teamId),
+    staleTime: 10 * 60 * 1000, // 10 minutes
+    gcTime: 60 * 60 * 1000, // 60 minutes
+    enabled: !!teamId,
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: options?.refetchOnMount ?? false,
+    refetchInterval: false,
+    ...options,
+  });
+}
+
+export function useTeamRepositories(teamId: string, options?: Partial<UseQueryOptions<any[]>>) {
+  return useQuery({
+    queryKey: queryKeys.teamRepositories(teamId),
+    queryFn: () => apiClient.getTeamRepositories(teamId),
+    staleTime: 10 * 60 * 1000, // 10 minutes
+    gcTime: 60 * 60 * 1000, // 60 minutes
+    enabled: !!teamId,
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: options?.refetchOnMount ?? false,
+    refetchInterval: false,
+    ...options,
+  });
+}
+
+// ============================================
+// PREFETCH HOOKS
+// ============================================
+
 export function usePrefetchRepository() {
   const queryClient = useQueryClient();
   
@@ -335,4 +512,129 @@ export function usePrefetchRepository() {
       });
     },
   };
+}
+
+export function usePrefetchTeam() {
+  const queryClient = useQueryClient();
+  
+  return {
+    prefetch: (teamId: string) => {
+      // Prefetch team data when hovering over "View Team" button
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.team(teamId),
+        queryFn: () => apiClient.getTeam(teamId),
+        staleTime: 10 * 60 * 1000,
+      });
+      // Also prefetch members and repositories in parallel
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.teamMembers(teamId),
+        queryFn: () => apiClient.getTeamMembers(teamId),
+        staleTime: 10 * 60 * 1000,
+      });
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.teamRepositories(teamId),
+        queryFn: () => apiClient.getTeamRepositories(teamId),
+        staleTime: 10 * 60 * 1000,
+      });
+    },
+  };
+}
+
+export function usePrefetchOrganization() {
+  const queryClient = useQueryClient();
+  
+  return {
+    prefetch: (orgId: string) => {
+      // Validate orgId before prefetching
+      if (!orgId || orgId === 'undefined' || orgId === 'null') {
+        console.warn('[usePrefetchOrganization] ⚠️ Skipping prefetch for invalid orgId:', orgId);
+        return;
+      }
+      
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.organization(orgId),
+        queryFn: () => apiClient.getOrganization(orgId),
+        staleTime: 10 * 60 * 1000,
+      });
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.organizationTeams(orgId),
+        queryFn: () => apiClient.listOrganizationTeams(orgId),
+        staleTime: 10 * 60 * 1000,
+      });
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.organizationRepositories(orgId),
+        queryFn: () => apiClient.getOrganizationRepositories(orgId),
+        staleTime: 10 * 60 * 1000,
+      });
+    },
+  };
+}
+
+// ============================================
+// EXECUTIVE DASHBOARD QUERIES
+// ============================================
+
+export function useOrganizationOverview(orgId: string, options?: Partial<UseQueryOptions<any>>) {
+  return useQuery({
+    queryKey: queryKeys.organizationOverview(orgId),
+    queryFn: () => apiClient.getOrganizationOverview(orgId),
+    staleTime: 10 * 60 * 1000, // 10 minutes
+    gcTime: 60 * 60 * 1000, // 60 minutes
+    enabled: !!orgId,
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: options?.refetchOnMount ?? false,
+    ...options,
+  });
+}
+
+export function useBusinessRiskScore(orgId: string, options?: Partial<UseQueryOptions<any>>) {
+  return useQuery({
+    queryKey: queryKeys.businessRiskScore(orgId),
+    queryFn: () => apiClient.getBusinessRiskScore(orgId),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 60 * 60 * 1000,
+    enabled: !!orgId,
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: options?.refetchOnMount ?? false,
+    ...options,
+  });
+}
+
+export function useTopRiskAreas(orgId: string, limit: number = 10, options?: Partial<UseQueryOptions<any[]>>) {
+  return useQuery({
+    queryKey: queryKeys.topRiskAreas(orgId, limit),
+    queryFn: () => apiClient.getTopRiskAreas(orgId, limit),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 60 * 60 * 1000,
+    enabled: !!orgId,
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: options?.refetchOnMount ?? false,
+    ...options,
+  });
+}
+
+export function useComplianceStatus(orgId: string, options?: Partial<UseQueryOptions<any>>) {
+  return useQuery({
+    queryKey: queryKeys.complianceStatus(orgId),
+    queryFn: () => apiClient.getComplianceStatus(orgId),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 60 * 60 * 1000,
+    enabled: !!orgId,
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: options?.refetchOnMount ?? false,
+    ...options,
+  });
+}
+
+export function useTeamLeaderboard(orgId: string, metric: string = 'overall_score', options?: Partial<UseQueryOptions<any[]>>) {
+  return useQuery({
+    queryKey: queryKeys.teamLeaderboard(orgId, metric),
+    queryFn: () => apiClient.getTeamLeaderboard(orgId, metric),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 60 * 60 * 1000,
+    enabled: !!orgId,
+    placeholderData: (previousData) => previousData,
+    refetchOnMount: options?.refetchOnMount ?? false,
+    ...options,
+  });
 }

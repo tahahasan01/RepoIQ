@@ -288,7 +288,11 @@ async def cancel_analysis(
                 "status": analysis["status"]
             }
         
-        # Mark as cancelled
+        # Signal the running background task to stop at the next checkpoint
+        from app.tasks.analysis_tasks import request_cancellation
+        request_cancellation(analysis_id)
+        
+        # Mark as cancelled in DB
         await repo_service.update_analysis(analysis_id, {
             "status": "cancelled",
             "error_message": "Cancelled by user"

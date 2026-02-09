@@ -23,10 +23,14 @@ def _sanitize_error_message(error: Exception, default_message: str = "An error o
         return "Invalid credentials"
     if "not found" in error_str:
         return "Resource not found"
-    if "expired" in error_str:
-        return "Session expired. Please log in again"
+    if "expired" in error_str or "already used" in error_str or "verification code" in error_str:
+        return "GitHub authorization expired. Please click 'Login with GitHub' again to get a fresh authorization."
     if "rate limit" in error_str:
         return "Too many requests. Please try again later"
+    if "redirect_uri_mismatch" in error_str or "redirect uri" in error_str:
+        return "GitHub OAuth configuration error. Please contact support."
+    if "client_credentials" in error_str or "client secret" in error_str:
+        return "GitHub OAuth configuration error. Please check server configuration."
     if "github" in error_str and "access" in error_str:
         return "Failed to connect to GitHub. Please try again"
     

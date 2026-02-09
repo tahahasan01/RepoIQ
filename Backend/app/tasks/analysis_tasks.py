@@ -13,6 +13,33 @@ import asyncio
 
 logger = get_logger(__name__)
 
+# ─── Cancellation mechanism ─────────────────────────────────────────────────
+# In-memory set of analysis IDs that have been requested for cancellation.
+# Works because BackgroundTasks run in the same process as the FastAPI server.
+_cancelled_analyses: set[str] = set()
+
+
+def request_cancellation(analysis_id: str):
+    """Mark an analysis as cancelled so the running task will stop at the next checkpoint."""
+    _cancelled_analyses.add(analysis_id)
+    logger.info(f"[cancellation] Registered cancellation request for analysis {analysis_id}")
+
+
+def _check_cancelled(analysis_id: str):
+    """Raise an exception if this analysis has been cancelled. Call at key checkpoints."""
+    if analysis_id in _cancelled_analyses:
+        _cancelled_analyses.discard(analysis_id)
+        logger.info(f"[cancellation] Analysis {analysis_id} detected cancellation — aborting")
+        raise AnalysisCancelled(analysis_id)
+
+
+class AnalysisCancelled(Exception):
+    """Raised when an analysis is cancelled by the user."""
+    def __init__(self, analysis_id: str):
+        self.analysis_id = analysis_id
+        super().__init__(f"Analysis {analysis_id} was cancelled by the user")
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 async def _warm_cache_background(analysis_id: str, repo_id: str, user_id: str, github_token: str):
     """Background task for cache warming - doesn't block main response."""
@@ -32,6 +59,20 @@ async def run_analysis_sync(repo_id: str, user_id: str, github_token: str, analy
         result = await _run_analysis(repo_id, user_id, github_token, analysis_id)
         logger.info(f"✅ Repository analysis completed successfully: {repo_id}")
         return result
+    except AnalysisCancelled:
+        # User pressed cancel — mark as cancelled in DB and stop gracefully
+        logger.info(f"🛑 Analysis {analysis_id} was cancelled by user for repo {repo_id}")
+        try:
+            repo_service = RepositoryService()
+            await repo_service.update_analysis(analysis_id, {
+                "status": "cancelled",
+                "error_message": "Cancelled by user"
+            })
+        except Exception as update_error:
+            logger.error(f"Failed to update cancelled analysis status: {str(update_error)}")
+        # Clean up the cancellation flag in case it wasn't cleared
+        _cancelled_analyses.discard(analysis_id)
+        return {"analysis_id": analysis_id, "status": "cancelled"}
     except Exception as e:
         logger.error(f"❌ Repository analysis failed for {repo_id}: {type(e).__name__}: {str(e)}")
         logger.exception("Full error traceback:")
@@ -106,6 +147,9 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
         "status": "in_progress"
     })
     
+    # ── Cancellation checkpoint 1: before starting real work ──
+    _check_cancelled(analysis_id)
+    
     # repo_id is expected to be internal UUID, but be defensive in case a GitHub numeric id is passed
     repo = await repo_service.get_repository(repo_id, user_id)
     if not repo:
@@ -141,6 +185,9 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
         redis.delete(f"db:history:{repo_id}")
         logger.info(f"🗑️ Invalidated history cache for repo: {repo_id} (cached analysis path)")
         return cached_result
+    
+    # ── Cancellation checkpoint 2: before fetching files from GitHub ──
+    _check_cancelled(analysis_id)
     
     logger.info(f"Fetching repository files for {repo['full_name']}")
     # Fetch ALL files from repository with increased timeout for large repos
@@ -320,6 +367,9 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
         "repo_name": repo["name"]
     }
     
+    # ── Cancellation checkpoint 3: before AI analysis (most expensive step) ──
+    _check_cancelled(analysis_id)
+    
     # Run analysis with TOON-compressed content
     logger.info(f"Running AI analysis on {len(code_files)} files...")
     analysis_result = await orchestrator.analyze_repository(code_files, project_context)
@@ -328,6 +378,9 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     total_tokens = token_optimizer.count_tokens(compressed_toon)
     token_optimizer.track_usage("analysis", total_tokens, user_id)
     logger.info(f"Analysis used approximately {total_tokens:,} tokens (TOON-optimized)")
+    
+    # ── Cancellation checkpoint 4: before saving results ──
+    _check_cancelled(analysis_id)
     
     # Save results to DB
     await repo_service.save_issues(analysis_id, analysis_result["issues"])

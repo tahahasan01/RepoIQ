@@ -1,6 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { useParams, useLocation } from "react-router-dom";
-import apiClient from "@/lib/api";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,13 +16,10 @@ import {
 } from "lucide-react";
 import { BugReport } from "@/services/scanService";
 import { generateFullAnalysisReport, generateBugReportPDF, AnalysisReport } from "@/services/reportService";
+import { useRepository, useAnalysisResults, useAnalysisById } from "@/hooks/useApiQueries";
 
 export default function Documentation() {
   const [activeTab, setActiveTab] = useState<"report" | "bugreport">("report");
-  const [bugReports, setBugReports] = useState<BugReport[]>([]);
-  const [analysisData, setAnalysisData] = useState<any>(null);
-  const [repoData, setRepoData] = useState<any>(null);
-  const [isLoadingReport, setIsLoadingReport] = useState(true);
   
   const params = useParams();
   const repoId = (params as any).id || (params as any).repoId;
@@ -32,58 +28,36 @@ export default function Documentation() {
   const queryParams = new URLSearchParams(location.search);
   const analysisId = queryParams.get('analysis_id');
   
-
-  useEffect(() => {
-    let mounted = true;
-    
-    async function loadData() {
-      if (!repoId) return;
-      setIsLoadingReport(true);
-      
-      try {
-        // Load repository info
-        const repo = await apiClient.getRepository(repoId as string);
-        if (!mounted) return;
-        setRepoData(repo);
-        
-        // Load analysis results
-        const analysis = analysisId
-          ? await apiClient.getAnalysisById(analysisId)
-          : await apiClient.getAnalysisResults(repoId as string);
-        
-        if (!mounted) return;
-        
-        if (analysis) {
-          setAnalysisData(analysis);
-          
-          // Create bug reports from issues
-          if (analysis.issues && Array.isArray(analysis.issues)) {
-            const reports: BugReport[] = analysis.issues.map((issue: any, index: number) => ({
-              id: issue.id || `${Date.now()}-${index}`,
-              title: issue.description || issue.message || 'Issue detected',
-              details: `File: ${issue.file_path || issue.file || 'N/A'}\nLine: ${issue.line_number || issue.line || 'N/A'}\n\n${issue.suggestion || issue.fix || 'No details available'}`,
-              timestamp: analysis.completed_at ? new Date(analysis.completed_at).getTime() : Date.now(),
-              repoName: repo?.name || analysis.repository_name || 'Repository',
-              severity: issue.severity || 'medium',
-              status: 'open',
-              category: issue.category || 'general',
-              file_path: issue.file_path || issue.file,
-              line_number: issue.line_number || issue.line,
-            }));
-            setBugReports(reports);
-          }
-        }
-      } catch (err) {
-        console.error('[Documentation] Failed to load data:', err);
-      } finally {
-        if (mounted) setIsLoadingReport(false);
-      }
-    }
-    
-    loadData();
-    
-    return () => { mounted = false; };
-  }, [repoId, analysisId]);
+  // Use React Query hooks — data persists across navigations
+  const { data: repoData } = useRepository(repoId || '', { enabled: !!repoId });
+  
+  // Fetch analysis by specific ID or latest for the repo
+  const { data: analysisById, isLoading: isLoadingById } = useAnalysisById(analysisId || '', { 
+    enabled: !!analysisId 
+  });
+  const { data: analysisLatest, isLoading: isLoadingLatest } = useAnalysisResults(repoId || '', { 
+    enabled: !!repoId && !analysisId 
+  });
+  
+  const analysisData = analysisId ? analysisById : analysisLatest;
+  const isLoadingReport = analysisId ? isLoadingById : isLoadingLatest;
+  
+  // Derive bug reports from analysis data (memoized so it doesn't recompute on every render)
+  const bugReports = useMemo<BugReport[]>(() => {
+    if (!analysisData?.issues || !Array.isArray(analysisData.issues)) return [];
+    return analysisData.issues.map((issue: any, index: number) => ({
+      id: issue.id || `${Date.now()}-${index}`,
+      title: issue.description || issue.message || 'Issue detected',
+      details: `File: ${issue.file_path || issue.file || 'N/A'}\nLine: ${issue.line_number || issue.line || 'N/A'}\n\n${issue.suggestion || issue.fix || 'No details available'}`,
+      timestamp: analysisData.completed_at ? new Date(analysisData.completed_at).getTime() : Date.now(),
+      repoName: repoData?.name || analysisData.repository_name || 'Repository',
+      severity: issue.severity || 'medium',
+      status: 'open' as const,
+      category: issue.category || 'general',
+      file_path: issue.file_path || issue.file,
+      line_number: issue.line_number || issue.line,
+    }));
+  }, [analysisData, repoData]);
 
   // Generate comprehensive PDF report
   const handleDownloadReport = () => {

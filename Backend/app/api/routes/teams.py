@@ -16,7 +16,7 @@ class TeamCreate(BaseModel):
 
 
 class TeamMemberAdd(BaseModel):
-    user_id: str
+    user_id: str  # Can be UUID, email, username, or name
     role: str = "member"
 
 
@@ -43,6 +43,12 @@ async def create_team(
             )
         
         return team
+    except ValueError as e:
+        # Duplicate name or validation error
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -134,7 +140,7 @@ async def add_team_member(
         service = TeamService()
         success = await service.add_team_member(
             team_id=team_id,
-            user_id=member_data.user_id,
+            user_identifier=member_data.user_id,
             role=member_data.role,
             added_by=current_user["id"]
         )
@@ -145,7 +151,17 @@ async def add_team_member(
                 detail="Failed to add team member or you don't have permission"
             )
         
-        return {"success": True, "team_id": team_id, "user_id": member_data.user_id}
+        # Get the actual user_id that was found (service already looked it up)
+        user = await service.find_user_by_identifier(member_data.user_id)
+        actual_user_id = user["id"] if user else member_data.user_id
+        
+        return {"success": True, "team_id": team_id, "user_id": actual_user_id, "user": user}
+    except ValueError as e:
+        # Validation errors (user not found, etc.)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:
