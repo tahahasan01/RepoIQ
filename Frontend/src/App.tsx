@@ -41,6 +41,7 @@ const Contact = lazy(() => import("./pages/Contact"));
 const Privacy = lazy(() => import("./pages/Privacy"));
 const Terms = lazy(() => import("./pages/Terms"));
 const Security = lazy(() => import("./pages/Security"));
+const DataScienceProfiles = lazy(() => import("./pages/DataScienceProfiles"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 // Loading fallback component
@@ -135,6 +136,7 @@ const AppInner = () => {
           <Route path="/teams" element={<Teams />} />
           <Route path="/teams/:id" element={<TeamDetail />} />
           <Route path="/executive/:orgId" element={<ExecutiveDashboard />} />
+          <Route path="/explore/data-science" element={<DataScienceProfiles />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
