@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useRepositoryStore } from "@/stores/repositoryStore";
 import { useUIStore } from "@/stores/uiStore";
@@ -17,6 +17,7 @@ import {
   Zap,
   ChevronRight,
   ChevronLeft,
+  FlaskConical,
   RefreshCw,
   History,
   X,
@@ -62,6 +63,7 @@ const languageColors: Record<string, string> = {
 
 export default function Repositories() {
   const auth = useAuth();
+  const navigate = useNavigate();
   
   // Repository store
   const {
@@ -374,6 +376,17 @@ export default function Repositories() {
           <p className="text-muted-foreground">
             Select a repository to analyze or view previous scan results.
           </p>
+          <div className="mt-4">
+            <Button
+              variant="outline"
+              className="gap-2"
+              onClick={() => navigate("/explore/data-science")}
+            >
+              <FlaskConical className="h-4 w-4 text-primary" />
+              Explore Top Data Science Profiles
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
         </motion.div>
 
         {/* Search and filters */}

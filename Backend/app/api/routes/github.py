@@ -212,6 +212,45 @@ async def get_github_user_info(
             detail=str(e)
         )
 
+@router.get("/explore/data-science-profiles")
+async def get_data_science_profiles(
+    limit: int = Query(10, ge=1, le=50, description="Number of profiles to return"),
+    sort_by: str = Query("stars", description="Sort by: stars | followers | repos"),
+    github_token: str = Depends(get_github_token),
+):
+    """
+    Return the top GitHub profiles (users / organizations) that have the most
+    popular data-science related repositories.
+
+    Results are ranked by ``sort_by`` (stars by default) and cached for 30 minutes.
+    """
+    if sort_by not in ("stars", "followers", "repos"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="sort_by must be one of: stars, followers, repos",
+        )
+
+    try:
+        github_service = create_github_service(github_token)
+        profiles = github_service.search_data_science_profiles(
+            limit=limit,
+            sort_by=sort_by,
+        )
+        return {"profiles": profiles, "total": len(profiles)}
+    except GithubException as e:
+        logger.error(f"GitHub API error fetching DS profiles: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"GitHub API error: {e.data.get('message', str(e)) if hasattr(e, 'data') and isinstance(e.data, dict) else str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch data science profiles: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
 @router.post("/disconnect")
 async def disconnect_github(
     current_user: dict = Depends(get_current_user)

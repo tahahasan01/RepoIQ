@@ -430,5 +430,137 @@ class GitHubService:
         return any(file_path.endswith(ext) for ext in code_extensions)
 
 
+    def search_data_science_profiles(
+        self,
+        limit: int = 10,
+        sort_by: str = "stars",
+    ) -> List[Dict[str, Any]]:
+        """
+        Search GitHub for top profiles (users/organizations) that have
+        data-science related repositories.
+
+        Queries the GitHub Search API for repos with popular data science
+        topics, then aggregates results by owner and returns the top
+        profiles sorted by ``sort_by`` (stars | followers | repos).
+
+        Results are cached in Redis for 30 minutes to stay within rate limits.
+        """
+
+        DATA_SCIENCE_TOPICS = [
+            "data-science",
+            "machine-learning",
+            "deep-learning",
+            "scikit-learn",
+            "tensorflow",
+            "pytorch",
+            "pandas",
+            "numpy",
+            "jupyter-notebook",
+            "data-analysis",
+            "neural-network",
+            "nlp",
+            "computer-vision",
+            "data-visualization",
+        ]
+
+        cache_key = f"github:ds_profiles:{limit}:{sort_by}"
+        cached = self.redis.get(cache_key)
+        if cached:
+            logger.debug("✓ Redis cache hit for data science profiles")
+            return cached
+
+        if not self._check_rate_limit():
+            raise GithubException(403, {"message": "Rate limit exceeded"}, None)
+
+        # Aggregate repos per owner
+        owners: Dict[str, Dict[str, Any]] = {}
+
+        query = " OR ".join(f"topic:{t}" for t in DATA_SCIENCE_TOPICS)
+        query += " sort:stars-desc"
+
+        try:
+            results = self.client.search_repositories(query, sort="stars", order="desc")
+
+            collected = 0
+            for repo in results:
+                if collected >= limit * 10:  # Gather more to aggregate meaningfully
+                    break
+
+                owner_login = repo.owner.login
+                if owner_login not in owners:
+                    owners[owner_login] = {
+                        "username": owner_login,
+                        "name": repo.owner.name or owner_login,
+                        "avatar_url": repo.owner.avatar_url,
+                        "profile_url": repo.owner.html_url,
+                        "type": repo.owner.type,  # "User" or "Organization"
+                        "total_stars": 0,
+                        "total_forks": 0,
+                        "repo_count": 0,
+                        "languages": set(),
+                        "top_repos": [],
+                    }
+
+                owner_data = owners[owner_login]
+                owner_data["total_stars"] += repo.stargazers_count
+                owner_data["total_forks"] += repo.forks_count
+                owner_data["repo_count"] += 1
+                if repo.language:
+                    owner_data["languages"].add(repo.language)
+
+                owner_data["top_repos"].append({
+                    "name": repo.name,
+                    "full_name": repo.full_name,
+                    "description": repo.description,
+                    "url": repo.html_url,
+                    "stars": repo.stargazers_count,
+                    "forks": repo.forks_count,
+                    "language": repo.language,
+                    "topics": repo.get_topics()[:5],
+                })
+
+                collected += 1
+
+        except GithubException as e:
+            logger.error(f"GitHub search failed: {e}")
+            raise
+
+        # Fetch follower counts for User-type owners
+        for login, data in owners.items():
+            if data["type"] == "User":
+                try:
+                    user = self.client.get_user(login)
+                    data["followers"] = user.followers
+                    data["bio"] = user.bio
+                except Exception:
+                    data["followers"] = 0
+                    data["bio"] = None
+            else:
+                data["followers"] = 0
+                data["bio"] = None
+
+        # Sort profiles
+        def sort_key(item: Dict[str, Any]) -> int:
+            if sort_by == "followers":
+                return item["followers"]
+            if sort_by == "repos":
+                return item["repo_count"]
+            return item["total_stars"]  # default: stars
+
+        sorted_profiles = sorted(owners.values(), key=sort_key, reverse=True)[:limit]
+
+        # Convert sets to lists for JSON serialization
+        for profile in sorted_profiles:
+            profile["languages"] = list(profile["languages"])
+            # Keep only the top-3 repos per profile
+            profile["top_repos"] = sorted(
+                profile["top_repos"], key=lambda r: r["stars"], reverse=True
+            )[:3]
+
+        self.redis.set(cache_key, sorted_profiles, ttl=1800)
+        logger.info(f"✅ Returning {len(sorted_profiles)} data science profiles")
+        return sorted_profiles
+
+
 def create_github_service(access_token: str) -> GitHubService:
     return GitHubService(access_token)

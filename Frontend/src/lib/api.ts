@@ -824,6 +824,12 @@ class ApiClient {
     });
   }
 
+  async getDataScienceProfiles(limit: number = 10, sortBy: string = 'stars') {
+    return this.request<{ profiles: any[]; total: number }>(
+      `/github/explore/data-science-profiles?limit=${limit}&sort_by=${sortBy}`
+    );
+  }
+
   // Executive Dashboard endpoints
   async getOrganizationOverview(orgId: string) {
     return this.request<any>(`/executive/organizations/${orgId}/overview`);
