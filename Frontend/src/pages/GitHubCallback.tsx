@@ -26,6 +26,7 @@ export default function GitHubCallback() {
 
       const params = new URLSearchParams(window.location.search);
       const code = params.get("code");
+      const state = params.get("state");
       const error = params.get("error");
 
       if (error) {
@@ -48,7 +49,7 @@ export default function GitHubCallback() {
         window.history.replaceState({}, document.title, window.location.pathname);
         
         const startTime = performance.now();
-        const response = await apiClient.githubCallback(code);
+        const response = await apiClient.githubCallback(code, state);
         console.log(`[GitHub OAuth] Token exchange took ${Math.round(performance.now() - startTime)}ms`);
         
         // Store tokens IMMEDIATELY

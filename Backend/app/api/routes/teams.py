@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from app.api.dependencies import get_current_user
 from app.services.team_service import TeamService
+from app.api.errors import safe_detail
 
 router = APIRouter(prefix="/teams", tags=["Teams"])
 
@@ -55,7 +56,7 @@ async def create_team(
         logger.error(f"Error creating team: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -73,7 +74,7 @@ async def list_organization_teams(
         logger.error(f"Error listing teams: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -100,7 +101,7 @@ async def get_team(
         logger.error(f"Error getting team: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -125,7 +126,7 @@ async def delete_team(
         logger.error(f"Error deleting team: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -168,7 +169,7 @@ async def add_team_member(
         logger.error(f"Error adding team member: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -194,7 +195,7 @@ async def remove_team_member(
         logger.error(f"Error removing team member: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -212,7 +213,7 @@ async def get_team_members(
         logger.error(f"Error getting team members: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -244,7 +245,7 @@ async def assign_repository_to_team(
         logger.error(f"Error assigning repository to team: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -262,5 +263,5 @@ async def get_team_repositories(
         logger.error(f"Error getting team repositories: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )

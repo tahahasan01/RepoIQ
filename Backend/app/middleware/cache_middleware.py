@@ -43,20 +43,28 @@ class ResponseCacheMiddleware(BaseHTTPMiddleware):
         }
     
     def _get_cache_key(self, request: Request) -> str:
-        """Generate cache key from request."""
+        """
+        Generate cache key from request.
+
+        SECURITY: the per-user component uses the full SHA-256 digest. It was
+        previously the first 8 hex chars of an MD5 - 32 bits - which collides by
+        the birthday bound at a few tens of thousands of active tokens, and a
+        collision serves one user's cached response to a different user.
+        """
         # Include method, path, and query parameters
         query_string = str(request.query_params)
         key_data = f"{request.method}:{request.url.path}:{query_string}"
-        
+
         # Include authorization header to cache per-user
         auth_header = request.headers.get("authorization", "")
         if auth_header:
-            # Hash the auth token for privacy
-            auth_hash = hashlib.md5(auth_header.encode()).hexdigest()[:8]
+            auth_hash = hashlib.sha256(auth_header.encode()).hexdigest()
             key_data = f"{key_data}:user:{auth_hash}"
-        
+        else:
+            key_data = f"{key_data}:anon"
+
         # Create cache key
-        return f"api:response:{hashlib.md5(key_data.encode()).hexdigest()}"
+        return f"api:response:{hashlib.sha256(key_data.encode()).hexdigest()}"
     
     def _get_ttl(self, path: str) -> int:
         """Get TTL for a specific endpoint."""
@@ -110,7 +118,11 @@ class ResponseCacheMiddleware(BaseHTTPMiddleware):
                     content=cached_response,
                     headers={
                         "X-Cache": "HIT",
-                        "X-Cache-Key": cache_key[:16]
+                        "Cache-Control": (
+                            "private, no-store" if request.headers.get("authorization")
+                            else "public, max-age=60"
+                        ),
+                        "Vary": "Authorization, Accept-Encoding",
                     }
                 )
         
@@ -134,6 +146,16 @@ class ResponseCacheMiddleware(BaseHTTPMiddleware):
                 self.redis.set(cache_key, response_data, ttl=ttl)
                 logger.debug(f"✓ Cached response for {request.url.path} (TTL: {ttl}s)")
                 
+                # SECURITY: never "public". These are authenticated, per-user
+                # payloads; "public" authorises the CDN / reverse proxy in front of
+                # the app to store one tenant's analysis output and hand it to the
+                # next caller of the same URL.
+                is_authenticated = bool(request.headers.get("authorization"))
+                cache_control = (
+                    "private, no-store" if is_authenticated
+                    else f"public, max-age={ttl}"
+                )
+
                 # Return response with cache headers
                 return JSONResponse(
                     content=response_data,
@@ -142,7 +164,8 @@ class ResponseCacheMiddleware(BaseHTTPMiddleware):
                         **dict(response.headers),
                         "X-Cache": "MISS",
                         "X-Cache-TTL": str(ttl),
-                        "Cache-Control": f"public, max-age={ttl}"
+                        "Cache-Control": cache_control,
+                        "Vary": "Authorization, Accept-Encoding",
                     }
                 )
             except (json.JSONDecodeError, UnicodeDecodeError):

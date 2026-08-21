@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 from app.api.dependencies import get_current_user
 from app.services.business_metrics_service import BusinessMetricsService
 from app.services.team_comparison_service import TeamComparisonService
+from app.api.errors import safe_detail
 
 router = APIRouter(prefix="/executive", tags=["Executive Dashboard"])
 
@@ -31,7 +32,7 @@ async def get_organization_overview(
         logger.error(f"Error getting organization overview: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -49,7 +50,7 @@ async def get_business_risk_score(
         logger.error(f"Error getting business risk score: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -68,7 +69,7 @@ async def get_top_risk_areas(
         logger.error(f"Error getting top risk areas: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -86,7 +87,7 @@ async def get_compliance_status(
         logger.error(f"Error getting compliance status: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -105,7 +106,7 @@ async def compare_teams(
         logger.error(f"Error comparing teams: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -124,7 +125,7 @@ async def get_team_leaderboard(
         logger.error(f"Error getting team leaderboard: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -143,5 +144,5 @@ async def get_team_health_trends(
         logger.error(f"Error getting team health trends: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )

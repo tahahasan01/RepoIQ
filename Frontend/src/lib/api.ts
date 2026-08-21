@@ -503,18 +503,23 @@ class ApiClient {
   }
 
   async getGitHubAuthUrl() {
-    return this.request<{ auth_url: string }>('/auth/github/authorize');
+    return this.request<{ auth_url: string; state?: string }>('/auth/github/authorize');
   }
 
   async disconnectGitHub() {
     return this.request<any>(`/github/disconnect`, { method: 'POST' });
   }
 
-  async githubCallback(code: string) {
-    return this.request<{ access_token: string; refresh_token: string }>('/auth/github/callback', {
-      method: 'POST',
-      body: JSON.stringify({ code }),
-    });
+  async githubCallback(code: string, state?: string | null) {
+    // `state` is the CSRF nonce issued by /auth/github/authorize and echoed back
+    // by GitHub. The backend burns it on first use.
+    return this.request<{ access_token: string; refresh_token: string; user?: any }>(
+      '/auth/github/callback',
+      {
+        method: 'POST',
+        body: JSON.stringify(state ? { code, state } : { code }),
+      }
+    );
   }
 
   // Repository endpoints

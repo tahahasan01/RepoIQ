@@ -4,6 +4,7 @@ from app.schemas import AutoFixRequest
 from app.services.repository_service import RepositoryService
 from app.tasks.analysis_tasks import analyze_repository_task, auto_fix_issues_task
 from app.api.dependencies import get_current_user, get_github_token
+from app.api.errors import safe_detail
 
 router = APIRouter(prefix="/analysis", tags=["Analysis"])
 
@@ -52,7 +53,7 @@ async def start_analysis(
         logger.error(f"[start_analysis] Error fetching repository: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch repository: {str(e)}"
+            detail=safe_detail(e, "Failed to fetch repository")
         )
     
     # Create analysis record
@@ -63,7 +64,7 @@ async def start_analysis(
         logger.error(f"[start_analysis] Failed to create analysis record: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create analysis record: {str(e)}"
+            detail=safe_detail(e, "Failed to create analysis record")
         )
     
     # Add background task
@@ -101,7 +102,7 @@ async def start_analysis(
             pass
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to start analysis task: {str(e)}"
+            detail=safe_detail(e, "Failed to start analysis task")
         )
 
 
@@ -123,7 +124,7 @@ async def get_batch_analysis_results(
         logger.error(f"Batch analysis fetch failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -252,7 +253,7 @@ async def get_analysis_by_id(
         logger.error(f"Get analysis by ID failed: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -316,7 +317,7 @@ async def cancel_analysis(
         logger.error(f"Cancel analysis failed: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -366,7 +367,7 @@ async def get_analysis_history(
         logger.error(f"[get_analysis_history] Error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -375,7 +376,10 @@ async def auto_fix_issues(
     repo_id: str,
     fix_request: AutoFixRequest,
     current_user: dict = Depends(get_current_user),
-    github_token: str = Depends(get_github_token)
+    # Kept as a dependency purely as a precondition check: it 403s when the user
+    # has no connected GitHub account, before we queue work that would fail in
+    # the worker. The value is deliberately unused - the worker resolves its own.
+    _github_connected: str = Depends(get_github_token)
 ):
     repo_service = RepositoryService()
     
@@ -387,10 +391,12 @@ async def auto_fix_issues(
         )
     
     try:
+        # SECURITY: no github_token here. Celery kwargs are serialised into the
+        # Redis broker in plaintext; the worker resolves and decrypts the token
+        # from user_id instead. See app/services/github_token.py.
         auto_fix_issues_task.delay(
             repo_id=repo["id"],
             user_id=current_user["id"],
-            github_token=github_token,
             issue_ids=fix_request.issue_ids
         )
         
@@ -401,7 +407,7 @@ async def auto_fix_issues(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -486,5 +492,5 @@ async def get_architecture_diagram(
         logger.error(f"[get_architecture_diagram] Error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate architecture diagram: {str(e)}"
+            detail=safe_detail(e, "Failed to generate architecture diagram")
         )

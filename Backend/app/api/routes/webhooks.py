@@ -13,6 +13,7 @@ from typing import List, Optional
 from app.services.webhook_service import get_webhook_service, WebhookEvents
 from app.api.dependencies import get_current_user
 from app.core.logging import get_logger
+from app.api.errors import safe_detail
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
@@ -83,8 +84,10 @@ async def create_webhook(
     Webhooks will receive POST requests with event data.
     Each request includes a signature header for verification.
     """
+    from app.services.url_guard import UnsafeUrlError
+
     service = get_webhook_service()
-    
+
     try:
         webhook = await service.register_webhook(
             user_id=current_user["id"],
@@ -92,7 +95,17 @@ async def create_webhook(
             events=webhook_data.events,
             secret=webhook_data.secret
         )
-        
+    except UnsafeUrlError as e:
+        # UnsafeUrlError messages are authored to be shown to the user - they say
+        # what is wrong with the URL and nothing about internal topology. This is
+        # the one place a raw exception string is intentionally returned.
+        logger.warning(f"Rejected webhook registration: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    try:
         # Don't return the secret in response
         webhook_response = {
             "id": webhook.get("id"),
@@ -184,8 +197,14 @@ async def test_webhook(
         "user_id": current_user["id"]
     }
     
-    success = await service.send_webhook(webhook, "test.ping", test_payload)
-    
+    # max_attempts=1: the default ladder sleeps 5s + 30s + 300s between retries.
+    # On a request-path endpoint that holds the connection open for over five
+    # minutes per call - a cheap way to exhaust the connection pool. A test
+    # delivery should report the first attempt's result and nothing more.
+    success = await service.send_webhook(
+        webhook, "test.ping", test_payload, max_attempts=1
+    )
+
     if success:
         return {"message": "Test webhook sent successfully"}
     else:

@@ -7,6 +7,7 @@ SECURITY: Includes in-memory fallback when Redis is unavailable to maintain prot
 from typing import Optional, Dict, Callable
 from datetime import datetime, timedelta
 from collections import defaultdict
+import hashlib
 import threading
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi import Request, HTTPException, status
@@ -186,9 +187,12 @@ class TokenBucket:
                 "reset_after": int((capacity - remaining) / self.refill_rate) if not allowed else 0
             }
         except Exception as e:
-            logger.error(f"Rate limit check failed: {e}")
-            # Fail open - allow request if rate limiting fails
-            return True, {"remaining": self.capacity, "capacity": self.capacity, "reset_after": 0}
+            # SECURITY: propagate. This used to return allowed=True, which made the
+            # middleware's in-memory fallback unreachable - consume() never raised,
+            # so a Redis outage silently disabled rate limiting entirely while the
+            # module docstring claimed otherwise.
+            logger.error(f"Rate limit check failed, falling back to in-memory: {e}")
+            raise
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -271,20 +275,65 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 return limiter
         return self.default_limiter
     
+    def _client_ip(self, request: Request) -> str:
+        """
+        Resolve the client IP, honouring X-Forwarded-For only as far as the number
+        of proxies we actually run behind.
+
+        SECURITY: this previously took the leftmost X-Forwarded-For entry
+        unconditionally. That entry is attacker-controlled - any client can send
+        `X-Forwarded-For: <random>` and get a fresh token bucket on every request,
+        which defeats rate limiting completely.
+
+        X-Forwarded-For is appended to by each hop, so the last TRUSTED_PROXY_COUNT
+        entries are the ones our own infrastructure wrote. The entry immediately
+        before those is the furthest-left value we can still trust. With
+        TRUSTED_PROXY_COUNT=0 the header is ignored outright.
+        """
+        trusted = max(0, settings.TRUSTED_PROXY_COUNT)
+
+        if trusted > 0:
+            forwarded = request.headers.get("X-Forwarded-For")
+            if forwarded:
+                hops = [h.strip() for h in forwarded.split(",") if h.strip()]
+                # Index from the right: the peer that our outermost proxy saw.
+                index = len(hops) - trusted
+                if 0 <= index < len(hops):
+                    return hops[index]
+                if hops:
+                    # Fewer hops than configured - the request did not traverse the
+                    # full chain. Trust the leftmost only if it cannot have been
+                    # spoofed past our proxies, which we cannot establish; use the
+                    # socket peer instead.
+                    logger.debug(
+                        f"X-Forwarded-For has {len(hops)} hops, expected at least "
+                        f"{trusted}; using socket peer"
+                    )
+
+        return request.client.host if request.client else "unknown"
+
     def _get_identifier(self, request: Request) -> str:
-        """Extract unique identifier from request (user ID or IP)."""
-        # Try to get user from request state (set by auth middleware)
+        """
+        Extract unique identifier from request (user ID or IP).
+
+        NOTE: request.state.user is never populated - authentication runs as a
+        route dependency, which executes after all middleware. The per-user tier
+        is therefore dead code today. Rather than delete it, derive identity from
+        the bearer token so authenticated callers get their own bucket regardless
+        of source IP; see AUDIT.md H-2.
+        """
         user = getattr(request.state, "user", None)
         if user and isinstance(user, dict):
             return f"user:{user.get('id', 'anonymous')}"
-        
-        # Fall back to IP address
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return f"ip:{forwarded.split(',')[0].strip()}"
-        
-        client_host = request.client.host if request.client else "unknown"
-        return f"ip:{client_host}"
+
+        # Bucket authenticated callers by token rather than IP, so a shared NAT
+        # does not make one user's traffic count against another's.
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            token_digest = hashlib.sha256(auth_header.encode()).hexdigest()[:32]
+            return f"token:{token_digest}"
+
+        return f"ip:{self._client_ip(request)}"
     
     def _get_fallback_limiter(self, path: str) -> InMemoryTokenBucket:
         """Select appropriate in-memory fallback limiter for request path."""

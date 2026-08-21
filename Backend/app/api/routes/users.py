@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File
 from app.schemas import UserResponse, UserUpdate, PasswordChange
 from app.services.auth_service import AuthService
 from app.api.dependencies import get_current_user
+from app.api.errors import safe_detail
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -32,7 +33,7 @@ async def update_profile(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -67,7 +68,7 @@ async def upload_avatar(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -85,11 +86,14 @@ async def change_password(
     )
     
     if not success:
+        # Deliberately does not distinguish "wrong current password" from other
+        # failures - the caller is already authenticated, but a precise message
+        # would still confirm the account's password to a session hijacker.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Failed to change password"
+            detail="Could not change password. Check your current password and try again."
         )
-    
+
     return {"message": "Password changed successfully"}
 
 
@@ -114,61 +118,77 @@ async def search_users(
     limit: int = 10,
     current_user: dict = Depends(get_current_user)
 ):
-    """Search for users by name, username, or email. Returns limited public info."""
+    """
+    Search for users the caller already shares an organisation with.
+
+    SECURITY: this endpoint previously searched the entire users table and returned
+    each match's email address, so any authenticated user could harvest the whole
+    platform directory with `?query=@`. It is now restricted to co-members of the
+    caller's organisations, email is no longer returned, and LIKE wildcards in the
+    query are escaped so `%` cannot enumerate.
+    """
     from app.db.supabase import get_service_db
     from app.core.logging import get_logger
-    
+    from app.services.organization_service import OrganizationService
+    from app.services.team_service import escape_like
+
     logger = get_logger(__name__)
-    
-    if not query or len(query.strip()) < 2:
+
+    cleaned = (query or "").strip()
+    if len(cleaned) < 2:
         return []
-    
+
+    limit = max(1, min(limit, 25))
+
     try:
         db = get_service_db()
-        search_term = f"%{query.strip()}%"
-        
-        # Search by email, full_name, or github_username
-        # Try each field separately and combine results
+        search_term = f"%{escape_like(cleaned)}%"
+
+        # Build the set of user ids the caller is allowed to see: everyone who
+        # belongs to a team in an organisation the caller belongs to, plus the
+        # owners of those organisations.
+        org_service = OrganizationService()
+        orgs = await org_service.list_user_organizations(current_user["id"])
+        org_ids = [o["id"] for o in orgs]
+
+        if not org_ids:
+            return []
+
+        visible_ids = {o["owner_id"] for o in orgs if o.get("owner_id")}
+
+        teams_result = db.table("teams").select("id").in_("organization_id", org_ids).execute()
+        team_ids = [t["id"] for t in (teams_result.data or [])]
+
+        if team_ids:
+            members_result = db.table("team_members").select("user_id").in_("team_id", team_ids).execute()
+            visible_ids.update(m["user_id"] for m in (members_result.data or []))
+
+        visible_ids.discard(current_user["id"])
+        if not visible_ids:
+            return []
+
+        columns = "id, full_name, github_username, avatar_url"
         results = []
         seen_ids = set()
-        
-        # Search by email
-        email_result = db.table("users").select("id, email, full_name, github_username, avatar_url").ilike("email", search_term).limit(limit).execute()
-        for user in (email_result.data or []):
-            if user["id"] not in seen_ids:
-                results.append(user)
-                seen_ids.add(user["id"])
-        
-        # Search by full_name (if we haven't reached limit)
-        if len(results) < limit:
-            name_result = db.table("users").select("id, email, full_name, github_username, avatar_url").not_.is_("full_name", "null").ilike("full_name", search_term).limit(limit - len(results)).execute()
-            for user in (name_result.data or []):
+
+        for field in ("full_name", "github_username"):
+            if len(results) >= limit:
+                break
+
+            field_result = db.table("users")\
+                .select(columns)\
+                .in_("id", list(visible_ids))\
+                .not_.is_(field, "null")\
+                .ilike(field, search_term)\
+                .limit(limit - len(results))\
+                .execute()
+
+            for user in (field_result.data or []):
                 if user["id"] not in seen_ids:
                     results.append(user)
                     seen_ids.add(user["id"])
-        
-        # Search by github_username (if we haven't reached limit)
-        if len(results) < limit:
-            username_result = db.table("users").select("id, email, full_name, github_username, avatar_url").not_.is_("github_username", "null").ilike("github_username", search_term).limit(limit - len(results)).execute()
-            for user in (username_result.data or []):
-                if user["id"] not in seen_ids:
-                    results.append(user)
-                    seen_ids.add(user["id"])
-        
-        result = type('obj', (object,), {'data': results})()
-        
-        # Filter out sensitive data and return safe user info
-        users = []
-        for user in (result.data or []):
-            users.append({
-                "id": user.get("id"),
-                "email": user.get("email"),
-                "full_name": user.get("full_name"),
-                "github_username": user.get("github_username"),
-                "avatar_url": user.get("avatar_url"),
-            })
-        
-        return users
+
+        return results
     except Exception as e:
-        logger.error(f"Error searching users: {e}")
+        logger.error(f"Error searching users: {type(e).__name__}: {e}")
         return []

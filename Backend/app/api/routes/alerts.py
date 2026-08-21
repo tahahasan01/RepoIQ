@@ -3,6 +3,7 @@ from loguru import logger
 from typing import List, Dict, Any
 from app.api.dependencies import get_current_user
 from app.services.alert_service import AlertService
+from app.api.errors import safe_detail
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
 
@@ -22,7 +23,7 @@ async def get_organization_alerts(
         logger.error(f"Error getting organization alerts: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -59,5 +60,5 @@ async def check_alerts(
         logger.error(f"Error checking alerts: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )

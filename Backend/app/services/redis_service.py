@@ -185,26 +185,38 @@ class RedisService:
     def invalidate(self, pattern: str) -> int:
         """
         Bulk delete keys matching pattern.
-        
+
+        PERF: uses SCAN, not KEYS. KEYS is O(N) over the whole keyspace and blocks
+        the Redis event loop for the duration - on a production keyspace that stalls
+        every other client. SCAN yields in bounded batches instead.
+
         Args:
             pattern: Pattern to match (e.g., "github:repos:*")
-            
+
         Returns:
             Number of keys deleted
         """
         if not self.available:
             return 0
-        
+
+        deleted = 0
         try:
-            keys = self.client.keys(pattern)
-            if keys:
-                deleted = self.client.delete(*keys)
+            batch = []
+            for key in self.client.scan_iter(match=pattern, count=500):
+                batch.append(key)
+                if len(batch) >= 500:
+                    deleted += self.client.delete(*batch)
+                    batch = []
+
+            if batch:
+                deleted += self.client.delete(*batch)
+
+            if deleted:
                 logger.info(f"Cache INVALIDATE: {pattern} ({deleted} keys)")
-                return deleted
-            return 0
+            return deleted
         except RedisError as e:
             logger.error(f"Redis INVALIDATE error for {pattern}: {e}")
-            return 0
+            return deleted
     
     def exists(self, key: str) -> bool:
         """Check if key exists in cache."""

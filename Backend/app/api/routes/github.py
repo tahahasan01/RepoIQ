@@ -8,6 +8,7 @@ from app.services.github_service import create_github_service
 from app.api.dependencies import get_current_user, get_github_token
 from app.services.auth_service import AuthService
 from app.core.logging import get_logger
+from app.api.errors import safe_detail
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/github", tags=["GitHub"])
@@ -84,7 +85,7 @@ async def sync_repositories(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -106,7 +107,7 @@ async def get_repositories(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -148,7 +149,7 @@ async def get_repository_files(
         logger.error(f"❌ Failed to fetch repository files: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -181,7 +182,7 @@ async def get_file_content(
             )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"GitHub API error: {str(e)}"
+            detail=safe_detail(e, "GitHub API error")
         )
     except Exception as e:
         # Check if error message indicates file not found
@@ -194,7 +195,7 @@ async def get_file_content(
         # Other server errors
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -209,7 +210,7 @@ async def get_github_user_info(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 @router.post("/disconnect")
@@ -229,5 +230,5 @@ async def disconnect_github(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )

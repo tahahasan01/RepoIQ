@@ -1,6 +1,6 @@
 from typing import Optional, Dict, Any
 from datetime import datetime
-from app.db.supabase import get_db, get_service_db
+from app.db.supabase import get_db, get_service_db, new_anon_db
 from app.core.security import create_access_token, create_refresh_token, verify_password, get_password_hash
 from app.core.logging import get_logger
 from app.services.encryption_service import encrypt_token, decrypt_token, redact_sensitive
@@ -57,6 +57,34 @@ def _safe_log_dict(data: dict, sensitive_keys: set = None) -> dict:
     return safe_data
 
 
+def _issue_session(user_id: str, email: Optional[str] = None) -> Dict[str, str]:
+    """
+    Mint a token pair and register it as this user's live session.
+
+    Every login path must go through here. Clearing the revocation watermark
+    matters: without it, a user who logs out and straight back in would present a
+    fresh token that still predates the watermark's whole-second resolution and be
+    rejected. Registering the refresh jti is what makes replay of a superseded
+    refresh token detectable.
+    """
+    from app.core.security import verify_token
+    from app.services.session_revocation import clear_revocation, register_refresh_token
+
+    clear_revocation(user_id)
+
+    claims = {"sub": user_id}
+    if email:
+        claims["email"] = email
+
+    access_token = create_access_token(claims)
+    refresh_token = create_refresh_token({"sub": user_id})
+
+    refresh_payload = verify_token(refresh_token, "refresh") or {}
+    register_refresh_token(user_id, refresh_payload.get("jti"))
+
+    return {"access_token": access_token, "refresh_token": refresh_token}
+
+
 class AuthService:
     def __init__(self):
         self.db: Client = get_db()
@@ -64,7 +92,9 @@ class AuthService:
     
     async def signup(self, email: str, password: str, full_name: Optional[str] = None) -> Dict[str, Any]:
         try:
-            auth_response = self.db.auth.sign_up({
+            # SECURITY: use a fresh, session-less client. The shared anon client
+            # retains the session of whoever last authenticated on this process.
+            auth_response = new_anon_db().auth.sign_up({
                 "email": email,
                 "password": password
             })
@@ -81,8 +111,9 @@ class AuthService:
             
             self.service_db.table("users").insert(user_data).execute()
             
-            access_token = create_access_token({"sub": auth_response.user.id, "email": email})
-            refresh_token = create_refresh_token({"sub": auth_response.user.id})
+            session = _issue_session(auth_response.user.id, email)
+            access_token = session["access_token"]
+            refresh_token = session["refresh_token"]
             
             return {
                 "user": {
@@ -99,7 +130,9 @@ class AuthService:
     
     async def login(self, email: str, password: str) -> Dict[str, Any]:
         try:
-            auth_response = self.db.auth.sign_in_with_password({
+            # SECURITY: fresh client per login so no session leaks into the
+            # process-wide client and gets picked up by another user's request.
+            auth_response = new_anon_db().auth.sign_in_with_password({
                 "email": email,
                 "password": password
             })
@@ -109,8 +142,9 @@ class AuthService:
             
             user_data = self.service_db.table("users").select("*").eq("id", auth_response.user.id).single().execute()
             
-            access_token = create_access_token({"sub": auth_response.user.id, "email": email})
-            refresh_token = create_refresh_token({"sub": auth_response.user.id})
+            session = _issue_session(auth_response.user.id, email)
+            access_token = session["access_token"]
+            refresh_token = session["refresh_token"]
             
             return {
                 "user": user_data.data,
@@ -266,11 +300,28 @@ class AuthService:
                 parallel_time = asyncio.get_event_loop().time()
                 logger.info(f"GitHub OAuth: Parallel fetch took {(parallel_time - token_time)*1000:.0f}ms")
                 
-                # Get email - prefer from user response, fallback to emails list
+                # Get email - prefer from user response, fallback to emails list.
+                #
+                # SECURITY: only a VERIFIED address may be used. The email is an
+                # account-matching key below (an existing user with the same
+                # address gets this GitHub identity linked to it and is issued
+                # tokens), so accepting an unverified address would let anyone who
+                # sets a victim's email on a throwaway GitHub account take over
+                # that victim's RepoIQ account.
                 email = github_user.get("email")
                 if not email and isinstance(emails, list):
-                    primary_email = next((e for e in emails if e.get("primary")), None)
-                    email = primary_email["email"] if primary_email else f"{github_username}@github.com"
+                    primary_email = next(
+                        (e for e in emails if e.get("primary") and e.get("verified")),
+                        None
+                    )
+                    if primary_email is None:
+                        primary_email = next(
+                            (e for e in emails if e.get("verified")),
+                            None
+                        )
+                    # The synthetic fallback is not a real address and must never
+                    # match an existing account; it only ever creates a new one.
+                    email = primary_email["email"] if primary_email else f"{github_username}@users.noreply.github.com"
                 
                 # Step 3: Database lookup - try by github_username first (faster, indexed)
                 # Then fallback to email if not found
@@ -373,8 +424,9 @@ class AuthService:
                         raise
                 
                 # Generate app tokens (fast - JWT creation)
-                app_access_token = create_access_token({"sub": user["id"], "email": email})
-                app_refresh_token = create_refresh_token({"sub": user["id"]})
+                gh_session = _issue_session(user["id"], email)
+                app_access_token = gh_session["access_token"]
+                app_refresh_token = gh_session["refresh_token"]
                 
                 total_time = asyncio.get_event_loop().time()
                 logger.info(f"GitHub OAuth: ✅ Complete for user: {redact_sensitive(user['id'])} in {(total_time - start_time)*1000:.0f}ms")
@@ -406,18 +458,57 @@ class AuthService:
             raise
     
     async def change_password(self, user_id: str, current_password: str, new_password: str) -> bool:
+        """
+        Change a user's password.
+
+        SECURITY: the current password is verified against Supabase Auth before the
+        change is applied, and the update is addressed to user_id explicitly via the
+        service-role admin API. The previous implementation ignored current_password
+        and called update_user() on the shared anon client, which acts on whichever
+        account last signed in on that process - i.e. it could change the wrong
+        user's password.
+        """
         try:
             user = await self.get_user(user_id)
             if not user:
+                logger.warning("Password change requested for unknown user")
                 return False
-            
-            self.db.auth.update_user({
-                "password": new_password
-            })
-            
+
+            email = user.get("email")
+            if not email:
+                logger.warning(f"Password change: user {user_id[:8]}... has no email on record")
+                return False
+
+            # Step 1: verify the current password on a throwaway client so no
+            # session is retained anywhere after this call.
+            verify_client = new_anon_db()
+            try:
+                verify_response = verify_client.auth.sign_in_with_password({
+                    "email": email,
+                    "password": current_password
+                })
+                if not verify_response.user or verify_response.user.id != user_id:
+                    logger.warning(f"Password change: current password rejected for {user_id[:8]}...")
+                    return False
+            except Exception:
+                logger.warning(f"Password change: current password rejected for {user_id[:8]}...")
+                return False
+            finally:
+                try:
+                    verify_client.auth.sign_out()
+                except Exception:
+                    pass
+
+            # Step 2: apply the change to this specific user id, not "the current session".
+            self.service_db.auth.admin.update_user_by_id(
+                user_id,
+                {"password": new_password}
+            )
+
+            logger.info(f"Password changed for user {user_id[:8]}...")
             return True
         except Exception as e:
-            logger.error(f"Password change failed: {str(e)}")
+            logger.error(f"Password change failed: {type(e).__name__}")
             return False
     
     async def delete_user(self, user_id: str) -> bool:

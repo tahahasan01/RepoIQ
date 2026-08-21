@@ -2,3 +2,6 @@
 .env
 *.env
 .env.local
+
+# Local virtualenv
+Backend/.venv/

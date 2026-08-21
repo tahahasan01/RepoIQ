@@ -113,16 +113,31 @@ class CallbackTask(Task):
 
 
 @celery_app.task(base=CallbackTask, bind=True, name="analyze_repository")
-def analyze_repository_task(self, repo_id: str, user_id: str, github_token: str, analysis_id: str):
+def analyze_repository_task(self, repo_id: str, user_id: str, analysis_id: str):
+    """
+    SECURITY: takes user_id, not github_token. Celery serialises task arguments
+    into the Redis broker, so a token passed here would sit in the queue in
+    plaintext - readable by anything with Redis access, including the
+    unauthenticated Flower dashboard. The worker resolves and decrypts the token
+    itself, in memory, at the moment it needs it.
+    """
     logger.info(f"Starting repository analysis: {repo_id}")
-    
+
     try:
-        result = asyncio.run(_run_analysis(repo_id, user_id, github_token, analysis_id))
+        result = asyncio.run(_run_analysis_for_user(repo_id, user_id, analysis_id))
         logger.info(f"Repository analysis completed: {repo_id}")
         return result
     except Exception as e:
         logger.error(f"Repository analysis failed: {str(e)}")
         raise
+
+
+async def _run_analysis_for_user(repo_id: str, user_id: str, analysis_id: str) -> Dict[str, Any]:
+    """Resolve the caller's GitHub token inside the worker, then run the analysis."""
+    from app.services.github_token import resolve_github_token_for_user
+
+    github_token = await resolve_github_token_for_user(user_id)
+    return await _run_analysis(repo_id, user_id, github_token, analysis_id)
 
 
 async def _run_analysis(repo_id: str, user_id: str, github_token: str, analysis_id: str) -> Dict[str, Any]:
@@ -458,16 +473,29 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
 
 
 @celery_app.task(name="auto_fix_issues")
-def auto_fix_issues_task(repo_id: str, user_id: str, github_token: str, issue_ids: list):
+def auto_fix_issues_task(repo_id: str, user_id: str, issue_ids: list):
+    """
+    SECURITY: takes user_id, not github_token - see analyze_repository_task.
+    This task needs write scope, so it is also the place that should request
+    the `repo` OAuth scope rather than login (AUDIT.md H-11).
+    """
     logger.info(f"Starting auto-fix for repository: {repo_id}")
-    
+
     try:
-        result = asyncio.run(_run_auto_fix(repo_id, user_id, github_token, issue_ids))
+        result = asyncio.run(_run_auto_fix_for_user(repo_id, user_id, issue_ids))
         logger.info(f"Auto-fix completed: {repo_id}")
         return result
     except Exception as e:
         logger.error(f"Auto-fix failed: {str(e)}")
         raise
+
+
+async def _run_auto_fix_for_user(repo_id: str, user_id: str, issue_ids: list) -> Dict[str, Any]:
+    """Resolve the caller's GitHub token inside the worker, then run the fix."""
+    from app.services.github_token import resolve_github_token_for_user
+
+    github_token = await resolve_github_token_for_user(user_id)
+    return await _run_auto_fix(repo_id, user_id, github_token, issue_ids)
 
 
 async def _run_auto_fix(repo_id: str, user_id: str, github_token: str, issue_ids: list) -> Dict[str, Any]:

@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 from pydantic import BaseModel
 from app.api.dependencies import get_current_user
 from app.services.organization_service import OrganizationService
+from app.api.errors import safe_detail
 
 router = APIRouter(prefix="/organizations", tags=["Organizations"])
 
@@ -43,7 +44,7 @@ async def create_organization(
         logger.error(f"Error creating organization: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -60,7 +61,7 @@ async def list_organizations(
         logger.error(f"Error listing organizations: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -87,7 +88,7 @@ async def get_organization(
         logger.error(f"Error getting organization: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -127,7 +128,7 @@ async def update_organization(
         logger.error(f"Error updating organization: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -152,7 +153,7 @@ async def delete_organization(
         logger.error(f"Error deleting organization: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -170,5 +171,5 @@ async def get_organization_repositories(
         logger.error(f"Error getting organization repositories: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )

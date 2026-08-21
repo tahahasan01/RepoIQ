@@ -26,19 +26,60 @@ class EncryptionService:
     """
     
     def __init__(self):
-        """Initialize with derived encryption key from SECRET_KEY."""
-        # Derive a 256-bit key from SECRET_KEY using PBKDF2
-        # Using 10,000 iterations - still secure but MUCH faster (100ms vs 1-3s)
-        # NIST recommends minimum 10,000 for PBKDF2-SHA256
+        """
+        Initialise the AES-256-GCM key.
+
+        Key material comes from TOKEN_ENCRYPTION_KEY when set, otherwise from
+        SECRET_KEY. Keeping them separate matters operationally: SECRET_KEY signs
+        JWTs and should be rotatable at will, but it was also the sole input to
+        this KDF - so rotating it made every GitHub token in the database
+        permanently undecryptable, silently disconnecting every user.
+
+        Decryption tries the primary key first and then any legacy key, so a
+        deployment can move from SECRET_KEY-derived to TOKEN_ENCRYPTION_KEY-derived
+        material without a migration or a re-auth stampede.
+        """
+        dedicated = getattr(settings, "TOKEN_ENCRYPTION_KEY", None)
+        # Guard the type explicitly: a non-string here (a misconfigured value, or
+        # a patched settings object in tests) otherwise fails deep inside the KDF
+        # with "Cannot convert instance to a buffer", which tells nobody anything.
+        if not isinstance(dedicated, str) or not dedicated.strip():
+            dedicated = None
+
+        primary_material = dedicated or settings.SECRET_KEY
+        self._aesgcm = AESGCM(self._derive(primary_material))
+        self._using_dedicated_key = dedicated is not None
+
+        # Fallback for values written before TOKEN_ENCRYPTION_KEY was configured.
+        self._legacy_aesgcm = None
+        if self._using_dedicated_key and isinstance(settings.SECRET_KEY, str):
+            self._legacy_aesgcm = AESGCM(self._derive(settings.SECRET_KEY))
+        elif not self._using_dedicated_key:
+            logger.warning(
+                "TOKEN_ENCRYPTION_KEY is not set - GitHub tokens are encrypted with "
+                "a key derived from SECRET_KEY. Rotating SECRET_KEY will make every "
+                "stored token undecryptable."
+            )
+
+    @staticmethod
+    def _derive(material: str) -> bytes:
+        """
+        Derive a 256-bit key.
+
+        PBKDF2 with a fixed salt is not the right primitive for high-entropy input
+        (HKDF is), and 10k iterations is far below current guidance for
+        password-derived keys. It is retained here because changing it would
+        invalidate every stored ciphertext; the security of this key rests on the
+        entropy of the input, not on the iteration count. Revisit alongside a
+        re-encryption migration.
+        """
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,  # 256 bits
             salt=b"repoiq_token_encryption_salt_v1",  # Fixed salt (key is already random)
-            iterations=10000,  # Reduced from 100k for 10x faster encryption
+            iterations=10000,
         )
-        key_material = settings.SECRET_KEY.encode('utf-8')
-        self._key = kdf.derive(key_material)
-        self._aesgcm = AESGCM(self._key)
+        return kdf.derive(material.encode('utf-8'))
     
     def encrypt(self, plaintext: str) -> str:
         """
@@ -89,18 +130,27 @@ class EncryptionService:
         try:
             # Decode from base64
             encrypted_data = base64.b64decode(encrypted_value)
-            
+
             # Extract nonce (first 12 bytes) and ciphertext
             nonce = encrypted_data[:12]
             ciphertext = encrypted_data[12:]
-            
-            # Decrypt and verify authentication tag
-            plaintext = self._aesgcm.decrypt(nonce, ciphertext, None)
-            
-            return plaintext.decode('utf-8')
         except Exception as e:
-            logger.error(f"Decryption failed: {type(e).__name__}")
+            logger.error(f"Decryption failed while decoding: {type(e).__name__}")
             raise ValueError("Failed to decrypt data - data may be corrupted or key mismatch")
+
+        # Primary key first, then the legacy SECRET_KEY-derived key for values
+        # written before TOKEN_ENCRYPTION_KEY was introduced. GCM authenticates,
+        # so a wrong key raises rather than returning garbage - trying both is safe.
+        for aesgcm in (self._aesgcm, self._legacy_aesgcm):
+            if aesgcm is None:
+                continue
+            try:
+                return aesgcm.decrypt(nonce, ciphertext, None).decode('utf-8')
+            except Exception:
+                continue
+
+        logger.error("Decryption failed under all configured keys")
+        raise ValueError("Failed to decrypt data - data may be corrupted or key mismatch")
     
     def is_encrypted(self, value: str) -> bool:
         """

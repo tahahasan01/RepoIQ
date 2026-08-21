@@ -44,37 +44,30 @@ def app():
     """
     Create FastAPI app instance for testing.
     Import is done here to ensure environment variables are set first.
-    The test environment variables set above will be used by the app.
+
+    This deliberately does NOT catch import errors. It previously fell back to a
+    stub FastAPI app whose handlers returned exactly what the tests asserted, so
+    the suite went green even when the real application could not be imported at
+    all - CI reported success on a completely broken build.
     """
-    try:
-        from main import app as _app
-        print("[TEST SETUP] Successfully imported FastAPI app", file=sys.stderr)
-        return _app
-    except Exception as e:
-        print(f"[TEST SETUP] Error importing app: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        
-        # Return a minimal FastAPI app as fallback
-        from fastapi import FastAPI
-        minimal_app = FastAPI()
-        
-        @minimal_app.get("/")
-        def root():
-            return {"message": "Test API", "version": "test"}
-        
-        @minimal_app.get("/health")
-        def health():
-            return {"status": "healthy"}
-        
-        @minimal_app.post("/api/v1/auth/signup")
-        def signup():
-            return {"detail": [{"msg": "validation error"}]}
-        
-        @minimal_app.get("/api/v1/users/me")
-        def me():
-            from fastapi import HTTPException
-            raise HTTPException(status_code=403, detail="Forbidden")
-        
-        print("[TEST SETUP] Using minimal fallback app", file=sys.stderr)
-        return minimal_app
+    from main import app as _app
+    print("[TEST SETUP] Successfully imported FastAPI app", file=sys.stderr)
+    return _app
+
+
+@pytest.fixture()
+def client(app):
+    """Synchronous TestClient. Server exceptions surface as 500s, not raises."""
+    from fastapi.testclient import TestClient
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.fixture()
+def admin_key(monkeypatch):
+    """Configure an admin API key for the duration of one test."""
+    key = "test-admin-key-abc123"
+    import main
+    import app.api.dependencies as deps
+    monkeypatch.setattr(main.settings, "ADMIN_API_KEY", key, raising=False)
+    monkeypatch.setattr(deps.settings, "ADMIN_API_KEY", key, raising=False)
+    return key

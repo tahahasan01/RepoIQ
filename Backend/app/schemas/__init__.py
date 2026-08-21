@@ -31,6 +31,38 @@ class UserResponse(UserBase):
         from_attributes = True
 
 
+class PublicUser(BaseModel):
+    """
+    The only shape of a user record that may cross the API boundary.
+
+    SECURITY: responses previously typed `user: dict`, which FastAPI does not
+    filter, so the raw `users` row - including the stored `github_access_token` -
+    was serialised to the browser and written to localStorage. Every field here is
+    listed deliberately; do not add one without asking whether it is safe to hand
+    to a client.
+    """
+    id: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    bio: Optional[str] = None
+    github_username: Optional[str] = None
+    github_connected: bool = False
+
+    @classmethod
+    def from_record(cls, record: Optional[Dict[str, Any]]) -> "PublicUser":
+        record = record or {}
+        return cls(
+            id=str(record.get("id", "")),
+            email=record.get("email"),
+            full_name=record.get("full_name"),
+            avatar_url=record.get("avatar_url"),
+            bio=record.get("bio"),
+            github_username=record.get("github_username"),
+            github_connected=bool(record.get("github_connected", False)),
+        )
+
+
 class PasswordChange(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=8)

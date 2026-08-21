@@ -61,7 +61,14 @@ class WebhookService:
             secret: Optional secret for signature verification
         """
         import secrets as sec
-        
+        from app.services.url_guard import resolve_and_validate
+
+        # SECURITY: reject internal destinations at registration time. Without
+        # this, POST /webhooks/{id}/test turns the API server into an SSRF proxy
+        # aimed at cloud metadata, localhost admin routes, and the VPC.
+        # Raises UnsafeUrlError, which the route maps to a 400.
+        resolve_and_validate(url)
+
         webhook_data = {
             "user_id": user_id,
             "url": url,
@@ -110,18 +117,34 @@ class WebhookService:
         self,
         webhook: Dict[str, Any],
         event_type: str,
-        payload: Dict[str, Any]
+        payload: Dict[str, Any],
+        max_attempts: Optional[int] = None
     ) -> bool:
         """
         Send a webhook notification.
-        
+
         Args:
             webhook: Webhook configuration
             event_type: Type of event (e.g., 'analysis.completed')
             payload: Event data to send
+            max_attempts: Cap on delivery attempts. Pass 1 from request-path
+                callers - the default retry ladder sleeps up to 335s in total,
+                which holds a connection open for over five minutes.
         """
+        from app.services.url_guard import resolve_and_validate, UnsafeUrlError
+
         url = webhook.get("url")
         secret = webhook.get("secret", "")
+
+        # SECURITY: re-validate at delivery time, not just at registration.
+        # DNS answers change: a hostname that resolved publicly when the webhook
+        # was created can resolve to 169.254.169.254 by the time we deliver.
+        try:
+            resolve_and_validate(url)
+        except UnsafeUrlError as e:
+            logger.error(f"Refusing webhook delivery to unsafe destination: {e}")
+            await self._log_delivery(webhook.get("id"), event_type, "blocked", 0)
+            return False
         
         # Build webhook payload
         webhook_payload = {
@@ -142,13 +165,19 @@ class WebhookService:
         }
         
         # Try to deliver with retries
-        for attempt, delay in enumerate([0] + self.retry_delays):
+        schedule = [0] + self.retry_delays
+        if max_attempts is not None:
+            schedule = schedule[:max(1, max_attempts)]
+
+        for attempt, delay in enumerate(schedule):
             if attempt > 0:
-                logger.info(f"Retrying webhook delivery (attempt {attempt + 1}/{self.max_retries + 1})")
+                logger.info(f"Retrying webhook delivery (attempt {attempt + 1}/{len(schedule)})")
                 await asyncio.sleep(delay)
-            
+
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                # follow_redirects=False: a 302 to http://169.254.169.254 would
+                # walk straight past the validation above.
+                async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
                     response = await client.post(
                         url,
                         content=payload_json,
@@ -170,7 +199,7 @@ class WebhookService:
                 logger.error(f"❌ Webhook error: {url} - {e}")
         
         # All retries failed
-        logger.error(f"❌ Webhook delivery failed after {self.max_retries + 1} attempts: {url}")
+        logger.error(f"❌ Webhook delivery failed after {len(schedule)} attempts: {url}")
         await self._log_delivery(webhook["id"], event_type, "failed", 0)
         return False
     

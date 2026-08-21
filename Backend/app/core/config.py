@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional
 from functools import lru_cache
 
 
@@ -37,14 +37,22 @@ class Settings(BaseSettings):
     CACHE_TTL_ISSUES: int = 3600    # 60 min - issues are immutable
     
     SECRET_KEY: str
+    # SECURITY: separate key for token-at-rest encryption so SECRET_KEY (JWT signing)
+    # can be rotated without making every stored GitHub token undecryptable.
+    TOKEN_ENCRYPTION_KEY: Optional[str] = None
+    # SECURITY: admin endpoints are disabled entirely unless this is set.
+    ADMIN_API_KEY: Optional[str] = None
+    # Number of trusted reverse proxies in front of the app. X-Forwarded-For is
+    # only honoured when this is > 0.
+    TRUSTED_PROXY_COUNT: int = 0
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # Increased from 30 to reduce refresh frequency
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     ENVIRONMENT: str = "development"
     API_V1_PREFIX: str = "/api/v1"
-    # Include common dev frontend ports (add more in production via .env)
-    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8080,http://localhost:8081"
+    # Vite dev server runs on 8080 (see Frontend/vite.config.ts)
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8080"
     
     # CORS specific methods (more restrictive than allow all)
     ALLOWED_METHODS: str = "GET,POST,PUT,DELETE,OPTIONS,PATCH"
@@ -69,14 +77,8 @@ class Settings(BaseSettings):
     
     @property
     def BACKEND_CORS_ORIGINS(self) -> List[str]:
-        """Get list of allowed CORS origins, ensuring localhost:8081 is included in development"""
-        origins = self.allowed_origins_list
-        
-        # In development, ensure localhost:8081 is always included
-        if self.ENVIRONMENT == "development" and "http://localhost:8081" not in origins:
-            origins.append("http://localhost:8081")
-        
-        return origins
+        """Allowed CORS origins. Configure via ALLOWED_ORIGINS - no implicit additions."""
+        return self.allowed_origins_list
     
     @property
     def api_prefix(self) -> str:

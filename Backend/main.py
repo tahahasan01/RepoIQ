@@ -1,7 +1,7 @@
 """
 Main FastAPI application with production middleware
 """
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
@@ -9,12 +9,20 @@ import time
 from loguru import logger
 
 from app.core.config import get_settings
+from app.core.logging import setup_logging
+from app.api.dependencies import require_admin
 from app.api.routes import auth, users, github, analysis, chat, webhooks, organizations, teams, developers, executive, alerts
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.middleware.compression import CompressionMiddleware, JSONOptimizationMiddleware
 from app.middleware.cache_middleware import ResponseCacheMiddleware
 
 settings = get_settings()
+
+# Must run before anything logs. Without it structlog stays unconfigured, so
+# filter_by_level never applies and every logger.debug() in the codebase prints
+# on every request - and emoji in those messages raise UnicodeEncodeError on a
+# non-UTF-8 stream, which surfaces as a 500 from inside the middleware stack.
+setup_logging()
 
 
 @asynccontextmanager
@@ -60,30 +68,25 @@ app.add_middleware(
 )
 
 # Add production middleware (order matters: rate limit -> optimize -> compress)
-if settings.REDIS_URL:
-    try:
-        # Test Redis connection
-        from redis import Redis
-        test_redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-        test_redis.ping()
-        
-        # Rate limiting (after CORS to allow OPTIONS through)
-        app.add_middleware(
-            RateLimitMiddleware,
-            redis_url=settings.REDIS_URL,
-            default_capacity=200,  # 200 requests
-            default_refill_rate=2.0,  # 2 per second = 120/minute
-            endpoint_limits={
-                "/api/v1/analysis/repositories": (50, 0.5),  # 50 requests, refill 1 per 2s (more lenient for polling)
-                "/api/v1/analysis": (30, 0.3),  # 30 requests, refill 1 per 3.3s
-                "/api/v1/github/sync": (5, 0.05),  # 5 requests, refill 1 per 20s (keep strict for sync)
-            }
-        )
-        logger.info("Rate limiting enabled with Redis")
-    except Exception as e:
-        logger.warning(f"Redis connection failed, rate limiting disabled: {e}")
-else:
-    logger.warning("Redis not configured - rate limiting disabled")
+#
+# SECURITY: this is installed unconditionally. It used to be wrapped in a Redis
+# ping, so a process that booted during a Redis blip ran its entire life with no
+# rate limiting at all - the exact moment protection matters most. The middleware
+# already degrades to a per-process in-memory limiter when Redis is unreachable,
+# which is less precise but is protection.
+app.add_middleware(
+    RateLimitMiddleware,
+    redis_url=settings.REDIS_URL,
+    default_capacity=200,  # 200 requests
+    default_refill_rate=2.0,  # 2 per second = 120/minute
+    endpoint_limits={
+        "/api/v1/analysis/repositories": (50, 0.5),  # 50 requests, refill 1 per 2s (more lenient for polling)
+        "/api/v1/analysis": (30, 0.3),  # 30 requests, refill 1 per 3.3s
+        "/api/v1/github/sync": (5, 0.05),  # 5 requests, refill 1 per 20s (keep strict for sync)
+        "/api/v1/auth": (20, 0.2),  # credential endpoints: 20 burst, 1 per 5s
+    }
+)
+logger.info(f"Rate limiting enabled (trusted proxies: {settings.TRUSTED_PROXY_COUNT})")
 
 # JSON optimization
 app.add_middleware(
@@ -170,14 +173,17 @@ async def health_check():
     overall_healthy = True
     
     # Check Redis
+    # SECURITY: report only the exception type. Raw connection errors embed
+    # hostnames, ports and credentials-in-URL on an unauthenticated endpoint.
     try:
         redis_client = Redis.from_url(settings.REDIS_URL, socket_timeout=2)
         redis_client.ping()
         health_status["dependencies"]["redis"] = {"status": "healthy", "latency_ms": 0}
     except Exception as e:
-        health_status["dependencies"]["redis"] = {"status": "unhealthy", "error": str(e)}
+        logger.error(f"Health check: Redis unhealthy: {e}")
+        health_status["dependencies"]["redis"] = {"status": "unhealthy", "error": type(e).__name__}
         overall_healthy = False
-    
+
     # Check Supabase/Database
     try:
         supabase = Database.get_client()
@@ -185,7 +191,8 @@ async def health_check():
         result = supabase.table("repositories").select("id").limit(1).execute()
         health_status["dependencies"]["database"] = {"status": "healthy"}
     except Exception as e:
-        health_status["dependencies"]["database"] = {"status": "unhealthy", "error": str(e)}
+        logger.error(f"Health check: database unhealthy: {e}")
+        health_status["dependencies"]["database"] = {"status": "unhealthy", "error": type(e).__name__}
         overall_healthy = False
     
     # Update overall status
@@ -219,8 +226,8 @@ async def liveness_check():
 
 # Metrics endpoint for monitoring
 @app.get("/metrics")
-async def get_metrics():
-    """Get application metrics"""
+async def get_metrics(_: bool = Depends(require_admin)):
+    """Get application metrics. Requires X-Admin-Key."""
     from app.services.token_optimizer import get_token_optimizer
     from app.services.cache_service import get_analysis_cache
     
@@ -239,10 +246,12 @@ async def get_metrics():
 
 # Cache statistics endpoint
 @app.get("/api/v1/cache/stats")
-async def cache_stats():
+async def cache_stats(_: bool = Depends(require_admin)):
     """
     Get comprehensive cache statistics.
     Shows hit rates, memory usage, and performance metrics.
+
+    Requires X-Admin-Key.
     """
     from app.services.redis_service import get_redis_service
     from app.services.cache_service import get_analysis_cache
@@ -277,32 +286,43 @@ async def cache_stats():
 
 # Cache invalidation endpoint (admin)
 @app.delete("/api/v1/cache/invalidate/{pattern}")
-async def invalidate_cache(pattern: str):
+async def invalidate_cache(pattern: str, _: bool = Depends(require_admin)):
     """
-    Invalidate cache keys matching a pattern.
+    Invalidate cache keys matching a pattern. Requires X-Admin-Key.
+
     Example patterns:
     - github:repos:* (all repository lists)
     - db:repo:* (all repository data)
     - file:content:* (all file content)
+
+    A bare wildcard is rejected: flushing the whole keyspace is a separate,
+    deliberate operation, not something a pattern typo should be able to do.
     """
     from app.services.redis_service import get_redis_service
-    
+
+    normalized = pattern.strip()
+    if normalized in ("*", "**", "") or not normalized.rstrip("*"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Refusing to invalidate the entire keyspace. Use a specific prefix."
+        )
+
     try:
         redis_service = get_redis_service()
-        deleted_count = redis_service.invalidate(pattern)
-        
+        deleted_count = redis_service.invalidate(normalized)
+
         return {
             "success": True,
-            "pattern": pattern,
+            "pattern": normalized,
             "deleted_keys": deleted_count,
-            "message": f"Invalidated {deleted_count} cache keys matching pattern: {pattern}"
+            "message": f"Invalidated {deleted_count} cache keys matching pattern: {normalized}"
         }
     except Exception as e:
         logger.error(f"Failed to invalidate cache: {e}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Cache invalidation failed"
+        )
 
 
 

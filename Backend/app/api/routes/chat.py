@@ -3,6 +3,7 @@ from app.schemas import ChatMessageRequest
 from app.services.chat_service import ChatService
 from app.services.repository_service import RepositoryService
 from app.api.dependencies import get_current_user
+from app.api.errors import safe_detail
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -35,7 +36,7 @@ async def send_chat_message(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -60,7 +61,7 @@ async def get_chat_history(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 

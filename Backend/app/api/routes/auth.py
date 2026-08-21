@@ -1,9 +1,10 @@
 from fastapi import APIRouter, HTTPException, status, Depends
-from app.schemas import UserCreate, UserResponse, TokenResponse
+from app.schemas import UserCreate, UserResponse, TokenResponse, PublicUser
 from app.services.auth_service import AuthService
 from app.api.dependencies import get_current_user
 from app.core.logging import get_logger
 from pydantic import BaseModel
+from typing import Optional
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -47,6 +48,9 @@ class LoginRequest(BaseModel):
 
 class GitHubCallbackRequest(BaseModel):
     code: str
+    # Optional for one release so sessions started before this change can still
+    # complete. Make it required once clients are updated - see AUDIT.md H-11.
+    state: Optional[str] = None
 
 
 class RefreshTokenRequest(BaseModel):
@@ -100,21 +104,38 @@ async def login(login_data: LoginRequest):
 class TokenWithUserResponse(BaseModel):
     access_token: str
     refresh_token: str
-    user: dict
+    # SECURITY: PublicUser, not dict. A bare `dict` is passed through unfiltered by
+    # FastAPI, and github_oauth() returns the raw users row - which carries
+    # github_access_token. That token was being handed to the SPA and stored in
+    # localStorage under "user".
+    user: PublicUser
 
 
 @router.post("/github/callback", response_model=TokenWithUserResponse)
 async def github_callback(callback_data: GitHubCallbackRequest):
+    from app.services.oauth_state import consume_state
+
+    # SECURITY: verify the CSRF nonce before spending the authorization code.
+    # `state` is optional on the request model for one release so in-flight logins
+    # started against the previous build still complete; when it is supplied it
+    # must be valid.
+    if callback_data.state is not None and not consume_state(callback_data.state):
+        logger.warning("GitHub OAuth callback rejected: invalid or replayed state")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This login link is no longer valid. Please start a new GitHub login."
+        )
+
     auth_service = AuthService()
-    
+
     try:
         result = await auth_service.github_oauth(callback_data.code)
-        
+
         # github_oauth already returns user data, so we include it in the response
         return TokenWithUserResponse(
             access_token=result["access_token"],
             refresh_token=result["refresh_token"],
-            user=result.get("user", {})
+            user=PublicUser.from_record(result.get("user"))
         )
     except Exception as e:
         # SECURITY: Don't expose internal error details
@@ -126,44 +147,103 @@ async def github_callback(callback_data: GitHubCallbackRequest):
 
 @router.get("/github/authorize")
 async def github_authorize():
+    """
+    Build the GitHub authorization URL.
+
+    SECURITY: issues a single-use `state` nonce, held server-side for 10 minutes
+    and verified in the callback. Without it the callback accepts any `code`,
+    which is login-CSRF: an attacker can make a victim's browser complete an OAuth
+    flow against the attacker's GitHub account (or bind the attacker's account to
+    the victim's session).
+
+    Scope is `read:user user:email` - read-only. It was `repo`, which grants write
+    access to every private repository the user can reach; an analysis product has
+    no need for that, and it made any token disclosure catastrophic rather than
+    merely bad. Requesting `repo` belongs on the auto-fix flow that actually opens
+    pull requests, not on login.
+    """
+    from urllib.parse import urlencode
     from app.core.config import get_settings
+    from app.services.oauth_state import issue_state
+
     settings = get_settings()
-    
-    auth_url = (
-        f"https://github.com/login/oauth/authorize"
-        f"?client_id={settings.GITHUB_CLIENT_ID}"
-        f"&redirect_uri={settings.GITHUB_REDIRECT_URI}"
-        f"&scope=repo user:email"
-    )
-    
-    return {"auth_url": auth_url}
+    state = issue_state()
+
+    params = {
+        "client_id": settings.GITHUB_CLIENT_ID,
+        "redirect_uri": settings.GITHUB_REDIRECT_URI,
+        "scope": "read:user user:email",
+        "state": state,
+    }
+
+    auth_url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
+
+    return {"auth_url": auth_url, "state": state}
 
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(token_data: RefreshTokenRequest):
+    """
+    Exchange a refresh token for a new token pair.
+
+    SECURITY: the presented token is checked against the revocation watermark and
+    against the currently-registered jti. Presenting a superseded refresh token is
+    treated as replay of a stolen credential and revokes every session for that
+    user. Previously this endpoint validated only the signature, so a captured
+    refresh token was good for seven days with no way to invalidate it.
+    """
     from app.core.security import verify_token, create_access_token, create_refresh_token
-    
+    from app.services.session_revocation import (
+        is_token_revoked,
+        consume_refresh_token,
+        register_refresh_token,
+    )
+
     payload = verify_token(token_data.refresh_token, "refresh")
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token"
         )
-    
+
     user_id = payload.get("sub")
-    
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+
+    if is_token_revoked(user_id, payload.get("iat")):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has ended. Please log in again."
+        )
+
+    if not consume_refresh_token(user_id, payload.get("jti")):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has ended. Please log in again."
+        )
+
     auth_service = AuthService()
     user = await auth_service.get_user(user_id)
-    
+
     if not user:
+        # 404 here distinguishes "valid token, unknown user" from "bad token",
+        # which is a small enumeration signal. 401 keeps the two indistinguishable.
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has ended. Please log in again."
         )
-    
+
     new_access_token = create_access_token({"sub": user_id, "email": user["email"]})
     new_refresh_token = create_refresh_token({"sub": user_id})
-    
+
+    # Register the replacement before returning it, so the token we just handed
+    # out is the only one that will be accepted next time.
+    new_payload = verify_token(new_refresh_token, "refresh") or {}
+    register_refresh_token(user_id, new_payload.get("jti"))
+
     return TokenResponse(
         access_token=new_access_token,
         refresh_token=new_refresh_token
@@ -173,36 +253,32 @@ async def refresh_token(token_data: RefreshTokenRequest):
 @router.post("/logout")
 async def logout(current_user: dict = Depends(get_current_user)):
     """
-    Logout user and invalidate their current session.
-    
-    SECURITY: Token blacklisting ensures tokens cannot be reused after logout.
+    Log out and revoke every token currently issued to this user.
+
+    SECURITY: this endpoint used to call `redis_service.redis_client`, an attribute
+    that does not exist, inside a broad try/except - so it always reported success
+    while doing nothing. It now writes a revocation watermark that
+    get_current_user() checks on every request, and reports honestly when that
+    write fails.
     """
-    from app.services.redis_service import get_redis_service
-    from app.core.config import get_settings
-    
-    settings = get_settings()
-    
-    try:
-        # Get Redis service for token blacklisting
-        redis_service = get_redis_service()
-        
-        # Blacklist the user's session (using user_id as identifier)
-        # The token will be rejected until its natural expiration
-        user_id = current_user.get("id")
-        if user_id:
-            # Store invalidation timestamp - any tokens issued before this are invalid
-            blacklist_key = f"auth:invalidated:{user_id}"
-            import time
-            redis_service.redis_client.setex(
-                blacklist_key,
-                settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60 + 60,  # TTL slightly longer than token
-                str(int(time.time()))
+    from app.services.session_revocation import revoke_user_sessions
+
+    user_id = current_user.get("id")
+    revoked = revoke_user_sessions(user_id) if user_id else False
+
+    if not revoked:
+        # Telling the user they are logged out when their tokens are still live
+        # is the kind of lie that ends up in an incident report.
+        logger.error(f"Logout could not revoke sessions for user {str(user_id)[:8]}...")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Could not fully end your session because a backend service is "
+                "unavailable. Your tokens may remain valid until they expire. "
+                "Please try again."
             )
-            logger.info(f"🔒 User session invalidated: {user_id[:8]}...")
-    except Exception as e:
-        # Log but don't fail logout - it should always succeed from user perspective
-        logger.warning(f"Failed to blacklist token on logout: {e}")
-    
+        )
+
     return {"message": "Logged out successfully"}
 
 

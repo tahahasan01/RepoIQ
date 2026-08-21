@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from app.api.dependencies import get_current_user, get_github_token
 from app.services.developer_analytics_service import DeveloperAnalyticsService
 from app.services.ownership_service import OwnershipService
+from app.api.errors import safe_detail
 
 router = APIRouter(prefix="/developers", tags=["Developers"])
 
@@ -48,7 +49,7 @@ async def get_developer_performance(
         logger.error(f"Error getting developer performance: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -71,7 +72,7 @@ async def get_organization_developers(
         logger.error(f"Error getting organization developers: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -89,7 +90,7 @@ async def get_repository_contributors(
         logger.error(f"Error getting repository contributors: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -120,7 +121,7 @@ async def track_repository_contributions(
         logger.error(f"Error tracking contributions: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -138,7 +139,7 @@ async def get_repository_ownership(
         logger.error(f"Error getting repository ownership: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -156,7 +157,7 @@ async def get_ownership_health(
         logger.error(f"Error getting ownership health: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -174,7 +175,7 @@ async def get_issue_blame(
         logger.error(f"Error getting issue blame: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -193,7 +194,7 @@ async def get_orphaned_code(
         logger.error(f"Error getting orphaned code: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
 
 
@@ -224,5 +225,5 @@ async def analyze_code_ownership(
         logger.error(f"Error analyzing code ownership: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=safe_detail(e)
         )
