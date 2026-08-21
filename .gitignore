@@ -9,3 +9,6 @@ Backend/.venv/
 # Frontend build output and deps
 Frontend/node_modules/
 Frontend/dist/
+
+# Playwright MCP scratch output
+.playwright-mcp/
