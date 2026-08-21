@@ -12,9 +12,9 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.api.dependencies import require_admin
 from app.api.routes import auth, users, github, analysis, chat, webhooks, organizations, teams, developers, executive, alerts
+from starlette.middleware.gzip import GZipMiddleware
+
 from app.middleware.rate_limiter import RateLimitMiddleware
-from app.middleware.compression import CompressionMiddleware, JSONOptimizationMiddleware
-from app.middleware.cache_middleware import ResponseCacheMiddleware
 
 settings = get_settings()
 
@@ -88,32 +88,23 @@ app.add_middleware(
 )
 logger.info(f"Rate limiting enabled (trusted proxies: {settings.TRUSTED_PROXY_COUNT})")
 
-# JSON optimization
-app.add_middleware(
-    JSONOptimizationMiddleware,
-    remove_nulls=True,
-    max_array_length=100,  # Truncate large arrays
-    max_string_length=10000  # Truncate very long strings
-)
+# Response compression.
+#
+# PERF: Starlette's GZipMiddleware operates at the ASGI layer and streams. The
+# hand-rolled CompressionMiddleware it replaces was a BaseHTTPMiddleware that
+# buffered every response body in full, then rebuilt the Response object - and it
+# was one of three such layers, so each response was parsed and re-serialised
+# three times before it left the process.
+#
+# JSONOptimizationMiddleware is gone entirely. It was configured with
+# remove_nulls=True, max_array_length=100 and max_string_length=10000, which
+# silently corrupted every response: null-valued keys were deleted rather than
+# sent as null, arrays over 100 items were truncated with a *string* appended
+# into an array of objects, and file contents over 10k characters were cut off
+# mid-source. Pagination and field selection belong in the route layer.
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
 
-# Response compression
-app.add_middleware(
-    CompressionMiddleware,
-    minimum_size=500,  # Only compress responses > 500 bytes
-    compression_level=6  # Balance between speed and ratio
-)
-
-# Response caching (before compression to cache uncompressed data)
-app.add_middleware(
-    ResponseCacheMiddleware,
-    default_ttl=300,  # 5 minutes default
-    endpoint_ttls={
-        "/api/v1/github/repositories": 300,  # 5 min
-        "/api/v1/analysis/repositories/": 3600,  # 60 min
-    }
-)
-
-logger.info("Production middleware configured (rate limiting, caching, compression)")
+logger.info("Production middleware configured (rate limiting, compression)")
 
 
 # Request logging middleware

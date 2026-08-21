@@ -5,3 +5,7 @@
 
 # Local virtualenv
 Backend/.venv/
+
+# Frontend build output and deps
+Frontend/node_modules/
+Frontend/dist/

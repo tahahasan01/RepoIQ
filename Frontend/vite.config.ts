@@ -36,11 +36,19 @@ export default defineConfig(({ mode }) => ({
     },
     rollupOptions: {
       output: {
-        // Manual chunking for better caching
+        // Manual chunking for better caching.
+        //
+        // The previous config also listed a 'utils' chunk containing
+        // '@/lib/utils' and '@/lib/api'. manualChunks matches resolved module
+        // ids, not Vite path aliases, so those entries never matched anything
+        // and the chunk was silently never produced. Dropped rather than
+        // rewritten as absolute paths: app code is better split by route (which
+        // the lazy() imports in App.tsx already do) than pinned into one chunk
+        // that every route has to download.
         manualChunks: {
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],
           'ui-vendor': ['framer-motion', 'lucide-react'],
-          'utils': ['@/lib/utils', '@/lib/api'],
+          'chart-vendor': ['recharts'],
         },
       },
     },

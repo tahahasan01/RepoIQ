@@ -4,6 +4,7 @@ import re
 from app.db.supabase import get_service_db
 from app.services.github_service import create_github_service
 from app.services.redis_service import get_redis_service
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -30,12 +31,17 @@ class RepositoryService:
         try:
             if self._is_uuid(repo_id):
                 # verify ownership
-                result = self.db.table("repositories") \
-                    .select("id") \
-                    .eq("id", repo_id) \
-                    .eq("user_id", user_id) \
-                    .single() \
+                # PERF: this runs on nearly every repo-scoped request. supabase-py
+                # is synchronous, so on the event loop it blocks every other
+                # in-flight request for the round trip.
+                result = await run_blocking(
+                    lambda: self.db.table("repositories")
+                    .select("id")
+                    .eq("id", repo_id)
+                    .eq("user_id", user_id)
+                    .single()
                     .execute()
+                )
                 return result.data["id"] if result.data else None
 
             # try github_repo_id
@@ -44,12 +50,14 @@ class RepositoryService:
             except Exception:
                 return None
 
-            result = self.db.table("repositories") \
-                .select("id") \
-                .eq("user_id", user_id) \
-                .eq("github_repo_id", gh_id) \
-                .single() \
+            result = await run_blocking(
+                lambda: self.db.table("repositories")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("github_repo_id", gh_id)
+                .single()
                 .execute()
+            )
             return result.data["id"] if result.data else None
         except Exception:
             return None
@@ -61,18 +69,23 @@ class RepositoryService:
         """
         try:
             github_service = create_github_service(github_token)
-            repos = github_service.get_repositories(per_page=100)
+            # PERF: PyGithub is synchronous and paginates over the network. On the
+            # event loop this stalls every other in-flight request for the whole
+            # sync, which for a large account is seconds.
+            repos = await run_blocking(github_service.get_repositories, per_page=100)
             
             if not repos:
                 return []
             
             # OPTIMIZATION: Batch fetch all existing repos for this user in ONE query
             github_repo_ids = [repo["id"] for repo in repos]
-            existing_result = self.db.table("repositories")\
-                .select("id, github_repo_id")\
-                .eq("user_id", user_id)\
-                .in_("github_repo_id", github_repo_ids)\
+            existing_result = await run_blocking(
+                lambda: self.db.table("repositories")
+                .select("id, github_repo_id")
+                .eq("user_id", user_id)
+                .in_("github_repo_id", github_repo_ids)
                 .execute()
+            )
             
             # Build lookup map for O(1) access
             existing_map = {r["github_repo_id"]: r["id"] for r in (existing_result.data or [])}
@@ -105,27 +118,38 @@ class RepositoryService:
                     # Insert new
                     to_insert.append(repo_data)
             
-            # Batch insert new repos
+            # PERF: one thread hop for the whole write batch, not one per row.
+            # The update loop issues a sequential round trip per repository - for
+            # an account with 100 repos that is 100 blocking calls, and on the
+            # event loop it froze every other request for the duration.
+            def _write_batch():
+                written = []
+                if to_insert:
+                    result = self.db.table("repositories").insert(to_insert).execute()
+                    written.extend(result.data or [])
+
+                for repo_id, repo_data in to_update:
+                    result = self.db.table("repositories").update(repo_data).eq("id", repo_id).execute()
+                    if result.data:
+                        written.append(result.data[0])
+                return written
+
+            synced_repos.extend(await run_blocking(_write_batch))
+
             if to_insert:
-                result = self.db.table("repositories").insert(to_insert).execute()
-                synced_repos.extend(result.data or [])
                 logger.info(f"✅ Batch inserted {len(to_insert)} new repositories")
-            
-            # Update existing repos (still individual but pre-fetched)
-            for repo_id, repo_data in to_update:
-                result = self.db.table("repositories").update(repo_data).eq("id", repo_id).execute()
-                if result.data:
-                    synced_repos.append(result.data[0])
-            
             if to_update:
                 logger.info(f"✅ Updated {len(to_update)} existing repositories")
             
-            # Invalidate repository cache for this user (all pages)
+            # Invalidate every cached page for this user.
+            #
+            # This used to enumerate pages 1-5 at per_page 30 and 6 only - so a
+            # request for page 6, or any other page size, kept serving pre-sync
+            # data until its own TTL expired. invalidate() is SCAN-based, so a
+            # prefix sweep here is cheap and, unlike the old KEYS path, does not
+            # block Redis.
             self.redis.delete(f"db:repos:{user_id}")
-            # Also invalidate paginated cache (first few pages are most common)
-            for page in range(1, 6):
-                self.redis.delete(f"db:repos:{user_id}:page:{page}:per:30")
-                self.redis.delete(f"db:repos:{user_id}:page:{page}:per:6")
+            self.redis.invalidate(f"db:repos:{user_id}:page:*")
             
             return synced_repos
         except Exception as e:
@@ -292,12 +316,14 @@ class RepositoryService:
                 return cached_repo
 
             logger.debug(f"⚡ Fetching repository from DB: {resolved_id}")
-            result = self.db.table("repositories")\
-                .select("*")\
-                .eq("id", resolved_id)\
-                .eq("user_id", user_id)\
-                .single()\
+            result = await run_blocking(
+                lambda: self.db.table("repositories")
+                .select("*")
+                .eq("id", resolved_id)
+                .eq("user_id", user_id)
+                .single()
                 .execute()
+            )
             
             if result.data:
                 # Cache for 10 minutes
@@ -348,7 +374,11 @@ class RepositoryService:
             
             logger.info(f"🔍 Fetching files from GitHub: {repo['full_name']}")
             github_service = create_github_service(github_token)
-            files = github_service.get_repository_files(repo["full_name"], repo["default_branch"])
+            files = await run_blocking(
+                github_service.get_repository_files,
+                repo["full_name"],
+                repo["default_branch"],
+            )
             
             # Cache the files for 1 hour
             if files:
@@ -379,10 +409,11 @@ class RepositoryService:
             # Cache miss - fetch from GitHub
             logger.debug(f"⚡ Fetching file from GitHub: {normalized_path}")
             github_service = create_github_service(github_token)
-            content = github_service.get_file_content(
-                repo["full_name"], 
-                normalized_path, 
-                repo["default_branch"]
+            content = await run_blocking(
+                github_service.get_file_content,
+                repo["full_name"],
+                normalized_path,
+                repo["default_branch"],
             )
             
             # Cache in Redis for 30 minutes (shared across all workers)
@@ -444,13 +475,17 @@ class RepositoryService:
     async def get_latest_analysis(self, repo_id: str) -> Optional[Dict[str, Any]]:
         try:
             # CRITICAL: Only return COMPLETED analyses, ordered by completion time (not creation time!)
-            result = self.db.table("analysis_results")\
-                .select("*")\
-                .eq("repository_id", repo_id)\
-                .eq("status", "completed")\
-                .order("completed_at", desc=True)\
-                .limit(1)\
+            # PERF: polled by the dashboard while an analysis runs, so this is one
+            # of the highest-frequency queries in the app.
+            result = await run_blocking(
+                lambda: self.db.table("analysis_results")
+                .select("*")
+                .eq("repository_id", repo_id)
+                .eq("status", "completed")
+                .order("completed_at", desc=True)
+                .limit(1)
                 .execute()
+            )
             
             logger.info(f"[get_latest_analysis] repo_id={repo_id}, found={len(result.data) if result.data else 0} COMPLETED results")
             if result.data:
@@ -620,7 +655,7 @@ class RepositoryService:
             offset = (page - 1) * per_page
             query = query.limit(per_page).offset(offset)
             
-            result = query.execute()
+            result = await run_blocking(query.execute)
             
             issues = result.data or []
             logger.info(f"[get_issues] Found {len(issues)} issues for analysis {analysis_id} (page {page})")

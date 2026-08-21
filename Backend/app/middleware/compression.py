@@ -1,6 +1,30 @@
 """
 Response compression middleware for reducing bandwidth and improving performance.
-Supports gzip, brotli, and smart compression strategies.
+
+DEPRECATED - NOT WIRED UP. Retained for reference only; see AUDIT.md H-5/H-6.
+
+CompressionMiddleware was replaced by starlette.middleware.gzip.GZipMiddleware,
+which compresses at the ASGI layer and streams. This implementation is a
+BaseHTTPMiddleware that buffers the entire response body, gzips it, and rebuilds
+the Response - and it ran alongside two other buffering layers, so every response
+was parsed and re-serialised three times.
+
+JSONOptimizationMiddleware must not be re-enabled as it stands. Configured with
+remove_nulls=True, max_array_length=100 and max_string_length=10000 it silently
+corrupted every response:
+
+  - null-valued keys were deleted from the payload rather than sent as null, so
+    `overall_score: null` arrived as a missing key and any client doing
+    `'overall_score' in data` or destructuring-with-defaults changed meaning;
+  - arrays over 100 elements were truncated and a STRING ("... and N more items")
+    was appended into arrays of objects, so /github/repositories/{id}/files
+    returned both incomplete and type-heterogeneous data;
+  - strings over 10,000 characters were cut off with "...", so the file-content
+    endpoint returned mangled source - which was then fed to the analysis agents.
+
+Response truncation and field selection are route-layer concerns (pagination,
+response models), not something a global middleware should do behind the
+handler's back.
 """
 from typing import Optional
 from fastapi import Request

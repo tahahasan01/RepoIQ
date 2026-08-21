@@ -8,10 +8,30 @@ const getCacheKey = (userId?: string) => {
   return 'repoiq_cache_anonymous';
 };
 
+/**
+ * Resolve the signed-in user id from the current token.
+ *
+ * The cache key must be derived at save time, not captured once at mount. When
+ * the app mounts on /login there is no user yet, so the interval closure kept
+ * writing to `repoiq_cache_anonymous` for the whole session - including after
+ * the user signed in. The next person to open that browser then restored the
+ * previous user's repository and analysis data from the anonymous bucket.
+ */
+function currentUserId(): string | undefined {
+  try {
+    const token = localStorage.getItem('token');
+    if (!token) return undefined;
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload?.sub || payload?.user_id || payload?.id;
+  } catch {
+    return undefined;
+  }
+}
+
 // Persist React Query cache to localStorage
 export function persistQueryCache(queryClient: QueryClient, userId?: string) {
-  const cacheKey = getCacheKey(userId);
-  
+  const cacheKey = getCacheKey(userId ?? currentUserId());
+
   // Load cache from localStorage on mount
   try {
     const cached = localStorage.getItem(cacheKey);
@@ -64,12 +84,14 @@ export function persistQueryCache(queryClient: QueryClient, userId?: string) {
         }
       });
       
-      localStorage.setItem(cacheKey, JSON.stringify({
+      // Re-resolve on every tick: the user may have signed in since mount, and
+      // their data must not land in the anonymous bucket.
+      const activeKey = getCacheKey(currentUserId());
+
+      localStorage.setItem(activeKey, JSON.stringify({
         queries: cacheData,
         timestamp: Date.now(),
       }));
-      
-      console.log(`[QueryPersister] 💾 Saved ${Object.keys(cacheData).length} queries to cache`);
     } catch (err) {
       console.warn('[QueryPersister] Failed to save cache:', err);
     }

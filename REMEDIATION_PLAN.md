@@ -47,14 +47,14 @@ no unauthenticated endpoint mutates state; no endpoint returns another user's em
 
 | # | Task | Closes | Files | Status |
 |---|---|---|---|---|
-| 2.1 | Delete `JSONOptimizationMiddleware` (silent response corruption) | H-5 | `main.py`, `middleware/compression.py` | TODO |
-| 2.2 | Move all sync I/O off the event loop; `asyncio.sleep` not `time.sleep`; async DNS | H-7 | `services/*.py`, `agents/base_agent.py` | TODO |
-| 2.3 | Memoise the Supabase service client; inject services as FastAPI dependencies | H-8 | `db/supabase.py`, `api/dependencies.py` | PARTIAL — client memoised in Phase 0; DI still TODO |
-| 2.4 | Replace hand-rolled compression with `GZipMiddleware`; fix or drop the response cache | H-6 | `main.py`, `middleware/` | TODO |
-| 2.5 | Collapse six cache layers to one; `SCAN`-based prefix invalidation | M-8, perf#4 | `services/repository_service.py`, `services/github_service.py` | TODO |
-| 2.6 | Close the per-agent `httpx.Client` leak; add OpenAI timeouts | P-5 | `agents/base_agent.py` | TODO |
-| 2.7 | Frontend: fix `manualChunks` alias paths; allow refetch on mount for live data | P-3, perf#6 | `vite.config.ts`, `src/App.tsx` | TODO |
-| 2.8 | Frontend: clear the correct query-cache key on logout; drop the dead `require()` | H-13 | `src/lib/api.ts`, `src/App.tsx`, `src/lib/queryPersister.ts` | TODO |
+| 2.1 | Delete `JSONOptimizationMiddleware` (silent response corruption) | H-5 | `main.py`, `middleware/compression.py` | DONE |
+| 2.2 | Move all sync I/O off the event loop; `asyncio.sleep` not `time.sleep`; async DNS | H-7 | `services/*.py`, `agents/base_agent.py` | PARTIAL — hot paths done; remaining Supabase reads listed below |
+| 2.3 | Memoise the Supabase service client; inject services as FastAPI dependencies | H-8 | `db/supabase.py`, `api/dependencies.py` | PARTIAL — client memoised; DI still TODO |
+| 2.4 | Replace hand-rolled compression with `GZipMiddleware`; fix or drop the response cache | H-6 | `main.py`, `middleware/` | DONE |
+| 2.5 | Collapse six cache layers to one; `SCAN`-based prefix invalidation | M-8, perf#4 | `services/repository_service.py`, `services/github_service.py` | PARTIAL — invalidation fixed; layer collapse still TODO |
+| 2.6 | Close the per-agent `httpx.Client` leak; add OpenAI timeouts | P-5 | `agents/base_agent.py` | DONE |
+| 2.7 | Frontend: fix `manualChunks` alias paths; allow refetch on mount for live data | P-3, perf#6 | `vite.config.ts`, `src/App.tsx` | DONE |
+| 2.8 | Frontend: clear the correct query-cache key on logout; drop the dead `require()` | H-13 | `src/lib/api.ts`, `src/App.tsx`, `src/lib/queryPersister.ts` | DONE |
 
 ---
 
@@ -206,3 +206,100 @@ All ten Phase 1 tasks implemented. **Test suite: 125 passed**
 - `add_team_member` calls `find_user_by_identifier` a second time purely to echo
   the resolved user. Harmless but a wasted round-trip; fold into Phase 2.3's
   dependency-injection pass.
+
+
+---
+
+## Phase 2 completion record — 2026-08-21
+
+**Backend: 149 passed** (24 new in `tests/test_performance_phase2.py`).
+**Frontend: `tsc --noEmit` clean, `npm run build` succeeds, vitest passes.**
+
+### What changed
+
+- **2.1 — deleted `JSONOptimizationMiddleware`.** It was rewriting every response
+  body: deleting null-valued keys, truncating arrays over 100 elements and
+  appending a *string* sentinel into arrays of objects, and cutting strings at
+  10,000 characters (so the file-content endpoint returned mangled source, which
+  was then fed to the analysis agents). Response shaping belongs in the route
+  layer, not a global rewriter.
+
+- **2.4 — replaced the hand-rolled compression and cache middleware.**
+  `starlette.middleware.gzip.GZipMiddleware` compresses at the ASGI layer and
+  streams. `ResponseCacheMiddleware` was removed rather than repaired: it sat
+  outside compression and so tried `json.loads()` on gzipped bytes for every
+  response over 500 bytes, meaning it never cached anything worth caching — and
+  where it did work it served HITs *before* authentication ran, so a revoked
+  token kept getting 200s for up to an hour. Server-side caching still happens in
+  RepositoryService and GitHubService, behind their own ownership checks.
+  Both modules are kept on disk with module-level notes explaining why they are
+  not wired up, so nobody re-enables them without reading the history.
+
+  **Middleware stack: 6 layers → 4.** Each response used to be fully buffered and
+  re-serialised three times before leaving the process.
+
+- **2.2 — blocking I/O off the event loop.** New `app/core/concurrency.py`
+  (`run_blocking`). Applied to the paths where the block is longest or hottest:
+  - Removed two `socket.gethostbyname()` pre-flight checks from the OAuth login
+    path. Blocking C calls on the event loop, on every login, and redundant —
+    httpx and supabase-py surface DNS failures themselves.
+  - `_retry_db_operation` is now a coroutine using `asyncio.sleep` and the
+    threadpool. It previously blocked the loop for up to 3s per flaky login.
+  - GitHub calls in `RepositoryService` (`sync_repositories`,
+    `get_repository_files`, `get_file_content`) — the slowest calls in the request
+    path at 200ms–20s each.
+  - The per-request ownership checks (`resolve_repository_id`, `get_repository`),
+    `get_latest_analysis` (polled during analysis), and the auth paths including
+    `get_user`, which runs on *every* authenticated request.
+  - `BaseAgent._call_llm`. The OpenAI client is synchronous, so the orchestrator's
+    `asyncio.gather()` over several agents was running them strictly serially
+    while starving the worker. They now genuinely overlap.
+
+- **2.6 — client lifecycle.** `BaseAgent.__init__` built an `httpx.Client()` per
+  instance and never closed it; six agents per orchestrator, one orchestrator per
+  analysis. Now a single process-wide OpenAI client with a 60s timeout (an
+  unbounded LLM call was previously bounded only by the analysis-wide 10-minute
+  budget).
+
+- **2.5 — cache invalidation.** Repository sync enumerated pages 1–5 at
+  `per_page` 30 and 6 only, so page 6 or any other page size kept serving
+  pre-sync data until its own TTL expired. Replaced with a SCAN-based prefix
+  sweep.
+
+- **2.7 — frontend.** `manualChunks` listed `'@/lib/utils'` and `'@/lib/api'`;
+  `manualChunks` matches resolved module ids, not Vite aliases, so that chunk was
+  never produced. Dropped it and split `recharts` (404 kB / 102 kB gzip) into its
+  own chunk instead, so routes without charts no longer download it.
+  React Query's defaults combined `staleTime` 10m, `gcTime` 60m, and
+  `refetchOnMount`/`OnFocus`/`OnReconnect`/`Interval` all false with a 24-hour
+  localStorage restore — nothing in that set ever triggers a refetch, so users
+  could be shown day-old scores with no path to fresh data. Now `staleTime` 2m
+  with `refetchOnMount: 'always'`, which still paints cached data instantly and
+  revalidates behind it.
+
+- **2.8 — frontend cache clearing.** `clearAuthAndCaches` called
+  `require('@/lib/queryPersister')`, which does not exist in an ESM bundle: it
+  threw on every call and was swallowed, so the persisted React Query cache was
+  **never** cleared on logout. It also called `clearQueryCache()` with no user id,
+  clearing the anonymous bucket while leaving the real one. And `persistQueryCache`
+  captured the user id once at mount — the app mounts on `/login` with no user, so
+  a signed-in user's repository and analysis data was written to the *anonymous*
+  bucket and restored for the next person to use that browser. All three fixed:
+  the id is read before the token is cleared, resolved fresh on every save tick,
+  and logout sweeps every bucket.
+
+### Deferred, with reasons
+
+- **Remaining Supabase reads on the event loop.** ~50 call sites across
+  `repository_service`, `team_service`, `organization_service`,
+  `developer_analytics_service` and the executive/alert services still call the
+  sync client directly. Individually these are 10–50ms versus 200ms–20s for the
+  GitHub calls already fixed, so the remaining win is much smaller than the
+  regression risk of a 50-site mechanical rewrite. The right end state is Phase
+  2.3's dependency-injection pass, where services are constructed once and the
+  boundary can be wrapped in one place.
+- **Cache layer collapse (2.5).** Repos are still cached in `github_service`,
+  again in `repository_service`, again in React Query, again in localStorage and
+  sessionStorage. Removing the response-cache middleware took out one layer; the
+  rest needs a deliberate decision about which layer owns freshness, not a
+  mechanical edit.

@@ -3,20 +3,42 @@ from typing import Dict, List, Any, Optional
 from openai import OpenAI
 import httpx
 from app.core.config import get_settings
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 
 settings = get_settings()
 logger = get_logger(__name__)
 
 
+_shared_openai_client: Optional[OpenAI] = None
+
+
+def get_openai_client() -> OpenAI:
+    """
+    One OpenAI client for the process.
+
+    PERF: BaseAgent.__init__ used to construct `httpx.Client()` per instance and
+    never close it. AgentOrchestrator builds six agents, and one orchestrator is
+    created per analysis, so every analysis leaked six connection pools and their
+    file descriptors. A single shared client also lets connections be reused
+    across agents instead of renegotiating TLS for each one.
+    """
+    global _shared_openai_client
+    if _shared_openai_client is None:
+        _shared_openai_client = OpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            # An unbounded LLM call on a request path is an outage waiting to
+            # happen; the orchestrator's own 10-minute budget is far too coarse
+            # to be the only limit.
+            timeout=httpx.Timeout(60.0, connect=10.0),
+            max_retries=2,
+        )
+    return _shared_openai_client
+
+
 class BaseAgent(ABC):
     def __init__(self):
-        # Use a plain httpx client to avoid proxy keyword incompatibilities
-        http_client = httpx.Client()
-        self.client = OpenAI(
-            api_key=settings.OPENAI_API_KEY,
-            http_client=http_client
-        )
+        self.client = get_openai_client()
         # Use gpt-4o-mini - fastest OpenAI model with excellent quality
         self.model = "gpt-4o-mini"
         self.temperature = 0.3  # Lower temperature for faster, more consistent responses
@@ -31,12 +53,21 @@ class BaseAgent(ABC):
         pass
     
     async def _call_llm(self, messages: List[Dict[str, str]], temperature: Optional[float] = None) -> str:
+        """
+        PERF: the OpenAI client is synchronous, so this must go through the
+        threadpool. Called directly, it blocked the event loop for the entire
+        completion - which also meant the orchestrator's asyncio.gather() over
+        several agents ran them strictly one after another while starving every
+        other request on the worker. Now they genuinely overlap.
+        """
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature or self.temperature,
-                max_tokens=self.max_tokens
+            response = await run_blocking(
+                lambda: self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature or self.temperature,
+                    max_tokens=self.max_tokens
+                )
             )
             return response.choices[0].message.content
         except Exception as e:

@@ -16,6 +16,7 @@
  * - Production-optimized logging
  */
 import { RequestThrottler } from '@/utils/throttle';
+import { clearQueryCache, clearAllQueryCaches } from '@/lib/queryPersister';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 const IS_DEV = import.meta.env.DEV;
@@ -228,6 +229,18 @@ class ApiClient {
   }
 
   private clearAuthAndCaches() {
+    // Read the user id BEFORE clearing the token - the persisted query cache is
+    // keyed by it, and without it we would clear the anonymous bucket and leave
+    // the real one behind.
+    let userId: string | undefined;
+    try {
+      const token = localStorage.getItem('token');
+      if (token) {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        userId = payload?.sub || payload?.user_id || payload?.id;
+      }
+    } catch {}
+
     try {
       localStorage.removeItem('token');
       localStorage.removeItem('refresh_token');
@@ -239,9 +252,13 @@ class ApiClient {
       sessionStorage.removeItem('repoiq_repositories_cache');
     } catch {}
     try {
-      // Clear React Query cache on logout
-      const { clearQueryCache } = require('@/lib/queryPersister');
-      clearQueryCache();
+      // This used to be `require('@/lib/queryPersister')`, which does not exist
+      // in an ESM bundle - it threw on every call and was swallowed by the catch,
+      // so the persisted React Query cache was NEVER cleared on logout. It holds
+      // repository and analysis data and survives 24 hours, so on a shared
+      // browser the next user could restore the previous user's data.
+      clearQueryCache(userId);
+      clearAllQueryCaches();
     } catch {}
   }
 

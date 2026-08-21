@@ -7,7 +7,7 @@ import { ThemeProvider } from "@/hooks/useTheme";
 import { RoleProvider } from "@/hooks/useRole";
 import { useEffect, Suspense, lazy } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { persistQueryCache, clearQueryCache } from "@/lib/queryPersister";
+import { persistQueryCache, clearAllQueryCaches } from "@/lib/queryPersister";
 import { usePrefetchOnLogin } from "@/hooks/usePrefetchOnLogin";
 
 // Eager load critical pages (landing, login)
@@ -53,21 +53,31 @@ const PageLoader = () => (
   </div>
 );
 
-// Configure React Query with optimized settings for instant navigation
+// Configure React Query for fast navigation WITHOUT stranding users on stale data.
+//
+// The previous config combined staleTime 10m, gcTime 60m, refetchOnMount false,
+// refetchOnWindowFocus false, refetchOnReconnect false and refetchInterval false
+// with a 24-hour localStorage restore. Nothing in that set ever triggers a
+// refetch, so a user could be shown day-old scores with no path back to fresh
+// data short of a hard reload.
+//
+// The fix keeps the instant-render behaviour - cached data still paints
+// immediately - but lets a background revalidation follow it.
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 10 * 60 * 1000, // 10 minutes - data considered fresh
-      gcTime: 60 * 60 * 1000, // 60 minutes - keep cache longer
-      refetchOnWindowFocus: false, // Don't refetch on window focus
-      refetchOnReconnect: false, // Don't refetch on reconnect (use cached data)
-      refetchOnMount: false, // Don't refetch on mount - use cached data if available
+      staleTime: 2 * 60 * 1000, // 2 minutes - render instantly, revalidate after
+      gcTime: 60 * 60 * 1000, // 60 minutes - keep cache around for back-navigation
+      refetchOnWindowFocus: false, // Too chatty for a dashboard with many panels
+      refetchOnReconnect: true, // Coming back online should reconcile
+      // 'always' still serves the cached value first; the request happens in the
+      // background and the UI updates when it lands.
+      refetchOnMount: 'always',
       retry: 2, // Retry failed requests twice
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
-      // Use cached data immediately, don't refetch if data exists
+      // Use cached data immediately while the background refetch is in flight
       placeholderData: (previousData) => previousData,
-      // Only refetch if data is stale AND no cached data exists
-      refetchInterval: false, // Don't auto-refetch
+      refetchInterval: false, // Polling is opt-in per query (e.g. analysis status)
     },
     mutations: {
       retry: 1,
@@ -84,8 +94,10 @@ const AppInner = () => {
   useEffect(() => {
     const handler = () => {
       try {
-        // Clear cache on logout/auth expiration
-        clearQueryCache();
+        // Clear every persisted bucket, not just the anonymous one. By the time
+        // authExpired fires the token is usually already gone, so we cannot
+        // derive the user's key - and leaving their data behind is the bug.
+        clearAllQueryCaches();
         if (window.location.pathname !== "/login") {
           window.location.href = "/login";
         }

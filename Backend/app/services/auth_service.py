@@ -2,45 +2,52 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 from app.db.supabase import get_db, get_service_db, new_anon_db
 from app.core.security import create_access_token, create_refresh_token, verify_password, get_password_hash
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 from app.services.encryption_service import encrypt_token, decrypt_token, redact_sensitive
 from supabase import Client
 import httpx
 import asyncio
-import time
 
 logger = get_logger(__name__)
 
 
-def _retry_db_operation(operation, max_retries=3, delay=1.0):
+def _is_network_error(exc: Exception) -> bool:
+    error_msg = str(exc).lower()
+    return (
+        "getaddrinfo" in error_msg
+        or "11001" in error_msg
+        or "dns" in error_msg
+        or "connection" in error_msg
+        or "network" in error_msg
+    )
+
+
+async def _retry_db_operation(operation, max_retries=3, delay=1.0):
     """
-    Retry a database operation with exponential backoff.
-    Helps handle intermittent DNS/network issues on Windows.
+    Retry a blocking database operation with exponential backoff, without
+    blocking the event loop.
+
+    PERF: this was a synchronous function called from async handlers. Both the
+    supabase call and the `time.sleep()` between retries ran on the event loop,
+    so a single flaky login could stall every other in-flight request on that
+    worker for up to three seconds. The operation now runs in the threadpool and
+    the backoff uses asyncio.sleep.
     """
     for attempt in range(max_retries):
         try:
-            return operation()
+            return await run_blocking(operation)
         except Exception as e:
-            error_msg = str(e).lower()
-            is_network_error = (
-                "getaddrinfo" in error_msg or 
-                "11001" in error_msg or 
-                "dns" in error_msg or
-                "connection" in error_msg or
-                "network" in error_msg
-            )
-            
-            if is_network_error and attempt < max_retries - 1:
+            if _is_network_error(e) and attempt < max_retries - 1:
                 wait_time = delay * (2 ** attempt)  # Exponential backoff
                 logger.warning(
                     f"Database operation failed (attempt {attempt + 1}/{max_retries}): {e}. "
                     f"Retrying in {wait_time:.1f}s..."
                 )
-                time.sleep(wait_time)
+                await asyncio.sleep(wait_time)
                 continue
-            else:
-                # Not a network error or last attempt - re-raise
-                raise
+            # Not a network error or last attempt - re-raise
+            raise
 
 
 def _safe_log_dict(data: dict, sensitive_keys: set = None) -> dict:
@@ -94,10 +101,12 @@ class AuthService:
         try:
             # SECURITY: use a fresh, session-less client. The shared anon client
             # retains the session of whoever last authenticated on this process.
-            auth_response = new_anon_db().auth.sign_up({
-                "email": email,
-                "password": password
-            })
+            auth_response = await run_blocking(
+                lambda: new_anon_db().auth.sign_up({
+                    "email": email,
+                    "password": password
+                })
+            )
             
             if not auth_response.user:
                 raise Exception("Failed to create user")
@@ -109,7 +118,9 @@ class AuthService:
                 "created_at": datetime.utcnow().isoformat()
             }
             
-            self.service_db.table("users").insert(user_data).execute()
+            await run_blocking(
+                lambda: self.service_db.table("users").insert(user_data).execute()
+            )
             
             session = _issue_session(auth_response.user.id, email)
             access_token = session["access_token"]
@@ -132,15 +143,19 @@ class AuthService:
         try:
             # SECURITY: fresh client per login so no session leaks into the
             # process-wide client and gets picked up by another user's request.
-            auth_response = new_anon_db().auth.sign_in_with_password({
-                "email": email,
-                "password": password
-            })
+            auth_response = await run_blocking(
+                lambda: new_anon_db().auth.sign_in_with_password({
+                    "email": email,
+                    "password": password
+                })
+            )
             
             if not auth_response.user:
                 raise Exception("Invalid credentials")
             
-            user_data = self.service_db.table("users").select("*").eq("id", auth_response.user.id).single().execute()
+            user_data = await run_blocking(
+                lambda: self.service_db.table("users").select("*").eq("id", auth_response.user.id).single().execute()
+            )
             
             session = _issue_session(auth_response.user.id, email)
             access_token = session["access_token"]
@@ -159,41 +174,20 @@ class AuthService:
         from app.core.config import get_settings
         import asyncio
         import uuid
-        import concurrent.futures
-        import socket
         settings = get_settings()
         
         try:
             start_time = asyncio.get_event_loop().time()
-            
-            # Test DNS resolution first (helps diagnose Windows DNS issues)
-            try:
-                socket.gethostbyname("github.com")
-                logger.debug("DNS resolution test: github.com resolved successfully")
-            except socket.gaierror as dns_error:
-                logger.error(f"DNS resolution test failed: {dns_error}")
-                raise Exception(
-                    "DNS resolution error: Cannot resolve 'github.com'. "
-                    "This indicates a network/DNS configuration issue. "
-                    "Try: 1) Check internet connection 2) Run 'ipconfig /flushdns' as admin "
-                    "3) Restart backend 4) Check firewall/antivirus settings"
-                )
-            
-            # Test Supabase DNS resolution (database connection)
-            try:
-                from urllib.parse import urlparse
-                supabase_host = urlparse(settings.SUPABASE_URL).netloc
-                socket.gethostbyname(supabase_host)
-                logger.debug(f"DNS resolution test: {supabase_host} resolved successfully")
-            except socket.gaierror as dns_error:
-                logger.error(f"Supabase DNS resolution test failed: {dns_error}")
-                raise Exception(
-                    f"DNS resolution error: Cannot resolve Supabase hostname. "
-                    "This indicates a network/DNS configuration issue. "
-                    "Try: 1) Check internet connection 2) Run 'ipconfig /flushdns' as admin "
-                    "3) Restart backend 4) Check firewall/antivirus settings"
-                )
-            
+
+            # PERF: two socket.gethostbyname() pre-flight checks used to run here,
+            # one for github.com and one for the Supabase host. socket.gethostbyname
+            # is a blocking C call - inside an async handler it stalls the entire
+            # worker's event loop for the duration of the lookup, on every login.
+            # They were also redundant: httpx and supabase-py both surface DNS
+            # failures themselves, and the handlers below already translate those
+            # into the same guidance. Removed rather than moved to a thread -
+            # a diagnostic that costs every user latency is not worth keeping.
+
             # Use longer timeout for GitHub API
             # Configure httpx with better error handling for Windows DNS issues
             timeout = httpx.Timeout(30.0, connect=10.0)
@@ -331,7 +325,7 @@ class AuthService:
                 try:
                     # Try github_username first (returning users) - with retry for network issues
                     if github_username:
-                        username_query = _retry_db_operation(
+                        username_query = await _retry_db_operation(
                             lambda: self.service_db.table("users").select("*").eq("github_username", github_username).execute()
                         )
                         if username_query.data:
@@ -340,7 +334,7 @@ class AuthService:
                     
                     # Fallback to email lookup - with retry for network issues
                     if not user:
-                        email_query = _retry_db_operation(
+                        email_query = await _retry_db_operation(
                             lambda: self.service_db.table("users").select("*").eq("email", email).execute()
                         )
                         if email_query.data:
@@ -370,7 +364,7 @@ class AuthService:
                     logger.info(f"GitHub OAuth: Updating existing user: {redact_sensitive(user['id'])}")
                     
                     try:
-                        _retry_db_operation(
+                        await _retry_db_operation(
                             lambda: self.service_db.table("users").update({
                                 "github_username": github_username,
                                 "github_access_token": encrypted_token,
@@ -410,7 +404,7 @@ class AuthService:
                     }
                     
                     try:
-                        _retry_db_operation(
+                        await _retry_db_operation(
                             lambda: self.service_db.table("users").insert(user).execute()
                         )
                     except Exception as insert_error:
@@ -443,7 +437,9 @@ class AuthService:
     
     async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         try:
-            result = self.service_db.table("users").select("*").eq("id", user_id).single().execute()
+            result = await run_blocking(
+                lambda: self.service_db.table("users").select("*").eq("id", user_id).single().execute()
+            )
             return result.data
         except Exception as e:
             logger.error(f"Get user failed: {str(e)}")
@@ -451,7 +447,9 @@ class AuthService:
     
     async def update_user(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            result = self.service_db.table("users").update(data).eq("id", user_id).execute()
+            result = await run_blocking(
+                lambda: self.service_db.table("users").update(data).eq("id", user_id).execute()
+            )
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Update user failed: {str(e)}")
@@ -513,7 +511,9 @@ class AuthService:
     
     async def delete_user(self, user_id: str) -> bool:
         try:
-            self.service_db.table("users").delete().eq("id", user_id).execute()
+            await run_blocking(
+                lambda: self.service_db.table("users").delete().eq("id", user_id).execute()
+            )
             return True
         except Exception as e:
             logger.error(f"Delete user failed: {str(e)}")

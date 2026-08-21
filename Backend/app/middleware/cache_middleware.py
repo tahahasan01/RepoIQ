@@ -1,5 +1,27 @@
 """
 API Response Caching Middleware for GET requests.
+
+DEPRECATED - NOT WIRED UP. Retained for reference only; see AUDIT.md H-6/M-7.
+
+This middleware never actually cached anything worth caching. Starlette applies
+middleware in reverse registration order, so it sat OUTSIDE the compression layer
+and read an already-gzipped body; json.loads() then failed with UnicodeDecodeError
+and it fell into the "skipped caching non-JSON response" branch for every response
+over the 500-byte compression threshold.
+
+Where it did work - responses too small to compress - it was actively harmful:
+
+  - a cache HIT was returned before any authentication ran, so a revoked or
+    expired token kept receiving 200s with real data for up to the TTL (60 minutes
+    on analysis results);
+  - HIT responses discarded the origin status code and all headers.
+
+The C-6 fixes in Phase 0 (private/no-store, full-digest keys) are retained below
+so that re-enabling this is a smaller job, but re-enabling it requires solving the
+ordering problem and the pre-auth HIT first.
+
+Server-side caching still happens where it belongs: RepositoryService and
+GitHubService cache into Redis behind their own ownership checks.
 """
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
