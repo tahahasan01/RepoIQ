@@ -11,6 +11,18 @@ from app.core.logging import get_logger
 from app.services.llm_budget import LLMBudgetExceeded
 import asyncio
 
+
+class AIAnalysisUnavailable(Exception):
+    """
+    The AI review could not run at all.
+
+    Raised instead of returning a static-only result, so the analysis is
+    recorded as failed with a reason the user can act on. Carries a message
+    written for a person, not a stack trace.
+    """
+    user_facing = True
+
+
 logger = get_logger(__name__)
 
 
@@ -37,9 +49,20 @@ class AgentOrchestrator:
         logger.info(f"Starting fast batch analysis for {len(files)} files")
         
         all_issues = []
-        
+
+        # COVERAGE: how much of the AI review actually ran.
+        #
+        # Failed batches were silently skipped. With an invalid API key every
+        # batch 401'd, the LLM contributed nothing, and the run still reported
+        # `completed` with a score computed from the regex scanner alone - a
+        # green dashboard for an analysis that never happened. In a code-review
+        # product that is the most damaging failure mode there is: the user acts
+        # on a clean bill of health that was never issued.
+        batches_succeeded = 0
+
         # Process ALL files in just 1-2 batches to minimize AI calls!
-        batch_size = 8  # Analyze 8 files per AI call (sweet spot for quality vs speed)
+        from app.core.config import get_settings
+        batch_size = get_settings().ANALYSIS_BATCH_SIZE
         total_batches = (len(files) + batch_size - 1) // batch_size
         
         logger.info(f"⚡ Fast mode: Processing {len(files)} files in {total_batches} batches ({batch_size} files/batch = {total_batches} AI calls)")
@@ -83,6 +106,7 @@ class AgentOrchestrator:
                 # of 50, which quietly pulled the repository's score toward
                 # mediocre and looked identical to a real finding.
                 if batch_result and isinstance(batch_result, dict) and "issues" in batch_result:
+                    batches_succeeded += 1
                     # Only the FINDINGS are kept. The model's self-reported
                     # security/quality/architecture scores are deliberately
                     # ignored: scoring is computed from findings so it is
@@ -93,6 +117,15 @@ class AgentOrchestrator:
                 elif batch_result is not None:
                     logger.warning(f"Batch produced no usable result: {batch_result!r}")
         
+        if total_batches > 0 and batches_succeeded == 0:
+            # Nothing to hedge here: the AI review is the product. Fail loudly
+            # so the analysis is marked failed with a reason, rather than
+            # presenting a static-only pass as a finished review.
+            raise AIAnalysisUnavailable(
+                "The AI review could not run - every batch failed. "
+                "Check the model provider credentials and try again."
+            )
+
         # Run BOTH static analyses IN PARALLEL for all files (much faster!)
         logger.info("Running static analysis (best practices + security) in parallel...")
         
@@ -162,11 +195,20 @@ class AgentOrchestrator:
             f"{summary['low_issues']} low"
         )
 
+        if batches_succeeded < total_batches:
+            logger.warning(
+                f"Partial AI coverage: {batches_succeeded}/{total_batches} batches succeeded"
+            )
+
         return {
             **summary,
             "issues": all_issues,
             "agent_results": {},
-            "files_analyzed": len(files)
+            "files_analyzed": len(files),
+            # Travels with the result so the UI can say "based on N of M
+            # batches" instead of implying the whole sample was reviewed.
+            "ai_batches_total": total_batches,
+            "ai_batches_succeeded": batches_succeeded,
         }
     
     @staticmethod

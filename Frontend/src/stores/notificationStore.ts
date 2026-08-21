@@ -270,6 +270,11 @@ function navigateOrRefresh(repoId: string) {
   }
 }
 
+// Upper bound on how long a single analysis may stay in_progress before the
+// client stops waiting. Generous - a large repository legitimately takes
+// minutes - but finite.
+const ANALYSIS_POLL_TIMEOUT_SECONDS = 15 * 60;
+
 export function startBackgroundAnalysisPolling() {
   if (pollingInterval) return;
   
@@ -291,10 +296,40 @@ export function startBackgroundAnalysisPolling() {
       const elapsedSeconds = Math.round((Date.now() - analysis.startedAt) / 1000);
       store.updateBackgroundAnalysis(analysis.repoId, 'in_progress', elapsedSeconds);
       
+      // A run that never reports back must not poll forever. Without this an
+      // abandoned analysis kept firing a request every few seconds for the life
+      // of the tab - hundreds of 404s, and a card that counted upward with no
+      // way to stop.
+      if (elapsedSeconds > ANALYSIS_POLL_TIMEOUT_SECONDS) {
+        console.warn('[BackgroundAnalysis] Giving up on', analysis.repoName, 'after', elapsedSeconds, 's');
+        store.updateBackgroundAnalysis(analysis.repoId, 'failed');
+        store.removeBackgroundAnalysis(analysis.repoId);
+        const { useUIStore: uiStoreOnTimeout } = await import('./uiStore');
+        uiStoreOnTimeout.getState().setAnalyzingRepo(analysis.repoId, false);
+        store.addNotification({
+          type: 'error',
+          title: 'Analysis Timed Out',
+          message: `${analysis.repoName} stopped reporting progress. Please try again.`,
+          repoId: analysis.repoId,
+          repoName: analysis.repoName,
+        });
+        continue;
+      }
+
       try {
         const { default: apiClient } = await import('@/lib/api');
-        const result = await apiClient.getAnalysisResults(analysis.repoId);
-        
+
+        // Poll the analysis BY ID, not "latest results for this repo".
+        //
+        // getAnalysisResults() only ever returns COMPLETED analyses, so a run
+        // that failed simply 404'd forever: the `failed` branch below could
+        // never fire, the spinner never stopped, and the user was never told
+        // why. Fetching the specific analysis returns its real status and
+        // error_message whatever the outcome.
+        const result = analysis.analysisId
+          ? await apiClient.getAnalysisById(analysis.analysisId)
+          : await apiClient.getAnalysisResults(analysis.repoId);
+
         console.log('[BackgroundAnalysis] Poll result for', analysis.repoName, ':', result?.status);
         
         if (result.status === 'completed') {
@@ -310,6 +345,12 @@ export function startBackgroundAnalysisPolling() {
           // Mark as completed and remove from tracking
           store.updateBackgroundAnalysis(analysis.repoId, 'completed');
           store.removeBackgroundAnalysis(analysis.repoId);
+
+          // Same reasoning as the failure path: clear the spinner here rather
+          // than relying on the navigation below, so a completed analysis that
+          // does not navigate still stops counting.
+          const { useUIStore: uiStoreOnComplete } = await import('./uiStore');
+          uiStoreOnComplete.getState().setAnalyzingRepo(analysis.repoId, false);
           
           // Add completion notification
           store.addNotification({
@@ -339,6 +380,19 @@ export function startBackgroundAnalysisPolling() {
           console.log('[BackgroundAnalysis] Analysis FAILED for', analysis.repoName);
           store.updateBackgroundAnalysis(analysis.repoId, 'failed');
           store.removeBackgroundAnalysis(analysis.repoId);
+
+          // Clear the spinner. Without this the card kept counting
+          // "Analyzing... 4m 12s" forever after the run had already failed:
+          // the only code that cleared the flag ran on mount, so a failure
+          // while the user was watching the page never reached the UI. The
+          // cancelled branch below always did this - failure was the path
+          // that forgot.
+          const { useUIStore: uiStoreOnFailure } = await import('./uiStore');
+          uiStoreOnFailure.getState().setAnalyzingRepo(analysis.repoId, false);
+          window.dispatchEvent(new CustomEvent('analysisFailed', {
+            detail: { repoId: analysis.repoId, error: result.error_message },
+          }));
+
           store.addNotification({
             type: 'error',
             title: 'Analysis Failed',

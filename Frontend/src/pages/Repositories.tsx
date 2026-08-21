@@ -40,6 +40,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
 import AnalysisHistoryModal from "@/components/AnalysisHistoryModal";
 import NotificationBell from "@/components/NotificationBell";
+import { scoreColor, scoreLabel } from '@/lib/scoreColor';
 
 // Language colors for repository cards (used with real GitHub data)
 const languageColors: Record<string, string> = {
@@ -504,7 +505,10 @@ export default function Repositories() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.1 + index * 0.05 }}
-              className="glass-panel rounded-xl p-6 hover:shadow-lg transition-all duration-300 group"
+              /* flex column + mt-auto on the actions: descriptions vary from
+                 one line to three, so the Analyze buttons sat at different
+                 heights across the grid. */
+              className="glass-panel rounded-xl p-6 hover:shadow-lg transition-all duration-300 group flex flex-col h-full"
             >
               {/* Header */}
               <div className="flex items-start justify-between mb-3">
@@ -550,11 +554,21 @@ export default function Repositories() {
               </div>
 
               {/* Score or Scan status */}
-              {repo.score !== null ? (
+              {/* `!== null` let `undefined` through, so a repository that had
+                  never been analysed rendered the score panel with an empty
+                  value and "Scanned N/A" - the most prominent element on the
+                  card, saying nothing. `!= null` catches both. */}
+              {repo.score != null ? (
                 <div className="flex items-center justify-between mb-4 p-3 bg-muted/50 rounded-lg">
                   <div>
                     <span className="text-xs text-muted-foreground">Last Score</span>
-                    <div className="text-2xl font-bold gradient-text">{repo.score}</div>
+                    <div
+                      className="text-2xl font-bold"
+                      style={{ color: scoreColor(repo.score) }}
+                      title={scoreLabel(repo.score)}
+                    >
+                      {repo.score}
+                    </div>
                   </div>
                   <div className="text-right">
                     <span className="text-xs text-muted-foreground">Scanned</span>
@@ -569,7 +583,7 @@ export default function Repositories() {
               )}
 
               {/* Action */}
-              <div className="flex gap-2">
+              <div className="flex gap-2 mt-auto">
                 {(() => {
                   const bgAnalysis = backgroundAnalyses.get(String(repo.id));
                   const isAnalyzing = analyzingRepos.has(repo.id) || bgAnalysis?.status === 'in_progress' || bgAnalysis?.status === 'prefetching';

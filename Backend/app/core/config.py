@@ -151,6 +151,11 @@ class Settings(BaseSettings):
     # coverage is bounded by what the FIRST run costs, amortised over every run
     # after it - not by what a single run can afford every time.
     ANALYSIS_MAX_FILES: int = 150
+
+    # Files per AI call. Larger batches cost fewer calls but give the model more
+    # to hold at once, which costs recall; smaller batches are more accurate and
+    # slower. Configurable because the right value moves with the model.
+    ANALYSIS_BATCH_SIZE: int = 8
     ANALYSIS_MAX_FILE_BYTES: int = 50 * 1024
     
     RATE_LIMIT_PER_MINUTE: int = 60

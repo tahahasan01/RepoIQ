@@ -96,7 +96,13 @@ async def run_analysis_sync(repo_id: str, user_id: str, github_token: str, analy
             repo_service = RepositoryService()
             await repo_service.update_analysis(analysis_id, {
                 "status": "failed",
-                "error_message": f"{type(e).__name__}: {str(e)}",
+                # A failure the user can act on ("check your API key") is
+                # shown as written. Everything else keeps the class name, which
+                # is what makes an unexpected bug diagnosable from the record.
+                "error_message": (
+                    str(e) if getattr(e, "user_facing", False)
+                    else f"{type(e).__name__}: {str(e)}"
+                ),
                 "completed_at": None
             })
             logger.info(f"Marked analysis {analysis_id} as failed in database")

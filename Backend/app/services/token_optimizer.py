@@ -31,7 +31,20 @@ class TokenOptimizer:
             logger.warning(f"Redis unavailable for token optimizer: {e}")
             self.redis = None
             self.redis_available = False
-        self.encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        # Count with the tokenizer of the model actually being called. This was
+        # pinned to gpt-3.5-turbo (cl100k_base) while requests went to the
+        # configured model, so every budget and truncation decision was made
+        # against the wrong tokenizer - and would drift further the moment the
+        # configured model changed.
+        try:
+            self.encoding = tiktoken.encoding_for_model(settings.OPENAI_MODEL)
+        except KeyError:
+            # An unrecognised or newly released model name. o200k_base is the
+            # current default rather than a guess at the old one.
+            logger.warning(
+                f"No tokenizer registered for {settings.OPENAI_MODEL}; using o200k_base"
+            )
+            self.encoding = tiktoken.get_encoding("o200k_base")
     
     def count_tokens(self, text: str) -> int:
         """Count tokens in text using tiktoken."""

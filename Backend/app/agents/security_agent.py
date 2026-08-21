@@ -103,83 +103,146 @@ Identify all security issues and return them in JSON format."""
                 return lang
         return "unknown"
     
+    # Which languages each rule is meaningful for. The `language` argument was
+    # already being computed and passed in - and then ignored, so every Python
+    # rule ran against every file. A .sql file scored a CRITICAL "command
+    # injection" because the word EXECUTE matched a Python subprocess rule.
+    #
+    # A false critical is worse than a missed one: it dominates the score (one
+    # critical is a 22-point hit) and it teaches the user to distrust the whole
+    # report. Rules now only run where they can actually be true.
+    PY = {"python"}
+    JS = {"javascript", "typescript"}
+    WEB = {"javascript", "typescript", "php", "ruby"}
+    SQL_HOSTS = {"python", "javascript", "typescript", "java", "go", "ruby", "php", "csharp"}
+    ANY = None  # runs regardless of language, including unrecognised extensions
+
     def _run_static_analysis(self, code: str, file_path: str, language: str) -> List[Dict[str, Any]]:
         issues = []
-        
-        # Enhanced patterns with more comprehensive SQL injection detection
+
+        # (pattern, description, severity, languages, flags)
         patterns = {
             "hardcoded_secret": (
                 r'(password|secret|api_key|token|private_key)\s*=\s*["\'][^"\']{8,}["\']',
                 "Hardcoded secret detected",
-                "high"
+                "high",
+                self.ANY,
+                re.IGNORECASE,
             ),
-            # SQL Injection patterns - multiple variations
+            # SQL injection - several shapes, all requiring an actual call.
             "sql_injection_concat": (
-                r'(execute|query|cursor\.execute|db\.execute|raw|sql)\s*\([^)]*\+[^)]*\)',
+                r'\b(execute|query|cursor\.execute|db\.execute|raw|sql)\s*\([^)]*\+[^)]*\)',
                 "SQL injection risk: String concatenation in SQL query",
-                "critical"
+                "critical",
+                self.SQL_HOSTS,
+                0,
             ),
             "sql_injection_fstring": (
-                r'(execute|query|cursor\.execute|db\.execute)\s*\(\s*f["\']',
+                r'\b(execute|query|cursor\.execute|db\.execute)\s*\(\s*f["\']',
                 "SQL injection risk: f-string in SQL query without parameters",
-                "critical"
+                "critical",
+                self.PY,
+                0,
             ),
             "sql_injection_format": (
-                r'(execute|query|cursor\.execute|db\.execute)\s*\([^)]*\.format\(',
+                r'\b(execute|query|cursor\.execute|db\.execute)\s*\([^)]*\.format\(',
                 "SQL injection risk: .format() in SQL query",
-                "critical"
+                "critical",
+                self.PY,
+                0,
             ),
             "sql_injection_percent": (
-                r'(execute|query|cursor\.execute|db\.execute)\s*\([^)]*%\s*\(',
+                r'\b(execute|query|cursor\.execute|db\.execute)\s*\([^)]*%\s*\(',
                 "SQL injection risk: % string formatting in SQL query",
-                "critical"
+                "critical",
+                self.PY,
+                0,
             ),
             "nosql_injection": (
-                r'(find|findOne|update|delete)\s*\(\s*\{[^}]*\$where[^}]*\}',
+                r'\b(find|findOne|update|delete)\s*\(\s*\{[^}]*\$where[^}]*\}',
                 "NoSQL injection risk: $where operator with unsanitized input",
-                "critical"
+                "critical",
+                self.JS,
+                0,
             ),
             "eval_usage": (
                 r'\beval\s*\(',
                 "Dangerous use of eval() function",
-                "high"
+                "high",
+                self.PY | self.WEB,
+                0,
             ),
+            # Python/PHP only: in JavaScript `exec` is overwhelmingly
+            # RegExp.prototype.exec, which is harmless.
             "exec_usage": (
                 r'\bexec\s*\(',
                 "Dangerous use of exec() function",
-                "high"
+                "high",
+                self.PY | {"php"},
+                0,
             ),
             "md5_usage": (
                 r'\bmd5\s*\(',
                 "Weak MD5 hash usage detected",
-                "medium"
+                "medium",
+                self.PY | self.WEB,
+                re.IGNORECASE,
             ),
             "sha1_usage": (
                 r'\bsha1\s*\(',
                 "Weak SHA1 hash usage detected",
-                "medium"
+                "medium",
+                self.PY | self.WEB,
+                re.IGNORECASE,
             ),
             "pickle_usage": (
                 r'\bpickle\.loads?\s*\(',
                 "Insecure deserialization with pickle",
-                "high"
+                "high",
+                self.PY,
+                0,
             ),
             "yaml_unsafe_load": (
-                r'yaml\.load\s*\([^,)]*\)',
+                r'\byaml\.load\s*\([^,)]*\)',
                 "Unsafe YAML loading (use yaml.safe_load())",
-                "high"
+                "high",
+                self.PY,
+                0,
             ),
+            # The bare `exec` alternative that used to be here matched the
+            # substring "exec" anywhere - "executed", "executor", "EXECUTE" -
+            # and was case-insensitive, so a code comment produced a critical.
+            # exec() as a call is covered by exec_usage above.
             "command_injection": (
-                r'(os\.system|subprocess\.call|subprocess\.run|exec|shell=True)',
+                r'\b(os\.system|subprocess\.call|subprocess\.run|subprocess\.Popen)\s*\(|shell\s*=\s*True',
                 "Potential command injection vulnerability",
-                "critical"
+                "critical",
+                self.PY,
+                0,
+            ),
+            "command_injection_js": (
+                r'\bchild_process\.exec\s*\(|\brequire\(["\']child_process["\']\)\.exec\s*\(',
+                "Potential command injection vulnerability",
+                "critical",
+                self.JS,
+                0,
             ),
         }
-        
-        for category, (pattern, description, severity) in patterns.items():
-            matches = re.finditer(pattern, code, re.IGNORECASE)
-            for match in matches:
+
+        # One finding per (rule, line). A single line can match a rule twice -
+        # `subprocess.run(cmd, shell=True)` trips both halves of the command
+        # injection pattern - and each duplicate is penalised again by the
+        # scorer, so one real problem would read as two.
+        seen = set()
+
+        for category, (pattern, description, severity, languages, flags) in patterns.items():
+            if languages is not None and language not in languages:
+                continue
+            for match in re.finditer(pattern, code, flags):
                 line_number = code[:match.start()].count('\n') + 1
+                if (category, line_number) in seen:
+                    continue
+                seen.add((category, line_number))
                 issues.append({
                     "severity": severity,
                     "category": category,
@@ -190,7 +253,7 @@ Identify all security issues and return them in JSON format."""
                     "auto_fixable": category in ["hardcoded_secret", "md5_usage", "sha1_usage"],
                     "agent_type": "security"
                 })
-        
+
         return issues
     
     def _get_suggestion(self, category: str) -> str:

@@ -20,7 +20,6 @@ import {
   Code2,
   GitBranch,
   FileText,
-  TestTube,
   TrendingUp,
   AlertTriangle,
   CheckCircle2,
@@ -29,6 +28,7 @@ import {
 } from "lucide-react";
 import apiClient from "@/lib/api";
 import { scanStorage, ScanResult, ScanIssue } from "@/services/scanService";
+import { scoreColor, scoreLabel } from '@/lib/scoreColor';
 
 const severityColors: Record<string, string> = {
   critical: "severity-critical",
@@ -88,7 +88,6 @@ export default function Dashboard() {
       security: cached.security_score || 0,
       quality: cached.quality_score || 0,
       architecture: cached.architecture_score || 0,
-      testing: 0,
       documentation: cached.documentation_score || 0,
     };
 
@@ -119,7 +118,6 @@ export default function Dashboard() {
     security: 0,
     quality: 0,
     architecture: 0,
-    testing: 0,
     documentation: 0
   });
   const [recentIssues, setRecentIssues] = useState<DashboardIssue[]>(initialState.issues);
@@ -156,7 +154,6 @@ export default function Dashboard() {
               security: cached.security_score || 0,
               quality: cached.quality_score || 0,
               architecture: cached.architecture_score || 0,
-              testing: 0,
               documentation: cached.documentation_score || 0,
             });
 
@@ -263,7 +260,6 @@ export default function Dashboard() {
             security: results.security_score ?? results.securityScore ?? 0,
             quality: results.quality_score ?? results.qualityScore ?? 0,
             architecture: results.architecture_score ?? results.architectureScore ?? 0,
-            testing: 0, // Not provided by backend yet
             documentation: results.documentation_score ?? results.documentationScore ?? 0
           };
           
@@ -331,7 +327,6 @@ export default function Dashboard() {
             security: 0,
             quality: 0,
             architecture: 0,
-            testing: 0,
             documentation: 0
           });
           setRecentIssues([]);
@@ -408,26 +403,19 @@ export default function Dashboard() {
     };
   }, [repoId]);
 
-  // Build score data from state
+  // Build score data from state.
+  //
+  // The "Testing" tile that used to sit here was hardcoded to 0 - the backend
+  // has no testing dimension, so it always rendered "Testing 0" in warning
+  // orange. Every user saw a permanent zero for something never measured, and
+  // it was the worst-looking number on the page. A metric you do not compute
+  // should not be displayed.
   const scoreData = [
-    {
-      name: "Overall",
-      score: scores.overall,
-      icon: TrendingUp,
-      change: 0,
-      color: "#06b6d4",
-    },
-    { name: "Security", score: scores.security, icon: Shield, change: 0, color: "#22c55e" },
-    { name: "Quality", score: scores.quality, icon: Code2, change: 0, color: "#3b82f6" },
-    {
-      name: "Architecture",
-      score: scores.architecture,
-      icon: GitBranch,
-      change: 0,
-      color: "#8b5cf6",
-    },
-    { name: "Testing", score: scores.testing, icon: TestTube, change: 0, color: "#f59e0b" },
-    { name: "Docs", score: scores.documentation, icon: FileText, change: 0, color: "#ec4899" },
+    { name: "Overall", score: scores.overall, icon: TrendingUp, change: 0 },
+    { name: "Security", score: scores.security, icon: Shield, change: 0 },
+    { name: "Quality", score: scores.quality, icon: Code2, change: 0 },
+    { name: "Architecture", score: scores.architecture, icon: GitBranch, change: 0 },
+    { name: "Docs", score: scores.documentation, icon: FileText, change: 0 },
   ];
 
   const severityData = [
@@ -503,11 +491,11 @@ export default function Dashboard() {
               <div className="flex items-center justify-between mb-3">
                 <div
                   className="w-10 h-10 rounded-lg flex items-center justify-center"
-                  style={{ backgroundColor: `${item.color}20` }}
+                  style={{ backgroundColor: `${scoreColor(item.score)}20` }}
                 >
                   <item.icon
                     className="h-5 w-5"
-                    style={{ color: item.color }}
+                    style={{ color: scoreColor(item.score) }}
                   />
                 </div>
                 {item.change !== 0 && (
@@ -525,7 +513,7 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
-              <div className="text-2xl font-bold" style={{ color: item.color }}>
+              <div className="text-2xl font-bold" style={{ color: scoreColor(item.score) }}>
                 {item.score}
               </div>
               <div className="text-sm text-muted-foreground">{item.name}</div>
@@ -543,7 +531,10 @@ export default function Dashboard() {
             className="lg:col-span-2 glass-panel rounded-xl p-6"
           >
             <h3 className="text-lg font-semibold mb-4">Score Trend</h3>
-            {trendData.length > 0 ? (
+            {/* A trend needs at least two points. With one it drew a single dot
+                floating in an empty grid, which reads as a broken chart rather
+                than as "not enough data yet". */}
+            {trendData.length > 1 ? (
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={trendData}>
@@ -594,8 +585,22 @@ export default function Dashboard() {
                 </ResponsiveContainer>
               </div>
             ) : (
-              <div className="h-64 flex items-center justify-center text-muted-foreground">
-                <p className="text-sm">No analysis history yet. Run your first analysis!</p>
+              <div className="h-64 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+                {trendData.length === 1 ? (
+                  <>
+                    <div
+                      className="text-4xl font-bold"
+                      style={{ color: scoreColor(trendData[0].score) }}
+                    >
+                      {trendData[0].score}
+                    </div>
+                    <p className="text-sm">
+                      First scan on {trendData[0].date}. Run another to see the trend.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm">No analysis history yet. Run your first analysis!</p>
+                )}
               </div>
             )}
           </motion.div>
@@ -608,7 +613,37 @@ export default function Dashboard() {
             className="glass-panel rounded-xl p-6"
           >
             <h3 className="text-lg font-semibold mb-4">Issues by Severity</h3>
-            {stats.total > 0 ? (
+            {/* A donut shows proportion. With only one severity present it drew
+                a complete ring - visually "100% critical", which is alarming and
+                says nothing. Below two categories, the count is the honest
+                rendering. */}
+            {stats.total > 0 && severityData.filter(d => d.value > 0).length < 2 ? (
+              <>
+                <div className="h-48 flex flex-col items-center justify-center gap-1">
+                  {severityData.filter(d => d.value > 0).map((item) => (
+                    <div key={item.name} className="flex flex-col items-center">
+                      <div className="text-5xl font-bold" style={{ color: item.color }}>
+                        {item.value}
+                      </div>
+                      <div className="text-sm text-muted-foreground mt-1">
+                        {item.name.toLowerCase()} {item.value === 1 ? 'issue' : 'issues'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-2 mt-4">
+                  {severityData.map((item) => (
+                    <div key={item.name} className="flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }} />
+                        <span className="text-muted-foreground">{item.name}</span>
+                      </div>
+                      <span className="font-medium">{item.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : stats.total > 0 ? (
               <>
                 <div className="h-48">
                   <ResponsiveContainer width="100%" height="100%">
@@ -707,7 +742,9 @@ export default function Dashboard() {
                       </div>
                       <div className="flex items-center gap-1">
                         <AlertTriangle className="h-3 w-3 text-orange-500" />
-                        <span className="font-medium">{analysis.total_issues || 0} issues</span>
+                        <span className="font-medium">
+                          {analysis.total_issues || 0} {(analysis.total_issues || 0) === 1 ? 'issue' : 'issues'}
+                        </span>
                       </div>
                     </div>
                   </div>

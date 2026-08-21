@@ -18,8 +18,28 @@
 import { RequestThrottler } from '@/utils/throttle';
 import { clearQueryCache, clearAllQueryCaches } from '@/lib/queryPersister';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 const IS_DEV = import.meta.env.DEV;
+
+/**
+ * The localhost default is a development convenience only.
+ *
+ * A production build with VITE_API_BASE_URL unset used to fall back to
+ * localhost silently: the deployed site would load, then every request would
+ * fail against the visitor's own machine. Failing the build-time assumption
+ * loudly here turns a confusing outage into an obvious misconfiguration.
+ */
+const resolveApiBaseUrl = (): string => {
+  const configured = import.meta.env.VITE_API_BASE_URL;
+  if (configured) return configured;
+  if (!IS_DEV) {
+    throw new Error(
+      'VITE_API_BASE_URL is not set. A production build must be given the API URL at build time.'
+    );
+  }
+  return 'http://localhost:8000/api/v1';
+};
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 // Token refresh configuration
 const TOKEN_REFRESH_THRESHOLD_MS = 5 * 60 * 1000; // Refresh if < 5 min remaining
