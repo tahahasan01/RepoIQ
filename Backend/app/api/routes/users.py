@@ -3,6 +3,7 @@ from app.schemas import UserResponse, UserUpdate, PasswordChange
 from app.services.auth_service import AuthService
 from app.api.dependencies import get_current_user
 from app.api.errors import safe_detail
+from app.core.concurrency import run_blocking
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -156,11 +157,15 @@ async def search_users(
 
         visible_ids = {o["owner_id"] for o in orgs if o.get("owner_id")}
 
-        teams_result = db.table("teams").select("id").in_("organization_id", org_ids).execute()
+        teams_result = await run_blocking(
+            db.table("teams").select("id").in_("organization_id", org_ids).execute
+        )
         team_ids = [t["id"] for t in (teams_result.data or [])]
 
         if team_ids:
-            members_result = db.table("team_members").select("user_id").in_("team_id", team_ids).execute()
+            members_result = await run_blocking(
+                db.table("team_members").select("user_id").in_("team_id", team_ids).execute
+            )
             visible_ids.update(m["user_id"] for m in (members_result.data or []))
 
         visible_ids.discard(current_user["id"])
@@ -175,13 +180,15 @@ async def search_users(
             if len(results) >= limit:
                 break
 
-            field_result = db.table("users")\
-                .select(columns)\
-                .in_("id", list(visible_ids))\
-                .not_.is_(field, "null")\
-                .ilike(field, search_term)\
-                .limit(limit - len(results))\
-                .execute()
+            field_result = await run_blocking(
+                db.table("users")
+                .select(columns)
+                .in_("id", list(visible_ids))
+                .not_.is_(field, "null")
+                .ilike(field, search_term)
+                .limit(limit - len(results))
+                .execute
+            )
 
             for user in (field_result.data or []):
                 if user["id"] not in seen_ids:

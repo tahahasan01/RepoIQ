@@ -6,6 +6,7 @@ from app.tasks.analysis_tasks import auto_fix_issues_task
 from app.api.dependencies import get_current_user, get_github_token
 from app.api.errors import safe_detail
 from app.services import analysis_registry
+from app.services.analysis_dispatch import dispatch_analysis
 
 router = APIRouter(prefix="/analysis", tags=["Analysis"])
 
@@ -83,26 +84,29 @@ async def start_analysis(
     
     # Add background task
     try:
-        from app.tasks.analysis_tasks import run_analysis_sync
-        background_tasks.add_task(
-            run_analysis_sync,
+        # SCALE: prefer the Celery queue. Running a ten-minute analysis inside
+        # the API process occupies a worker for the duration and loses the job on
+        # any restart. Falls back to in-process only when no worker is listening.
+        mode = dispatch_analysis(
             repo_id=repo["id"],
             user_id=current_user["id"],
+            analysis_id=analysis_id,
             github_token=github_token,
-            analysis_id=analysis_id
+            add_background_task=background_tasks.add_task,
         )
-        logger.info(f"[start_analysis] ✅ Background task added for analysis {analysis_id}")
-        
+        logger.info(f"[start_analysis] ✅ Analysis {analysis_id} dispatched ({mode})")
+
         # Track this as the current running analysis
         analysis_registry.set_running(user_id, analysis_id)
-        
+
         return {
             "analysis_id": analysis_id,
             "repository_id": repo["id"],
             "repository_name": repo["name"],
             "status": "in_progress",
             "message": "Analysis started successfully. Check status using the results endpoint.",
-            "estimated_time_seconds": 60
+            "estimated_time_seconds": 60,
+            "execution_mode": mode,
         }
     except Exception as e:
         logger.error(f"[start_analysis] ❌ Failed to add background task: {str(e)}")

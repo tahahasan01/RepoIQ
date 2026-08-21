@@ -48,8 +48,8 @@ no unauthenticated endpoint mutates state; no endpoint returns another user's em
 | # | Task | Closes | Files | Status |
 |---|---|---|---|---|
 | 2.1 | Delete `JSONOptimizationMiddleware` (silent response corruption) | H-5 | `main.py`, `middleware/compression.py` | DONE |
-| 2.2 | Move all sync I/O off the event loop; `asyncio.sleep` not `time.sleep`; async DNS | H-7 | `services/*.py`, `agents/base_agent.py` | PARTIAL — hot paths done; remaining Supabase reads listed below |
-| 2.3 | Memoise the Supabase service client; inject services as FastAPI dependencies | H-8 | `db/supabase.py`, `api/dependencies.py` | PARTIAL — client memoised; DI still TODO |
+| 2.2 | Move all sync I/O off the event loop; `asyncio.sleep` not `time.sleep`; async DNS | H-7 | `services/*.py`, `agents/base_agent.py` | DONE |
+| 2.3 | Memoise the Supabase service client; inject services as FastAPI dependencies | H-8 | `db/supabase.py`, `api/dependencies.py` | DONE |
 | 2.4 | Replace hand-rolled compression with `GZipMiddleware`; fix or drop the response cache | H-6 | `main.py`, `middleware/` | DONE |
 | 2.5 | Collapse six cache layers to one; `SCAN`-based prefix invalidation | M-8, perf#4 | `services/repository_service.py`, `services/github_service.py` | PARTIAL — invalidation fixed; layer collapse still TODO |
 | 2.6 | Close the per-agent `httpx.Client` leak; add OpenAI timeouts | P-5 | `agents/base_agent.py` | DONE |
@@ -67,7 +67,7 @@ no unauthenticated endpoint mutates state; no endpoint returns another user's em
 | 3.3 | Raise or disclose the 15-file analysis limit; report `files_analyzed`/`files_total` | P-1 | `tasks/analysis_tasks.py`, frontend | DONE |
 | 3.4 | Commit SHA in the analysis cache key | P-2 | `tasks/analysis_tasks.py` | DONE |
 | 3.5 | Collapse to a single app entrypoint; align Dockerfile/compose/Procfile | M-1 | `main.py`, `app/main.py`, `Dockerfile` | DONE |
-| 3.6 | RLS decision: scoped clients, or documented service-role + tenant-filter checklist | M-2 | `db/`, docs | DEFERRED — architectural decision, see record below |
+| 3.6 | RLS decision: scoped clients, or documented service-role + tenant-filter checklist | M-2 | `db/`, docs | DONE |
 | 3.7 | SPA route guards | M-15 | `src/App.tsx` | DONE |
 | 3.8 | Pin `celery`; upgrade `langchain`/`langgraph`/`fastapi`; remove `install_log*.txt` | hygiene | `requirements.txt` | DONE |
 | 3.9 | Fix the OAuth redirect-URI mismatch (8081 → 8080) in both `.env.example` files | login bug | `Backend/.env.example`, `Frontend/.env.example` | DONE |
@@ -502,3 +502,139 @@ was just the wrong one.
 - **3.6 RLS decision** — still open; an architectural call for the team.
 - **~50 Supabase reads still on the event loop** — deferred from Phase 2 pending
   the dependency-injection pass (2.3).
+
+---
+
+## Phase 5 — Scale hardening — 2026-08-21
+
+Everything previously deferred is now closed. **Backend: 267 passed**
+(35 new across `test_scale_phase5.py` and `test_tenant_isolation.py`), flake8
+clean, bandit high-severity clean, frontend tsc and tests green.
+
+The brief was "thousands of users". These were the things that would have broken
+first.
+
+### The two that would have broken first
+
+**Analyses ran inside the API process.** `BackgroundTasks` put a ten-minute LLM
+job on an API worker. With `WORKERS=4`, four concurrent analyses left an instance
+unable to serve any request, and every deploy orphaned in-flight work in
+`in_progress` forever. Celery was already configured and the task already
+written — the route simply never used it. New `app/services/analysis_dispatch.py`
+routes to the queue when a worker is listening and falls back in-process
+otherwise, so local development still works without a worker.
+
+Celery was also mistuned for this workload: `worker_prefetch_multiplier=4` made
+each worker reserve four multi-minute analyses up front, parking three users
+behind one worker while others idled. Now `1`, with `task_acks_late` and
+`task_reject_on_worker_lost` so a worker killed mid-analysis requeues instead of
+losing the job.
+
+**`get_user()` hit the database on every authenticated request** via
+`get_current_user` — the single highest-frequency query in the system, one
+Supabase round trip per API call per user. Now cached for 60s, with explicit
+invalidation on profile update, account deletion and GitHub re-link so a
+disconnect takes effect immediately rather than after the TTL.
+
+### 4.1 Incremental analysis — the product change
+
+The 15-file cap existed because every run re-analysed everything, so cost scaled
+linearly and the only way to keep a run affordable was to look at almost nothing.
+That made the headline repository score a measurement of under 1% of the code.
+
+`app/services/incremental_analysis.py` caches findings by **git blob SHA**. A
+blob SHA is a content hash, so unchanged content means last run's findings are
+still exactly correct. The first analysis pays full price; every later one pays
+only for files that actually changed, which for a typical push is a handful.
+Clean files are cached as an empty finding list on purpose — otherwise they would
+be re-analysed forever.
+
+That inverts the economics, so **`ANALYSIS_MAX_FILES` went from 15 to 150**.
+Cache keys include the analyser version and model name so findings from an older
+prompt are never served as current, and reused findings are re-stamped with the
+current path (the same blob can live at a different path in another repo) and fed
+through `recalculate_totals()` so they count toward the score rather than being
+dropped from it.
+
+### 3.6 RLS — decision made, and given teeth
+
+**Decision: keep the service-role key, and make forgetting a tenant filter fail a
+test.** Per-request RLS-scoped clients are the better answer in theory, but this
+application issues its own HS256 JWTs rather than using Supabase sessions, so
+there is no user JWT to hand PostgREST without first re-architecting
+authentication — and doing that under a hardening pass would mean touching every
+query twice. The RLS policies stay in place, unused, ready for that day.
+
+`app/db/tenancy.py` declares which tables are tenant-owned and what counts as an
+ownership constraint. `tests/test_tenant_isolation.py` walks the AST of every
+data-access module and fails on a service-role read, update or delete against a
+tenant-owned table with no ownership filter. It is operation-aware: an insert is
+scoped by the tenant id in its payload, not by a filter. Genuinely-global queries
+are listed explicitly with a reason, and a test fails if an exemption goes stale.
+
+**It found three real bugs the original audit missed.** `select("*, users(*)")` —
+the exact C-4 pattern — in `ownership_service.get_repository_ownership`,
+`ownership_service.get_issue_blame` and
+`developer_analytics_service.get_repository_developers`, each returning every
+joined developer's `github_access_token` and email. All three now use the shared
+`TEAM_MEMBER_USER_COLUMNS` allowlist.
+
+### 2.2 completed — 111 blocking DB calls → 0
+
+The remaining synchronous supabase calls inside `async def` were converted via an
+AST codemod using exact source offsets rather than regex, because these chains
+span multiple lines with backslash continuations.
+
+Worth recording: the codemod's **first version was wrong**. `ast.walk()` descends
+into nested `def`, and this codebase deliberately nests sync helpers inside async
+functions so they can be handed to `run_blocking` as a unit — so it inserted
+`await` into plain functions. The syntax check caught it before writing in one
+file; the test suite caught the rest. Fixed to walk only the async function's own
+scope. A test now asserts zero unwrapped `.execute()` remain, and separately that
+the scanner is not vacuously passing.
+
+### Observability
+
+`app/middleware/request_context.py` assigns every request an id, echoes it in
+`X-Request-ID` and `Server-Timing`, and exposes it via a contextvar so any log
+line can carry it. The 500 handler returns it, so a user can quote an id and the
+exact failure can be found. An upstream id is honoured so traces span the proxy,
+but constrained to 64 alphanumeric characters — that value reaches the logs, and
+an unbounded client-supplied string is a log-injection vector.
+
+It replaces a middleware that logged **every** request at INFO with no id. At
+scale that is unusable and expensive: successful fast requests now log at DEBUG,
+slow ones and errors get a line with the duration.
+
+`/health` results are cached for 5 seconds. It is unauthenticated and runs a real
+Supabase query, so continuous probing — by the platform or by anyone who finds
+the URL — was a way to generate database load for free. Degraded results are
+deliberately not cached, so recovery is detected on the next probe.
+
+Startup now warms the shared Supabase and Redis clients so the first user after a
+deploy does not pay TLS setup; shutdown closes them. It previously logged
+"Shutting down application..." twice and did nothing.
+
+### GitHub App migration — documented, not done
+
+`Backend/GITHUB_APP_MIGRATION.md`. This needs an application registered under
+your GitHub account, which cannot be done from the codebase.
+
+It is the outstanding security item. An OAuth App has no read-only private-repo
+scope, so `repo` — read AND write to every repository the user can reach — is
+forced. A GitHub App gives per-permission, per-repository grants and 1-hour
+installation tokens. It also gives **5,000 requests/hour per installation instead
+of per user**, which at your intended scale is the difference between throughput
+that grows with customers and throughput that competes with them.
+
+The document covers registration, the exact permissions to request, code impact
+(contained to `github_token.py` because that boundary was isolated during this
+work), and a five-step rollout. Step 5 — deleting stored long-lived tokens — is
+the one that actually retires the risk.
+
+### Still open
+
+Nothing from the audit. The remaining items are product decisions rather than
+defects: raising `ANALYSIS_MAX_FILES` beyond 150, running the GitHub App
+migration, and promoting the advisory CI steps (black/isort/eslint) to blocking
+once the existing violations are burned down in their own commit.

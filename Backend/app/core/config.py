@@ -99,7 +99,15 @@ class Settings(BaseSettings):
     # the priority heuristic in analysis_tasks. Raising this increases coverage,
     # analysis time and OpenAI spend roughly linearly. The result carries
     # files_analyzed and files_eligible so the UI can disclose the sample size.
-    ANALYSIS_MAX_FILES: int = 15
+    # Where analyses run: "queue" (Celery, correct for production), "inline"
+    # (in the API process, for local dev), or "auto" (queue when a worker is
+    # listening, otherwise inline).
+    ANALYSIS_EXECUTION_MODE: str = "auto"
+    # Raised from 15 now that incremental analysis caches per-file findings by
+    # git blob SHA: only files whose content actually changed cost anything, so
+    # coverage is bounded by what the FIRST run costs, amortised over every run
+    # after it - not by what a single run can afford every time.
+    ANALYSIS_MAX_FILES: int = 150
     ANALYSIS_MAX_FILE_BYTES: int = 50 * 1024
     
     RATE_LIMIT_PER_MINUTE: int = 60

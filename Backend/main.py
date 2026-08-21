@@ -5,7 +5,6 @@ from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
-import time
 from loguru import logger
 
 from app.core.config import get_settings
@@ -15,6 +14,7 @@ from app.api.routes import auth, users, github, analysis, chat, webhooks, organi
 from starlette.middleware.gzip import GZipMiddleware
 
 from app.middleware.rate_limiter import RateLimitMiddleware
+from app.middleware.request_context import RequestContextMiddleware, current_request_id
 
 settings = get_settings()
 
@@ -28,17 +28,40 @@ setup_logging()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Lifespan context manager for startup and shutdown
+    Startup and shutdown.
+
+    Startup warms the connections every request needs, so the first user after a
+    deploy does not pay for building them. Shutdown closes them and gives
+    in-flight work a moment to finish - previously this logged the same line
+    twice and did nothing else, so a deploy dropped connections mid-request.
     """
-    # Startup
-    logger.info("Starting up application...")
+    logger.info(f"Starting {settings.APP_NAME} (env={settings.ENVIRONMENT})")
+
+    # Warm the shared clients so the first request does not pay TLS setup.
+    try:
+        from app.db.supabase import Database
+        from app.services.redis_service import get_redis_service
+
+        Database.get_service_client()
+        redis = get_redis_service()
+        logger.info(f"Startup: Redis {'connected' if redis.available else 'UNAVAILABLE'}")
+    except Exception as e:
+        # Never block startup on a warm-up failure - the app degrades gracefully
+        # and a failing dependency is already reported by /health.
+        logger.error(f"Startup warm-up failed (continuing): {type(e).__name__}: {e}")
+
     logger.info("Application ready")
-    
+
     yield
-    
-    # Shutdown
-    logger.info("Shutting down application...")
-    logger.info("Shutting down application...")
+
+    logger.info("Shutting down...")
+    try:
+        from app.services.redis_service import get_redis_service
+
+        get_redis_service().close()
+    except Exception as e:
+        logger.warning(f"Error closing Redis during shutdown: {type(e).__name__}: {e}")
+    logger.info("Shutdown complete")
 
 
 # Create FastAPI app
@@ -107,53 +130,69 @@ app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
 logger.info("Production middleware configured (rate limiting, compression)")
 
 
-# Request logging middleware
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """Log all requests"""
-    start_time = time.time()
-    
-    # Process request
-    response = await call_next(request)
-    
-    # Calculate duration
-    duration = time.time() - start_time
-    
-    # Log
-    logger.info(
-        f"{request.method} {request.url.path} "
-        f"completed in {duration:.3f}s with status {response.status_code}"
-    )
-    
-    return response
+# Request correlation, timing and proportionate logging.
+#
+# Replaces a middleware that logged every request at INFO with no request id.
+# At scale that is unusable: log lines from hundreds of concurrent requests
+# interleave with nothing to correlate them by, so a single user's failed
+# analysis cannot be reconstructed. It also costs real money in log ingest.
+# Successful fast requests now log at DEBUG; slow ones and errors get a line.
+app.add_middleware(RequestContextMiddleware)
 
 
 # Global exception handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Handle uncaught exceptions"""
-    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
-    
+    """
+    Handle uncaught exceptions.
+
+    The response carries the request id so a user can quote it and the exact
+    failure can be found in the logs - without that, "it broke" is unactionable
+    once there is meaningful traffic. The exception text itself is still withheld
+    unless DEBUG is on.
+    """
+    request_id = current_request_id()
+    logger.error(f"[{request_id}] Unhandled exception: {str(exc)}", exc_info=True)
+
     return JSONResponse(
         status_code=500,
         content={
             "success": False,
             "error": "Internal server error",
+            "request_id": request_id,
             "details": str(exc) if settings.DEBUG else None
-        }
+        },
+        headers={"X-Request-ID": request_id} if request_id else None,
     )
 
 
 # Health check endpoint with dependency verification
+# Cached health result: (expires_at, payload). Health checks are unauthenticated
+# and probed continuously by the platform; without this, each probe - and each
+# request from anyone who finds the URL - issues a real Supabase query and a
+# Redis round trip. That turns an open endpoint into a load amplifier.
+_health_cache: tuple = (0.0, None)
+_HEALTH_TTL_SECONDS = 5.0
+
+
 @app.get("/health")
 async def health_check():
     """
     Health check endpoint that verifies all critical dependencies.
     Returns detailed status for each component.
+
+    Results are cached briefly so continuous probing does not become a way to
+    generate database load from an unauthenticated endpoint.
     """
+    import time as _time
     from redis import Redis
     from app.db.supabase import Database
-    
+
+    global _health_cache
+    expires_at, cached = _health_cache
+    if cached is not None and _time.monotonic() < expires_at:
+        return cached
+
     health_status = {
         "status": "healthy",
         "app": settings.APP_NAME,
@@ -188,7 +227,12 @@ async def health_check():
     
     # Update overall status
     health_status["status"] = "healthy" if overall_healthy else "degraded"
-    
+
+    # Cache healthy results only. A degraded result must be re-checked on the
+    # next probe so recovery is detected immediately rather than up to a TTL late.
+    if overall_healthy:
+        _health_cache = (_time.monotonic() + _HEALTH_TTL_SECONDS, health_status)
+
     return health_status
 
 

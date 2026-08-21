@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional
 from app.db.supabase import get_service_db
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -17,11 +18,11 @@ class OrganizationService:
     ) -> Dict[str, Any]:
         """Create a new organization."""
         try:
-            result = self.db.table("organizations").insert({
+            result = (await run_blocking(self.db.table("organizations").insert({
                 "name": name,
                 "owner_id": owner_id,
                 "plan_type": plan_type
-            }).execute()
+            }).execute))
             
             if result.data:
                 logger.info(f"Created organization {result.data[0]['id']} for owner {owner_id}")
@@ -34,7 +35,7 @@ class OrganizationService:
     async def get_organization(self, org_id: str, user_id: str) -> Optional[Dict[str, Any]]:
         """Get organization by ID if user has access."""
         try:
-            result = self.db.table("organizations").select("*").eq("id", org_id).execute()
+            result = (await run_blocking(self.db.table("organizations").select("*").eq("id", org_id).execute))
             
             if result.data:
                 org = result.data[0]
@@ -43,11 +44,11 @@ class OrganizationService:
                     return org
                 
                 # Check if user is member of any team in this org
-                teams_result = self.db.table("teams").select("id").eq("organization_id", org_id).execute()
+                teams_result = (await run_blocking(self.db.table("teams").select("id").eq("organization_id", org_id).execute))
                 team_ids = [t["id"] for t in (teams_result.data or [])]
                 
                 if team_ids:
-                    member_check = self.db.table("team_members").select("user_id").in_("team_id", team_ids).eq("user_id", user_id).execute()
+                    member_check = (await run_blocking(self.db.table("team_members").select("user_id").in_("team_id", team_ids).eq("user_id", user_id).execute))
                     if member_check.data:
                         return org
             
@@ -60,20 +61,20 @@ class OrganizationService:
         """List all organizations a user belongs to (as owner or member)."""
         try:
             # Get organizations where user is owner
-            owned_result = self.db.table("organizations").select("*").eq("owner_id", user_id).execute()
+            owned_result = (await run_blocking(self.db.table("organizations").select("*").eq("owner_id", user_id).execute))
             owned_orgs = owned_result.data or []
             
             # Get organizations where user is team member
-            teams_result = self.db.table("team_members").select("team_id").eq("user_id", user_id).execute()
+            teams_result = (await run_blocking(self.db.table("team_members").select("team_id").eq("user_id", user_id).execute))
             team_ids = [t["team_id"] for t in (teams_result.data or [])]
             
             member_orgs = []
             if team_ids:
-                teams_orgs_result = self.db.table("teams").select("organization_id").in_("id", team_ids).execute()
+                teams_orgs_result = (await run_blocking(self.db.table("teams").select("organization_id").in_("id", team_ids).execute))
                 org_ids = list(set([t["organization_id"] for t in (teams_orgs_result.data or [])]))
                 
                 if org_ids:
-                    orgs_result = self.db.table("organizations").select("*").in_("id", org_ids).execute()
+                    orgs_result = (await run_blocking(self.db.table("organizations").select("*").in_("id", org_ids).execute))
                     member_orgs = orgs_result.data or []
             
             # Combine and deduplicate
@@ -96,7 +97,7 @@ class OrganizationService:
             if not org or org["owner_id"] != owner_id:
                 return None
             
-            result = self.db.table("organizations").update(updates).eq("id", org_id).execute()
+            result = (await run_blocking(self.db.table("organizations").update(updates).eq("id", org_id).execute))
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error updating organization: {e}")
@@ -109,7 +110,7 @@ class OrganizationService:
             if not org or org["owner_id"] != owner_id:
                 return False
             
-            self.db.table("organizations").delete().eq("id", org_id).execute()
+            (await run_blocking(self.db.table("organizations").delete().eq("id", org_id).execute))
             logger.info(f"Deleted organization {org_id}")
             return True
         except Exception as e:
@@ -125,21 +126,21 @@ class OrganizationService:
                 return []
             
             # Get all teams in organization
-            teams_result = self.db.table("teams").select("id").eq("organization_id", org_id).execute()
+            teams_result = (await run_blocking(self.db.table("teams").select("id").eq("organization_id", org_id).execute))
             team_ids = [t["id"] for t in (teams_result.data or [])]
             
             if not team_ids:
                 return []
             
             # Get repository assignments for these teams
-            assignments_result = self.db.table("repository_assignments").select("repository_id").in_("team_id", team_ids).execute()
+            assignments_result = (await run_blocking(self.db.table("repository_assignments").select("repository_id").in_("team_id", team_ids).execute))
             repo_ids = list(set([a["repository_id"] for a in (assignments_result.data or [])]))
             
             if not repo_ids:
                 return []
             
             # Get repository details
-            repos_result = self.db.table("repositories").select("*").in_("id", repo_ids).execute()
+            repos_result = (await run_blocking(self.db.table("repositories").select("*").in_("id", repo_ids).execute))
             return repos_result.data or []
         except Exception as e:
             logger.error(f"Error getting organization repositories: {e}")
@@ -155,13 +156,13 @@ class OrganizationService:
     ) -> bool:
         """Log an audit event."""
         try:
-            self.db.table("audit_logs").insert({
+            (await run_blocking(self.db.table("audit_logs").insert({
                 "organization_id": organization_id,
                 "user_id": user_id,
                 "repository_id": repository_id,
                 "action": action,
                 "details_jsonb": details or {}
-            }).execute()
+            }).execute))
             return True
         except Exception as e:
             logger.error(f"Error logging audit event: {e}")

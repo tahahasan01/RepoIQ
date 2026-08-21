@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional
 from app.db.supabase import get_service_db
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -88,17 +89,17 @@ class TeamService:
                 return None
             
             # Check for duplicate team name within the same organization
-            existing_teams = self.db.table("teams").select("id, name").eq("organization_id", organization_id).eq("name", name.strip()).execute()
+            existing_teams = (await run_blocking(self.db.table("teams").select("id, name").eq("organization_id", organization_id).eq("name", name.strip()).execute))
             if existing_teams.data and len(existing_teams.data) > 0:
                 logger.warning(f"Team with name '{name}' already exists in organization {organization_id}")
                 raise ValueError(f"A team with the name '{name}' already exists in this organization")
             
-            result = self.db.table("teams").insert({
+            result = (await run_blocking(self.db.table("teams").insert({
                 "organization_id": organization_id,
                 "name": name.strip(),
                 "manager_id": manager_id,
                 "description": description
-            }).execute()
+            }).execute))
             
             if result.data:
                 team = result.data[0]
@@ -127,7 +128,7 @@ class TeamService:
     async def get_team(self, team_id: str, user_id: str) -> Optional[Dict[str, Any]]:
         """Get team by ID if user has access."""
         try:
-            result = self.db.table("teams").select("*").eq("id", team_id).single().execute()
+            result = (await run_blocking(self.db.table("teams").select("*").eq("id", team_id).single().execute))
             
             if result.data:
                 team = result.data
@@ -153,7 +154,7 @@ class TeamService:
             if not org:
                 return []
             
-            result = self.db.table("teams").select("*").eq("organization_id", organization_id).execute()
+            result = (await run_blocking(self.db.table("teams").select("*").eq("organization_id", organization_id).execute))
             return result.data or []
         except Exception as e:
             logger.error(f"Error listing teams: {e}")
@@ -176,13 +177,13 @@ class TeamService:
                 return False
             
             # Delete team members first
-            self.db.table("team_members").delete().eq("team_id", team_id).execute()
+            (await run_blocking(self.db.table("team_members").delete().eq("team_id", team_id).execute))
             
             # Delete repository assignments
-            self.db.table("repository_assignments").delete().eq("team_id", team_id).execute()
+            (await run_blocking(self.db.table("repository_assignments").delete().eq("team_id", team_id).execute))
             
             # Delete the team
-            self.db.table("teams").delete().eq("id", team_id).execute()
+            (await run_blocking(self.db.table("teams").delete().eq("id", team_id).execute))
             
             # Log audit event
             await org_service.log_audit_event(
@@ -215,25 +216,25 @@ class TeamService:
             import re
             uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
             if uuid_pattern.match(identifier):
-                result = self.db.table("users").select(columns).eq("id", identifier).execute()
+                result = (await run_blocking(self.db.table("users").select(columns).eq("id", identifier).execute))
                 if result.data:
                     logger.info("Resolved team member identifier by UUID")
                     return result.data[0]
 
             # Exact, case-insensitive email
-            result = self.db.table("users").select(columns).ilike("email", literal).execute()
+            result = (await run_blocking(self.db.table("users").select(columns).ilike("email", literal).execute))
             if result.data:
                 logger.info("Resolved team member identifier by email")
                 return result.data[0]
 
             # Exact, case-insensitive GitHub username
-            result = self.db.table("users").select(columns).not_.is_("github_username", "null").ilike("github_username", literal).execute()
+            result = (await run_blocking(self.db.table("users").select(columns).not_.is_("github_username", "null").ilike("github_username", literal).execute))
             if result.data:
                 logger.info("Resolved team member identifier by GitHub username")
                 return result.data[0]
 
             # Exact, case-insensitive full name
-            result = self.db.table("users").select(columns).not_.is_("full_name", "null").ilike("full_name", literal).execute()
+            result = (await run_blocking(self.db.table("users").select(columns).not_.is_("full_name", "null").ilike("full_name", literal).execute))
             if result.data:
                 logger.info("Resolved team member identifier by full name")
                 return result.data[0]
@@ -243,12 +244,12 @@ class TeamService:
             # picking one adds the wrong person to a team.
             search_pattern = f"%{literal}%"
             for field in ("full_name", "github_username"):
-                result = self.db.table("users")\
+                result = (await run_blocking(self.db.table("users")\
                     .select(columns)\
                     .not_.is_(field, "null")\
                     .ilike(field, search_pattern)\
                     .limit(5)\
-                    .execute()
+                    .execute))
 
                 if not result.data:
                     continue
@@ -319,11 +320,11 @@ class TeamService:
             user_id = user["id"]
             
             # Check if already a member
-            existing = self.db.table("team_members").select("*").eq("team_id", team_id).eq("user_id", user_id).execute()
+            existing = (await run_blocking(self.db.table("team_members").select("*").eq("team_id", team_id).eq("user_id", user_id).execute))
             if existing.data:
                 # Update role if different
                 if existing.data[0]["role"] != role:
-                    self.db.table("team_members").update({"role": role}).eq("team_id", team_id).eq("user_id", user_id).execute()
+                    (await run_blocking(self.db.table("team_members").update({"role": role}).eq("team_id", team_id).eq("user_id", user_id).execute))
                 logger.info(f"User {user_id} is already a member, updated role to {role}")
                 return True
             
@@ -369,7 +370,7 @@ class TeamService:
                 )
                 return False
 
-            self.db.table("team_members").delete().eq("team_id", team_id).eq("user_id", user_id).execute()
+            (await run_blocking(self.db.table("team_members").delete().eq("team_id", team_id).eq("user_id", user_id).execute))
             
             # Log audit event
             from app.services.organization_service import OrganizationService
@@ -396,10 +397,10 @@ class TeamService:
             
             # SECURITY: explicit column allowlist. users(*) returned the entire user
             # row to every team member - including github_access_token and email.
-            result = self.db.table("team_members")\
+            result = (await run_blocking(self.db.table("team_members")\
                 .select(f"team_id, user_id, role, users({TEAM_MEMBER_USER_COLUMNS})")\
                 .eq("team_id", team_id)\
-                .execute()
+                .execute))
             return result.data or []
         except Exception as e:
             logger.error(f"Error getting team members: {e}")
@@ -425,11 +426,11 @@ class TeamService:
             # the repository. Any team member could therefore assign ANY repository
             # in the database to their own team and then read it back through
             # get_team_repositories().
-            repo_result = self.db.table("repositories")\
+            repo_result = (await run_blocking(self.db.table("repositories")\
                 .select("id, user_id")\
                 .eq("id", repository_id)\
                 .eq("user_id", assigned_by)\
-                .execute()
+                .execute))
 
             if not repo_result.data:
                 logger.warning(
@@ -439,15 +440,15 @@ class TeamService:
                 return False
 
             # Check if already assigned
-            existing = self.db.table("repository_assignments").select("*").eq("repository_id", repository_id).eq("team_id", team_id).execute()
+            existing = (await run_blocking(self.db.table("repository_assignments").select("*").eq("repository_id", repository_id).eq("team_id", team_id).execute))
             if existing.data:
                 return True  # Already assigned
             
-            self.db.table("repository_assignments").insert({
+            (await run_blocking(self.db.table("repository_assignments").insert({
                 "repository_id": repository_id,
                 "team_id": team_id,
                 "assigned_by": assigned_by
-            }).execute()
+            }).execute))
             
             # Log audit event
             from app.services.organization_service import OrganizationService
@@ -473,13 +474,13 @@ class TeamService:
             if not team:
                 return []
             
-            assignments_result = self.db.table("repository_assignments").select("repository_id").eq("team_id", team_id).execute()
+            assignments_result = (await run_blocking(self.db.table("repository_assignments").select("repository_id").eq("team_id", team_id).execute))
             repo_ids = [a["repository_id"] for a in (assignments_result.data or [])]
             
             if not repo_ids:
                 return []
             
-            repos_result = self.db.table("repositories").select("*").in_("id", repo_ids).execute()
+            repos_result = (await run_blocking(self.db.table("repositories").select("*").in_("id", repo_ids).execute))
             return repos_result.data or []
         except Exception as e:
             logger.error(f"Error getting team repositories: {e}")

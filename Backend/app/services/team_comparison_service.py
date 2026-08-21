@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from app.db.supabase import get_service_db
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -79,7 +80,7 @@ class TeamComparisonService:
                 }
             
             # Get latest analyses
-            analyses_result = self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute()
+            analyses_result = (await run_blocking(self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute))
             analyses = analyses_result.data or []
             
             # Get latest per repo
@@ -98,13 +99,13 @@ class TeamComparisonService:
             overall_score = sum(scores) / len(scores) if scores else 0
             
             # Get team size
-            members_result = self.db.table("team_members").select("user_id").eq("team_id", team_id).execute()
+            members_result = (await run_blocking(self.db.table("team_members").select("user_id").eq("team_id", team_id).execute))
             team_size = len(members_result.data or [])
             
             # Calculate velocity (simplified: based on issues fixed)
             # Get issues fixed in last 30 days
             thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
-            fixed_issues_result = self.db.table("issues").select("id").in_("analysis_id", [a["id"] for a in latest_analyses.values()]).eq("fixed", True).gte("fix_applied_at", thirty_days_ago).execute()
+            fixed_issues_result = (await run_blocking(self.db.table("issues").select("id").in_("analysis_id", [a["id"] for a in latest_analyses.values()]).eq("fixed", True).gte("fix_applied_at", thirty_days_ago).execute))
             velocity = len(fixed_issues_result.data or [])
             
             return {
@@ -175,7 +176,7 @@ class TeamComparisonService:
             
             # Get analyses in time period
             start_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
-            analyses_result = self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").gte("completed_at", start_date).order("completed_at", asc=True).execute()
+            analyses_result = (await run_blocking(self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").gte("completed_at", start_date).order("completed_at", asc=True).execute))
             analyses = analyses_result.data or []
             
             # Group by date (daily)

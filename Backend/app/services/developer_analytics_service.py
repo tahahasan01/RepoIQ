@@ -2,7 +2,9 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from app.db.supabase import get_service_db
 from app.services.github_service import create_github_service
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
+from app.services.team_service import TEAM_MEMBER_USER_COLUMNS
 
 logger = get_logger(__name__)
 
@@ -23,7 +25,7 @@ class DeveloperAnalyticsService:
             github_service = create_github_service(github_token)
             
             # Get repository info
-            repo_result = self.db.table("repositories").select("*").eq("id", repository_id).single().execute()
+            repo_result = (await run_blocking(self.db.table("repositories").select("*").eq("id", repository_id).single().execute))
             if not repo_result.data:
                 return False
             
@@ -70,7 +72,7 @@ class DeveloperAnalyticsService:
             
             # Get user IDs for GitHub usernames
             for github_username, stats in contributions.items():
-                user_result = self.db.table("users").select("id").eq("github_username", github_username).single().execute()
+                user_result = (await run_blocking(self.db.table("users").select("id").eq("github_username", github_username).single().execute))
                 if user_result.data:
                     user_id = user_result.data["id"]
                     
@@ -79,7 +81,7 @@ class DeveloperAnalyticsService:
                     issues_fixed = await self._count_issues_fixed(repository_id, user_id, period_start, period_end)
                     
                     # Upsert contribution record
-                    self.db.table("developer_contributions").upsert({
+                    (await run_blocking(self.db.table("developer_contributions").upsert({
                         "user_id": user_id,
                         "repository_id": repository_id,
                         "period_start": period_start.isoformat(),
@@ -90,7 +92,7 @@ class DeveloperAnalyticsService:
                         "files_changed": stats["files_changed"],
                         "issues_introduced": issues_introduced,
                         "issues_fixed": issues_fixed
-                    }, on_conflict="user_id,repository_id,period_start,period_end").execute()
+                    }, on_conflict="user_id,repository_id,period_start,period_end").execute))
             
             logger.info(f"Tracked contributions for {len(contributions)} developers in repository {repository_id}")
             return True
@@ -108,20 +110,20 @@ class DeveloperAnalyticsService:
         """Count issues introduced by developer (simplified - uses issue_blame table)."""
         try:
             # Get analyses in period
-            analyses_result = self.db.table("analysis_results").select("id").eq("repository_id", repository_id).gte("started_at", period_start.isoformat()).lte("started_at", period_end.isoformat()).execute()
+            analyses_result = (await run_blocking(self.db.table("analysis_results").select("id").eq("repository_id", repository_id).gte("started_at", period_start.isoformat()).lte("started_at", period_end.isoformat()).execute))
             analysis_ids = [a["id"] for a in (analyses_result.data or [])]
             
             if not analysis_ids:
                 return 0
             
             # Count issues blamed on this user
-            issues_result = self.db.table("issues").select("id").in_("analysis_id", analysis_ids).execute()
+            issues_result = (await run_blocking(self.db.table("issues").select("id").in_("analysis_id", analysis_ids).execute))
             issue_ids = [i["id"] for i in (issues_result.data or [])]
             
             if not issue_ids:
                 return 0
             
-            blame_result = self.db.table("issue_blame").select("id").in_("issue_id", issue_ids).eq("user_id", user_id).eq("blame_type", "introduced").execute()
+            blame_result = (await run_blocking(self.db.table("issue_blame").select("id").in_("issue_id", issue_ids).eq("user_id", user_id).eq("blame_type", "introduced").execute))
             return len(blame_result.data or [])
         except Exception:
             return 0
@@ -135,13 +137,13 @@ class DeveloperAnalyticsService:
     ) -> int:
         """Count issues fixed by developer."""
         try:
-            analyses_result = self.db.table("analysis_results").select("id").eq("repository_id", repository_id).gte("started_at", period_start.isoformat()).lte("started_at", period_end.isoformat()).execute()
+            analyses_result = (await run_blocking(self.db.table("analysis_results").select("id").eq("repository_id", repository_id).gte("started_at", period_start.isoformat()).lte("started_at", period_end.isoformat()).execute))
             analysis_ids = [a["id"] for a in (analyses_result.data or [])]
             
             if not analysis_ids:
                 return 0
             
-            issues_result = self.db.table("issues").select("id").in_("analysis_id", analysis_ids).eq("fixed", True).gte("fix_applied_at", period_start.isoformat()).lte("fix_applied_at", period_end.isoformat()).execute()
+            issues_result = (await run_blocking(self.db.table("issues").select("id").in_("analysis_id", analysis_ids).eq("fixed", True).gte("fix_applied_at", period_start.isoformat()).lte("fix_applied_at", period_end.isoformat()).execute))
             
             # Check if fixes were applied by this user (would need to track fix_applied_by)
             # For now, return count of fixed issues in period
@@ -165,7 +167,7 @@ class DeveloperAnalyticsService:
             if repository_id:
                 query = query.eq("repository_id", repository_id)
             
-            result = query.execute()
+            result = (await run_blocking(query.execute))
             contributions = result.data or []
             
             # Aggregate metrics
@@ -220,14 +222,14 @@ class DeveloperAnalyticsService:
                 return []
             
             # Get all teams in organization
-            teams_result = self.db.table("teams").select("id").eq("organization_id", organization_id).execute()
+            teams_result = (await run_blocking(self.db.table("teams").select("id").eq("organization_id", organization_id).execute))
             team_ids = [t["id"] for t in (teams_result.data or [])]
             
             if not team_ids:
                 return []
             
             # Get all team members
-            members_result = self.db.table("team_members").select("user_id").in_("team_id", team_ids).execute()
+            members_result = (await run_blocking(self.db.table("team_members").select("user_id").in_("team_id", team_ids).execute))
             user_ids = list(set([m["user_id"] for m in (members_result.data or [])]))
             
             if not user_ids:
@@ -239,7 +241,7 @@ class DeveloperAnalyticsService:
                 performance = await self.get_developer_performance(uid, period_days=period_days)
                 if performance:
                     # Get user info
-                    user_result = self.db.table("users").select("id, full_name, github_username, avatar_url").eq("id", uid).single().execute()
+                    user_result = (await run_blocking(self.db.table("users").select("id, full_name, github_username, avatar_url").eq("id", uid).single().execute))
                     if user_result.data:
                         performance.update(user_result.data)
                         developers.append(performance)
@@ -257,12 +259,18 @@ class DeveloperAnalyticsService:
         """Get all contributors to a repository."""
         try:
             # Verify access
-            repo_result = self.db.table("repositories").select("*").eq("id", repository_id).single().execute()
+            repo_result = (await run_blocking(self.db.table("repositories").select("*").eq("id", repository_id).single().execute))
             if not repo_result.data or repo_result.data["user_id"] != user_id:
                 return []
             
             # Get contributions
-            result = self.db.table("developer_contributions").select("*, users(*)").eq("repository_id", repository_id).execute()
+            # SECURITY: explicit column allowlist. users(*) returns the ENTIRE user row -
+            # including github_access_token and email - for every joined developer.
+            # Same defect as AUDIT.md C-4 (fixed in team_service); these call sites
+            # were missed by the original audit and found by the static tenant scan.
+            result = (await run_blocking(self.db.table("developer_contributions").select(
+                f"*, users({TEAM_MEMBER_USER_COLUMNS})"
+            ).eq("repository_id", repository_id).execute))
             contributions = result.data or []
             
             # Aggregate by user

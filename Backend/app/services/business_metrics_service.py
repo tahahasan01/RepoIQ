@@ -1,5 +1,6 @@
 from typing import List, Dict, Any
 from app.db.supabase import get_service_db
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -39,7 +40,7 @@ class BusinessMetricsService:
                 }
             
             # Get latest analysis results for all repos
-            analyses_result = self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute()
+            analyses_result = (await run_blocking(self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute))
             analyses = analyses_result.data or []
             
             # Get latest analysis per repository
@@ -172,7 +173,7 @@ class BusinessMetricsService:
                 return []
             
             # Get latest analyses
-            analyses_result = self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute()
+            analyses_result = (await run_blocking(self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute))
             analyses = analyses_result.data or []
             
             # Get latest per repo
@@ -188,7 +189,7 @@ class BusinessMetricsService:
             if not analysis_ids:
                 return []
             
-            issues_result = self.db.table("issues").select("*, analysis_results(repository_id)").in_("analysis_id", analysis_ids).eq("severity", "critical").order("created_at", desc=True).limit(limit * 5).execute()
+            issues_result = (await run_blocking(self.db.table("issues").select("*, analysis_results(repository_id)").in_("analysis_id", analysis_ids).eq("severity", "critical").order("created_at", desc=True).limit(limit * 5).execute))
             issues = issues_result.data or []
             
             # Group by repository and file

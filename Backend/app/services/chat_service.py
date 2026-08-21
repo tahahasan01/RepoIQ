@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional
 from app.db.supabase import get_service_db
 from app.agents.conversational_agent import ConversationalAgent
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -27,7 +28,7 @@ class ChatService:
                 "context_files": context_files or []
             }
             
-            self.db.table("chat_messages").insert(user_message).execute()
+            (await run_blocking(self.db.table("chat_messages").insert(user_message).execute))
             
             history = await self.get_chat_history(repo_id, user_id, limit=10)
             
@@ -51,7 +52,7 @@ class ChatService:
                 "content": response
             }
             
-            result = self.db.table("chat_messages").insert(assistant_message).execute()
+            result = (await run_blocking(self.db.table("chat_messages").insert(assistant_message).execute))
             
             return result.data[0] if result.data else None
         except Exception as e:
@@ -65,13 +66,13 @@ class ChatService:
         limit: int = 50
     ) -> List[Dict[str, Any]]:
         try:
-            result = self.db.table("chat_messages")\
+            result = (await run_blocking(self.db.table("chat_messages")\
                 .select("*")\
                 .eq("repository_id", repo_id)\
                 .eq("user_id", user_id)\
                 .order("created_at")\
                 .limit(limit)\
-                .execute()
+                .execute))
             
             return result.data
         except Exception as e:
@@ -80,11 +81,11 @@ class ChatService:
     
     async def clear_chat_history(self, repo_id: str, user_id: str) -> bool:
         try:
-            self.db.table("chat_messages")\
+            (await run_blocking(self.db.table("chat_messages")\
                 .delete()\
                 .eq("repository_id", repo_id)\
                 .eq("user_id", user_id)\
-                .execute()
+                .execute))
             
             return True
         except Exception as e:
@@ -93,18 +94,18 @@ class ChatService:
     
     async def _build_codebase_context(self, repo_id: str) -> Dict[str, Any]:
         try:
-            repo_result = self.db.table("repositories")\
+            repo_result = (await run_blocking(self.db.table("repositories")\
                 .select("*")\
                 .eq("id", repo_id)\
                 .single()\
-                .execute()
+                .execute))
             
-            analysis_result = self.db.table("analysis_results")\
+            analysis_result = (await run_blocking(self.db.table("analysis_results")\
                 .select("*")\
                 .eq("repository_id", repo_id)\
                 .order("created_at", desc=True)\
                 .limit(1)\
-                .execute()
+                .execute))
             
             context = {
                 "repo_name": repo_result.data["name"] if repo_result.data else "Unknown",

@@ -14,6 +14,7 @@ import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import httpx
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 from app.core.config import get_settings
 from app.db.supabase import get_service_db
@@ -79,7 +80,7 @@ class WebhookService:
         }
         
         try:
-            result = self.db.table("webhooks").insert(webhook_data).execute()
+            result = (await run_blocking(self.db.table("webhooks").insert(webhook_data).execute))
             logger.info(f"✅ Webhook registered for user {user_id}: {url}")
             return result.data[0] if result.data else webhook_data
         except Exception as e:
@@ -89,11 +90,11 @@ class WebhookService:
     async def get_user_webhooks(self, user_id: str) -> List[Dict[str, Any]]:
         """Get all webhooks for a user."""
         try:
-            result = self.db.table("webhooks")\
+            result = (await run_blocking(self.db.table("webhooks")\
                 .select("*")\
                 .eq("user_id", user_id)\
                 .eq("active", True)\
-                .execute()
+                .execute))
             return result.data or []
         except Exception as e:
             logger.error(f"Failed to get webhooks: {e}")
@@ -108,11 +109,11 @@ class WebhookService:
         That is both a lie to the caller and a weak existence oracle.
         """
         try:
-            result = self.db.table("webhooks")\
+            result = (await run_blocking(self.db.table("webhooks")\
                 .delete()\
                 .eq("id", webhook_id)\
                 .eq("user_id", user_id)\
-                .execute()
+                .execute))
 
             deleted = bool(result.data)
             if deleted:
@@ -223,13 +224,13 @@ class WebhookService:
     ):
         """Log webhook delivery attempt."""
         try:
-            self.db.table("webhook_deliveries").insert({
+            (await run_blocking(self.db.table("webhook_deliveries").insert({
                 "webhook_id": webhook_id,
                 "event_type": event_type,
                 "status": status,
                 "response_code": response_code,
                 "delivered_at": datetime.utcnow().isoformat()
-            }).execute()
+            }).execute))
         except Exception as e:
             logger.debug(f"Failed to log webhook delivery: {e}")
     

@@ -2,7 +2,9 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from app.db.supabase import get_service_db
 from app.services.github_service import create_github_service
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
+from app.services.team_service import TEAM_MEMBER_USER_COLUMNS
 
 logger = get_logger(__name__)
 
@@ -22,7 +24,7 @@ class OwnershipService:
             github_service = create_github_service(github_token)
             
             # Get repository info
-            repo_result = self.db.table("repositories").select("*").eq("id", repository_id).single().execute()
+            repo_result = (await run_blocking(self.db.table("repositories").select("*").eq("id", repository_id).single().execute))
             if not repo_result.data:
                 return False
             
@@ -86,20 +88,20 @@ class OwnershipService:
             
             # Get user IDs and store ownership
             for github_username, lines_owned in author_lines.items():
-                user_result = self.db.table("users").select("id").eq("github_username", github_username).single().execute()
+                user_result = (await run_blocking(self.db.table("users").select("id").eq("github_username", github_username).single().execute))
                 if user_result.data:
                     user_id = user_result.data["id"]
                     ownership_percentage = (lines_owned / total_lines * 100) if total_lines > 0 else 0
                     
                     # Upsert ownership record
-                    self.db.table("code_ownership").upsert({
+                    (await run_blocking(self.db.table("code_ownership").upsert({
                         "repository_id": repository_id,
                         "file_path": file_path,
                         "user_id": user_id,
                         "ownership_percentage": round(ownership_percentage, 2),
                         "lines_owned": lines_owned,
                         "last_modified": datetime.utcnow().isoformat()
-                    }, on_conflict="repository_id,file_path,user_id").execute()
+                    }, on_conflict="repository_id,file_path,user_id").execute))
         except Exception as e:
             logger.warning(f"Error analyzing file ownership for {file_path}: {e}")
 
@@ -111,12 +113,18 @@ class OwnershipService:
         """Get ownership map for a repository."""
         try:
             # Verify access
-            repo_result = self.db.table("repositories").select("*").eq("id", repository_id).single().execute()
+            repo_result = (await run_blocking(self.db.table("repositories").select("*").eq("id", repository_id).single().execute))
             if not repo_result.data or repo_result.data["user_id"] != user_id:
                 return {}
             
             # Get ownership data
-            result = self.db.table("code_ownership").select("*, users(*)").eq("repository_id", repository_id).execute()
+            # SECURITY: explicit column allowlist. users(*) returns the ENTIRE user row -
+            # including github_access_token and email - for every joined developer.
+            # Same defect as AUDIT.md C-4 (fixed in team_service); these call sites
+            # were missed by the original audit and found by the static tenant scan.
+            result = (await run_blocking(self.db.table("code_ownership").select(
+                f"*, users({TEAM_MEMBER_USER_COLUMNS})"
+            ).eq("repository_id", repository_id).execute))
             ownership_data = result.data or []
             
             # Group by file
@@ -216,7 +224,7 @@ class OwnershipService:
         """Get blame information for an issue."""
         try:
             # Verify access
-            issue_result = self.db.table("issues").select("*, analysis_results(*)").eq("id", issue_id).single().execute()
+            issue_result = (await run_blocking(self.db.table("issues").select("*, analysis_results(*)").eq("id", issue_id).single().execute))
             if not issue_result.data:
                 return []
             
@@ -227,12 +235,18 @@ class OwnershipService:
             if not repo_id:
                 return []
             
-            repo_result = self.db.table("repositories").select("*").eq("id", repo_id).single().execute()
+            repo_result = (await run_blocking(self.db.table("repositories").select("*").eq("id", repo_id).single().execute))
             if not repo_result.data or repo_result.data["user_id"] != user_id:
                 return []
             
             # Get blame records
-            result = self.db.table("issue_blame").select("*, users(*)").eq("issue_id", issue_id).execute()
+            # SECURITY: explicit column allowlist. users(*) returns the ENTIRE user row -
+            # including github_access_token and email - for every joined developer.
+            # Same defect as AUDIT.md C-4 (fixed in team_service); these call sites
+            # were missed by the original audit and found by the static tenant scan.
+            result = (await run_blocking(self.db.table("issue_blame").select(
+                f"*, users({TEAM_MEMBER_USER_COLUMNS})"
+            ).eq("issue_id", issue_id).execute))
             return result.data or []
         except Exception as e:
             logger.error(f"Error getting issue blame: {e}")
@@ -247,12 +261,12 @@ class OwnershipService:
         """Get files with no active owner (orphaned code)."""
         try:
             # Verify access
-            repo_result = self.db.table("repositories").select("*").eq("id", repository_id).single().execute()
+            repo_result = (await run_blocking(self.db.table("repositories").select("*").eq("id", repository_id).single().execute))
             if not repo_result.data or repo_result.data["user_id"] != user_id:
                 return []
             
             # Get all files with ownership
-            ownership_result = self.db.table("code_ownership").select("*").eq("repository_id", repository_id).execute()
+            ownership_result = (await run_blocking(self.db.table("code_ownership").select("*").eq("repository_id", repository_id).execute))
             ownership_data = ownership_result.data or []
             
             # Group by file

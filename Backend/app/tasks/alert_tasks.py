@@ -3,6 +3,7 @@ Background tasks for checking and sending alerts.
 """
 from typing import List, Dict, Any
 from app.services.alert_service import AlertService
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -29,7 +30,7 @@ async def check_organization_alerts(organization_id: str) -> List[Dict[str, Any]
         # Create alert records
         from app.db.supabase import get_service_db
         db = get_service_db()
-        org_result = db.table("organizations").select("owner_id").eq("id", organization_id).single().execute()
+        org_result = (await run_blocking(db.table("organizations").select("owner_id").eq("id", organization_id).single().execute))
         owner_id = org_result.data["owner_id"] if org_result.data else None
         
         if owner_id:
@@ -57,7 +58,7 @@ async def check_all_organizations_alerts():
         db = get_service_db()
         
         # Get all organizations
-        orgs_result = db.table("organizations").select("id").execute()
+        orgs_result = (await run_blocking(db.table("organizations").select("id").execute))
         org_ids = [org["id"] for org in (orgs_result.data or [])]
         
         total_alerts = 0

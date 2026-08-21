@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from app.db.supabase import get_service_db
+from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -21,7 +22,7 @@ class AlertService:
             org_service = OrganizationService()
             
             # Get organization owner
-            org_result = self.db.table("organizations").select("owner_id").eq("id", organization_id).single().execute()
+            org_result = (await run_blocking(self.db.table("organizations").select("owner_id").eq("id", organization_id).single().execute))
             if not org_result.data:
                 return []
             
@@ -33,7 +34,7 @@ class AlertService:
                 return []
             
             # Get latest analyses
-            analyses_result = self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute()
+            analyses_result = (await run_blocking(self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute))
             analyses = analyses_result.data or []
             
             # Get latest per repo
@@ -81,7 +82,7 @@ class AlertService:
             from app.services.organization_service import OrganizationService
             org_service = OrganizationService()
             
-            org_result = self.db.table("organizations").select("owner_id").eq("id", organization_id).single().execute()
+            org_result = (await run_blocking(self.db.table("organizations").select("owner_id").eq("id", organization_id).single().execute))
             if not org_result.data:
                 return []
             
@@ -93,7 +94,7 @@ class AlertService:
                 return []
             
             # Get latest analyses
-            analyses_result = self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute()
+            analyses_result = (await run_blocking(self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute))
             analyses = analyses_result.data or []
             
             alerts = []
@@ -127,7 +128,7 @@ class AlertService:
             from app.services.organization_service import OrganizationService
             org_service = OrganizationService()
             
-            org_result = self.db.table("organizations").select("owner_id").eq("id", organization_id).single().execute()
+            org_result = (await run_blocking(self.db.table("organizations").select("owner_id").eq("id", organization_id).single().execute))
             if not org_result.data:
                 return []
             
@@ -139,7 +140,7 @@ class AlertService:
                 return []
             
             # Get latest analyses
-            analyses_result = self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute()
+            analyses_result = (await run_blocking(self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute))
             analyses = analyses_result.data or []
             
             alerts = []
@@ -152,7 +153,7 @@ class AlertService:
                     repo = next((r for r in repos if r["id"] == analysis["repository_id"]), None)
                     if repo:
                         # Get security issues
-                        issues_result = self.db.table("issues").select("*").eq("analysis_id", analysis["id"]).eq("agent_type", "security").eq("severity", "critical").execute()
+                        issues_result = (await run_blocking(self.db.table("issues").select("*").eq("analysis_id", analysis["id"]).eq("agent_type", "security").eq("severity", "critical").execute))
                         security_issues = issues_result.data or []
                         
                         if security_issues:
@@ -184,7 +185,7 @@ class AlertService:
         """Create an alert record."""
         try:
             # Store alert (could be in a separate alerts table, for now using audit_logs)
-            await self.db.table("audit_logs").insert({
+            await (await run_blocking(self.db.table("audit_logs").insert({
                 "organization_id": organization_id,
                 "user_id": user_id,
                 "action": f"alert:{alert_type}",
@@ -194,7 +195,7 @@ class AlertService:
                     "message": message,
                     **{**(details or {})}
                 }
-            }).execute()
+            }).execute))
             
             logger.info(f"Created alert: {alert_type} for organization {organization_id}")
             return True
@@ -219,7 +220,7 @@ class AlertService:
             
             # Get alert logs
             start_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
-            result = self.db.table("audit_logs").select("*").eq("organization_id", organization_id).like("action", "alert:%").gte("created_at", start_date).order("created_at", desc=True).execute()
+            result = (await run_blocking(self.db.table("audit_logs").select("*").eq("organization_id", organization_id).like("action", "alert:%").gte("created_at", start_date).order("created_at", desc=True).execute))
             
             alerts = []
             for log in (result.data or []):

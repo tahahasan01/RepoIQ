@@ -3,6 +3,7 @@ from datetime import datetime
 from app.db.supabase import get_db, get_service_db, new_anon_db
 from app.core.security import create_access_token, create_refresh_token
 from app.core.concurrency import run_blocking
+from app.services.redis_service import get_redis_service
 from app.core.logging import get_logger
 from app.services.encryption_service import encrypt_token, redact_sensitive
 from supabase import Client
@@ -96,6 +97,13 @@ class AuthService:
     def __init__(self):
         self.db: Client = get_db()
         self.service_db: Client = get_service_db()
+        self.redis = get_redis_service()
+
+    @staticmethod
+    def invalidate_user_cache(user_id: str) -> None:
+        """Drop the cached user record so the next read is authoritative."""
+        if user_id:
+            get_redis_service().delete(f"db:user:{user_id}")
     
     async def signup(self, email: str, password: str, full_name: Optional[str] = None) -> Dict[str, Any]:
         try:
@@ -383,6 +391,10 @@ class AuthService:
                             )
                         raise
                     
+                    # The cached record still has the old token / connection
+                    # state; a fresh GitHub link must take effect immediately.
+                    self.invalidate_user_cache(user["id"])
+
                     # Update user dict with latest data
                     user["github_username"] = github_username
                     user["avatar_url"] = github_user.get("avatar_url")
@@ -436,10 +448,29 @@ class AuthService:
             raise
     
     async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch a user record.
+
+        SCALE: this runs on EVERY authenticated request via get_current_user, so
+        it was the single highest-frequency query in the system - one Supabase
+        round trip per API call, per user, forever. A short-TTL cache removes it
+        from the hot path entirely.
+
+        The TTL is deliberately short (60s): the record carries github_connected
+        and the encrypted token, so a disconnect or re-auth must take effect
+        quickly. Mutating paths call invalidate_user_cache() to make it immediate.
+        """
+        cache_key = f"db:user:{user_id}"
+        cached = self.redis.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             result = await run_blocking(
                 lambda: self.service_db.table("users").select("*").eq("id", user_id).single().execute()
             )
+            if result.data:
+                self.redis.set(cache_key, result.data, ttl=60)
             return result.data
         except Exception as e:
             logger.error(f"Get user failed: {str(e)}")
@@ -450,6 +481,9 @@ class AuthService:
             result = await run_blocking(
                 lambda: self.service_db.table("users").update(data).eq("id", user_id).execute()
             )
+            # The cached copy is now stale; a disconnect or profile edit must be
+            # visible immediately, not after the TTL.
+            self.invalidate_user_cache(user_id)
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Update user failed: {str(e)}")
@@ -514,6 +548,7 @@ class AuthService:
             await run_blocking(
                 lambda: self.service_db.table("users").delete().eq("id", user_id).execute()
             )
+            self.invalidate_user_cache(user_id)
             return True
         except Exception as e:
             logger.error(f"Delete user failed: {str(e)}")

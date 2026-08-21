@@ -225,10 +225,10 @@ class RepositoryService:
         """Fetch all latest analyses for user's repos in a single optimized query"""
         try:
             # Get all repo IDs for this user
-            repos_result = self.db.table("repositories")\
+            repos_result = (await run_blocking(self.db.table("repositories")\
                 .select("id")\
                 .eq("user_id", user_id)\
-                .execute()
+                .execute))
             
             if not repos_result.data:
                 return {}
@@ -237,12 +237,12 @@ class RepositoryService:
             
             # Fetch all latest completed analyses for these repos in one query
             # Using a subquery approach: get max created_at per repo, then fetch those records
-            analyses_result = self.db.table("analysis_results")\
+            analyses_result = (await run_blocking(self.db.table("analysis_results")\
                 .select("*")\
                 .in_("repository_id", repo_ids)\
                 .eq("status", "completed")\
                 .order("created_at", desc=True)\
-                .execute()
+                .execute))
             
             # Build a map of repo_id -> latest analysis
             analysis_map: Dict[str, Dict[str, Any]] = {}
@@ -292,13 +292,13 @@ class RepositoryService:
             
             # Fetch repositories
             logger.info(f"📂 Fetching repositories for user (page {page})...")
-            result = self.db.table("repositories")\
+            result = (await run_blocking(self.db.table("repositories")\
                 .select("*")\
                 .eq("user_id", user_id)\
                 .order("updated_at", desc=True)\
                 .limit(per_page)\
                 .offset(offset)\
-                .execute()
+                .execute))
             
             repos = result.data or []
             
@@ -312,12 +312,12 @@ class RepositoryService:
             # This is faster than fetching all analyses for all user repos
             repo_ids = [repo["id"] for repo in repos]
             
-            analyses_result = self.db.table("analysis_results")\
+            analyses_result = (await run_blocking(self.db.table("analysis_results")\
                 .select("repository_id, overall_score, security_score, quality_score, architecture_score, documentation_score, completed_at, id, status, total_issues")\
                 .in_("repository_id", repo_ids)\
                 .eq("status", "completed")\
                 .order("completed_at", desc=True)\
-                .execute()
+                .execute))
             
             # Build a map of repo_id -> latest analysis (keep first/latest for each repo)
             analysis_map: Dict[str, Dict[str, Any]] = {}
@@ -401,11 +401,11 @@ class RepositoryService:
     async def update_repository(self, repo_id: str, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             logger.info(f"📝 Updating repository {repo_id} with data: {list(data.keys())}")
-            result = self.db.table("repositories")\
+            result = (await run_blocking(self.db.table("repositories")\
                 .update(data)\
                 .eq("id", repo_id)\
                 .eq("user_id", user_id)\
-                .execute()
+                .execute))
             
             # Invalidate cache for this repository
             self.redis.delete(f"db:repo:{repo_id}")
@@ -497,7 +497,7 @@ class RepositoryService:
                 "started_at": datetime.utcnow().isoformat()
             }
             
-            result = self.db.table("analysis_results").insert(analysis_data).execute()
+            result = (await run_blocking(self.db.table("analysis_results").insert(analysis_data).execute))
             
             return result.data[0]["id"]
         except Exception as e:
@@ -506,10 +506,10 @@ class RepositoryService:
     
     async def update_analysis(self, analysis_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            result = self.db.table("analysis_results")\
+            result = (await run_blocking(self.db.table("analysis_results")\
                 .update(data)\
                 .eq("id", analysis_id)\
-                .execute()
+                .execute))
             
             # If analysis completed, invalidate history cache for this repository
             if result.data and data.get("status") == "completed":
@@ -525,11 +525,11 @@ class RepositoryService:
     
     async def get_analysis(self, analysis_id: str) -> Optional[Dict[str, Any]]:
         try:
-            result = self.db.table("analysis_results")\
+            result = (await run_blocking(self.db.table("analysis_results")\
                 .select("*")\
                 .eq("id", analysis_id)\
                 .single()\
-                .execute()
+                .execute))
             
             return result.data
         except Exception as e:
@@ -580,13 +580,13 @@ class RepositoryService:
                 logger.debug(f"🗑️ Invalidated history cache for: {repo_id}")
             
             logger.info(f"⚡ Fetching analysis history from DB: {repo_id}")
-            result = self.db.table("analysis_results")\
+            result = (await run_blocking(self.db.table("analysis_results")\
                 .select("*")\
                 .eq("repository_id", repo_id)\
                 .eq("status", "completed")\
                 .order("completed_at", desc=True)\
                 .limit(20)\
-                .execute()
+                .execute))
             
             history_count = len(result.data) if result.data else 0
             logger.info(f"📊 Found {history_count} completed analyses for repo {repo_id}")
@@ -659,7 +659,7 @@ class RepositoryService:
             
             if issue_records:
                 logger.info(f"📝 Inserting {len(issue_records)} issues into database...")
-                result = self.db.table("issues").insert(issue_records).execute()
+                result = (await run_blocking(self.db.table("issues").insert(issue_records).execute))
                 logger.info(f"✅ Successfully saved {len(issue_records)} issues to database")
                 logger.info(f"   Database insert result: {len(result.data) if result.data else 0} rows inserted")
             
@@ -745,10 +745,10 @@ class RepositoryService:
             if cached_count:
                 return cached_count
             
-            result = self.db.table("issues")\
+            result = (await run_blocking(self.db.table("issues")\
                 .select("severity")\
                 .eq("analysis_id", analysis_id)\
-                .execute()
+                .execute))
             
             counts = {'total': 0, 'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
             for issue in (result.data or []):
@@ -774,7 +774,7 @@ class RepositoryService:
                 "estimated_impact": roadmap.get("estimated_impact", {})
             }
             
-            self.db.table("improvement_roadmaps").insert(roadmap_data).execute()
+            (await run_blocking(self.db.table("improvement_roadmaps").insert(roadmap_data).execute))
             
             return True
         except Exception as e:
@@ -783,12 +783,12 @@ class RepositoryService:
     
     async def get_improvement_roadmap(self, repo_id: str) -> Optional[Dict[str, Any]]:
         try:
-            result = self.db.table("improvement_roadmaps")\
+            result = (await run_blocking(self.db.table("improvement_roadmaps")\
                 .select("*")\
                 .eq("repository_id", repo_id)\
                 .order("created_at", desc=True)\
                 .limit(1)\
-                .execute()
+                .execute))
             
             return result.data[0] if result.data else None
         except Exception as e:

@@ -7,6 +7,7 @@ from app.services.token_optimizer import get_token_optimizer
 from app.services.cache_service import get_analysis_cache
 from app.services.toon_service import get_toon_service
 from app.tasks.cache_warming import warm_cache_on_analysis_completion
+from app.services.incremental_analysis import partition_files, record_batch_findings
 from app.core.concurrency import run_blocking
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -366,7 +367,11 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
                     
                 return {
                     "path": file["path"],
-                    "content": content
+                    "content": content,
+                    # The git blob SHA is a content hash. Carrying it here is what
+                    # makes incremental analysis possible: unchanged content means
+                    # last run's findings are still exactly correct.
+                    "sha": file.get("sha"),
                 }
         except asyncio.TimeoutError:
             logger.warning(f"⏱️ Timeout fetching {file['path']} (20s limit)")
@@ -383,8 +388,26 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
         return_exceptions=True
     )
     code_files = [r for r in results if r is not None and not isinstance(r, Exception)]
-    
+
     logger.info(f"Successfully loaded {len(code_files)} code files (parallel fetch)")
+
+    # INCREMENTAL: skip files whose content has been analysed before.
+    #
+    # Findings are cached by git blob SHA, so a file unchanged since any previous
+    # analysis - of this repo or any other - costs nothing. A typical push
+    # touches a handful of files, so re-analysis is near-free and coverage stops
+    # being limited by what a single run can afford.
+    files_to_analyse, reused_findings, unchanged_files = partition_files(code_files)
+
+    if unchanged_files:
+        logger.info(
+            f"♻️ Incremental: {len(unchanged_files)} of {len(code_files)} files unchanged "
+            f"({len(reused_findings)} findings reused, {len(files_to_analyse)} to analyse)"
+        )
+
+    files_reused = len(unchanged_files)
+    code_files_full = code_files
+    code_files = files_to_analyse
     
     # Fetch structure IN PARALLEL with TOON compression for maximum speed
     logger.info("Compressing files and fetching structure in parallel...")
@@ -428,9 +451,30 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     _check_cancelled(analysis_id)
     
     # Run analysis with TOON-compressed content
-    logger.info(f"Running AI analysis on {len(code_files)} files...")
-    analysis_result = await orchestrator.analyze_repository(code_files, project_context, user_id=user_id)
-    
+    if code_files:
+        logger.info(f"Running AI analysis on {len(code_files)} changed files...")
+        analysis_result = await orchestrator.analyze_repository(code_files, project_context, user_id=user_id)
+
+        # Cache this run's findings against the content that produced them, so the
+        # next analysis of any repository containing these exact files is free.
+        # Files that produced nothing are cached as empty on purpose - "this
+        # content is clean" is just as reusable.
+        record_batch_findings(code_files, analysis_result.get("issues", []))
+    else:
+        # Every file was unchanged. No model call needed at all.
+        logger.info("♻️ All files unchanged - reusing cached findings, no AI call")
+        analysis_result = orchestrator.empty_result()
+
+    # Merge findings recovered from the incremental cache back in, so the result
+    # covers the whole sample rather than only the changed part of it.
+    if reused_findings:
+        analysis_result["issues"] = list(analysis_result.get("issues", [])) + reused_findings
+        analysis_result = orchestrator.recalculate_totals(analysis_result)
+
+    # Report coverage over the full sample, not just what was re-analysed.
+    analysis_result["files_analyzed"] = len(code_files_full)
+    analysis_result["files_reused"] = files_reused
+
     # Track token usage
     total_tokens = token_optimizer.count_tokens(compressed_toon)
     token_optimizer.track_usage("analysis", total_tokens, user_id)

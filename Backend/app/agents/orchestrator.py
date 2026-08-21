@@ -201,6 +201,84 @@ class AgentOrchestrator:
             "files_analyzed": len(files)
         }
     
+    @staticmethod
+    def empty_result() -> Dict[str, Any]:
+        """
+        Result shape for a run that needed no model call at all.
+
+        Reached when incremental analysis finds every file unchanged. Scores are
+        recomputed from the reused findings by recalculate_totals(), so the
+        placeholders here are never what the user sees.
+        """
+        return {
+            "overall_score": 100,
+            "security_score": 100,
+            "quality_score": 100,
+            "architecture_score": 100,
+            "documentation_score": 100,
+            "total_issues": 0,
+            "critical_issues": 0,
+            "high_issues": 0,
+            "medium_issues": 0,
+            "low_issues": 0,
+            "issues": [],
+            "agent_results": {},
+            "files_analyzed": 0,
+        }
+
+    @staticmethod
+    def recalculate_totals(result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Recompute counts and scores after findings are merged in.
+
+        Incremental analysis reuses findings for unchanged files, so the totals
+        the model returned describe only the changed subset. Without this the
+        issue counts and scores would understate the repository by exactly the
+        proportion of it that did not change - which, once incremental caching is
+        working well, is nearly all of it.
+        """
+        issues = result.get("issues", [])
+
+        counts = {
+            severity: sum(1 for i in issues if i.get("severity") == severity)
+            for severity in ("critical", "high", "medium", "low")
+        }
+
+        result["total_issues"] = len(issues)
+        result["critical_issues"] = counts["critical"]
+        result["high_issues"] = counts["high"]
+        result["medium_issues"] = counts["medium"]
+        result["low_issues"] = counts["low"]
+
+        # Same deduction model the per-batch scores use, applied to the merged
+        # finding set so a reused finding weighs exactly as much as a fresh one.
+        penalty = (
+            counts["critical"] * 12
+            + counts["high"] * 6
+            + counts["medium"] * 2
+            + counts["low"] * 1
+        )
+
+        security_penalty = sum(
+            12 if i.get("severity") == "critical" else
+            6 if i.get("severity") == "high" else
+            2 if i.get("severity") == "medium" else 1
+            for i in issues
+            if i.get("agent_type") == "security"
+        )
+
+        result["security_score"] = max(20, min(100, 100 - security_penalty))
+        result["quality_score"] = max(20, min(100, 100 - penalty))
+        result["architecture_score"] = max(
+            20, min(100, result.get("architecture_score", 100))
+        )
+        result["overall_score"] = int(
+            result["security_score"] * 0.4
+            + result["quality_score"] * 0.35
+            + result["architecture_score"] * 0.25
+        )
+        return result
+
     async def _analyze_file_batch(
         self,
         files: List[Dict[str, str]],
