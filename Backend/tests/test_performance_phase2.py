@@ -177,8 +177,10 @@ class TestHotPathsUseTheThreadpool:
         ("app.services.repository_service", "RepositoryService", "get_repository_files"),
         ("app.services.repository_service", "RepositoryService", "get_file_content"),
         ("app.services.auth_service", "AuthService", "get_user"),
-        ("app.services.auth_service", "AuthService", "login"),
-        ("app.services.auth_service", "AuthService", "signup"),
+        # login/signup delegate credential work to local_auth, which is where
+        # the threadpool hop now lives - see TestLocalAuthDoesNotBlock below.
+        ("app.services.local_auth", None, "authenticate"),
+        ("app.services.local_auth", None, "register"),
     ]
 
     @pytest.mark.parametrize("module_name,class_name,method_name", HOT_PATHS)
@@ -186,12 +188,13 @@ class TestHotPathsUseTheThreadpool:
         import importlib
 
         module = importlib.import_module(module_name)
-        method = getattr(getattr(module, class_name), method_name)
+        owner = getattr(module, class_name) if class_name else module
+        method = getattr(owner, method_name)
         source = inspect.getsource(method)
 
         assert "run_blocking" in source, (
-            f"{class_name}.{method_name} performs synchronous I/O directly on the "
-            "event loop"
+            f"{class_name or module_name}.{method_name} performs synchronous I/O "
+            "directly on the event loop"
         )
 
     def test_llm_calls_go_through_the_threadpool(self):

@@ -108,9 +108,19 @@ def is_token_revoked(user_id: str, issued_at: Optional[int]) -> bool:
         logger.info(f"Rejecting token without iat for user {user_id[:8]}...")
         return True
 
-    # `<` not `<=`: a token minted in the same whole second as the revocation
-    # (a login immediately following a logout) must stay valid.
-    return issued_at < revoked_at
+    # `<=`, not `<`.
+    #
+    # JWT `iat` has whole-second resolution, so a token issued in the same second
+    # as the revocation is indistinguishable from one issued just before it. With
+    # `<` those tokens survived - which meant logout did not revoke the session
+    # that had just been used to call it, and refresh-token reuse left the
+    # attacker's freshly-rotated token working. Both were reproducible by simply
+    # doing the two calls quickly, which is exactly what an attacker does.
+    #
+    # `<=` is safe because a genuine new login deletes the watermark outright
+    # (see clear_revocation, called from _issue_session) rather than relying on
+    # this comparison to let it through.
+    return issued_at <= revoked_at
 
 
 # ---------------------------------------------------------------------------

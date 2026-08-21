@@ -35,9 +35,10 @@ ACKNOWLEDGED_GLOBAL_QUERIES = {
     ("team_service.py", "teams", "_get_team_row"),
     # Membership insert; the caller has already authorised.
     ("team_service.py", "team_members", "_insert_team_member"),
-    # Health probe - existence check only, selects a single id, returns no rows
-    # to the caller.
-    ("main.py", "repositories", "health_check"),
+    # (Removed: the health probe used to SELECT from `repositories`. It now runs
+    #  `SELECT 1` through the pool, so it no longer touches a tenant-owned table
+    #  at all - which is strictly better, and this stale-exemption test is what
+    #  caught that the entry was obsolete.)
     # Scheduled job, not a user request: it iterates every organisation by design.
     # There is no tenant to scope to.
     ("alert_tasks.py", "organizations", "check_all_organizations_alerts"),

@@ -17,7 +17,7 @@ import httpx
 from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 from app.core.config import get_settings
-from app.db.supabase import get_service_db
+from app.db.postgres import get_service_db
 
 logger = get_logger(__name__)
 settings = get_settings()

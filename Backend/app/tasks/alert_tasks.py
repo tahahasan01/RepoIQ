@@ -28,7 +28,7 @@ async def check_organization_alerts(organization_id: str) -> List[Dict[str, Any]
         all_alerts.extend(security_alerts)
         
         # Create alert records
-        from app.db.supabase import get_service_db
+        from app.db.postgres import get_service_db
         db = get_service_db()
         org_result = (await run_blocking(db.table("organizations").select("owner_id").eq("id", organization_id).single().execute))
         owner_id = org_result.data["owner_id"] if org_result.data else None
@@ -54,7 +54,7 @@ async def check_organization_alerts(organization_id: str) -> List[Dict[str, Any]
 async def check_all_organizations_alerts():
     """Check alerts for all organizations."""
     try:
-        from app.db.supabase import get_service_db
+        from app.db.postgres import get_service_db
         db = get_service_db()
         
         # Get all organizations

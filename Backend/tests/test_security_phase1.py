@@ -95,6 +95,38 @@ class TestSessionRevocation:
         # Logging straight back in must not be blocked by the watermark.
         assert is_token_revoked("user-1", int(time.time()) + 5) is False
 
+    def test_token_issued_in_the_SAME_SECOND_is_revoked(self, fake_redis):
+        """
+        Found by exercising logout against a real server: `iat` has whole-second
+        resolution, so a token issued in the same second as the revocation was
+        indistinguishable from one issued just before it. With a `<` comparison
+        those survived - logout did not revoke the very session that called it,
+        and refresh-token reuse left the attacker's rotated token working.
+        Reproducible just by doing the two calls quickly.
+        """
+        from app.services.session_revocation import revoke_user_sessions, is_token_revoked
+
+        now = int(time.time())
+        revoke_user_sessions("user-1")
+
+        assert is_token_revoked("user-1", now) is True
+
+    def test_a_fresh_login_clears_the_watermark(self, fake_redis):
+        """
+        Why `<=` is safe: a real login deletes the watermark rather than relying
+        on the timestamp comparison to let it through.
+        """
+        from app.services.session_revocation import (
+            revoke_user_sessions, clear_revocation, is_token_revoked
+        )
+
+        now = int(time.time())
+        revoke_user_sessions("user-1")
+        assert is_token_revoked("user-1", now) is True
+
+        clear_revocation("user-1")
+        assert is_token_revoked("user-1", now) is False
+
     def test_revocation_is_scoped_to_one_user(self, fake_redis):
         from app.services.session_revocation import revoke_user_sessions, is_token_revoked
 

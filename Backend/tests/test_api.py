@@ -25,13 +25,14 @@ async def test_health_check(app):
     mock_redis.ping.return_value = True
     
     # Mock Supabase/Database connection
+    # /health now runs a real query through the psycopg pool rather than a
+    # PostgREST call, so the mock shape follows the pool's context manager.
     mock_db = MagicMock()
-    mock_result = MagicMock()
-    mock_result.data = []
-    mock_db.table.return_value.select.return_value.limit.return_value.execute.return_value = mock_result
+    mock_conn = mock_db.connection.return_value.__enter__.return_value
+    mock_conn.cursor.return_value.__enter__.return_value.fetchone.return_value = (1,)
     
     with patch('redis.Redis.from_url', return_value=mock_redis), \
-         patch('app.db.supabase.Database.get_client', return_value=mock_db):
+         patch('app.db.postgres.check_connection', return_value=True):
         async with AsyncClient(app=app, base_url="http://test") as client:
             response = await client.get("/health")
             assert response.status_code == 200

@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+from pathlib import Path
 from loguru import logger
 
 from app.core.config import get_settings
@@ -12,6 +13,7 @@ from app.core.logging import setup_logging
 from app.api.dependencies import require_admin
 from app.api.routes import auth, users, github, analysis, chat, webhooks, organizations, teams, developers, executive, alerts
 from starlette.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware, current_request_id
@@ -37,12 +39,16 @@ async def lifespan(app: FastAPI):
     """
     logger.info(f"Starting {settings.APP_NAME} (env={settings.ENVIRONMENT})")
 
-    # Warm the shared clients so the first request does not pay TLS setup.
+    # Open the connection pool and Redis up front, so the first request after a
+    # deploy does not pay for establishing them.
     try:
-        from app.db.supabase import Database
+        from app.db.postgres import Database, check_connection
         from app.services.redis_service import get_redis_service
 
-        Database.get_service_client()
+        Database.get_pool()
+        logger.info(
+            f"Startup: Postgres {'connected' if check_connection() else 'UNAVAILABLE'}"
+        )
         redis = get_redis_service()
         logger.info(f"Startup: Redis {'connected' if redis.available else 'UNAVAILABLE'}")
     except Exception as e:
@@ -55,12 +61,20 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down...")
-    try:
-        from app.services.redis_service import get_redis_service
-
-        get_redis_service().close()
-    except Exception as e:
-        logger.warning(f"Error closing Redis during shutdown: {type(e).__name__}: {e}")
+    for name, close in (
+        ("Redis", lambda: __import__(
+            "app.services.redis_service", fromlist=["get_redis_service"]
+        ).get_redis_service().close()),
+        # Return pooled connections rather than letting the server reap them on
+        # timeout - a deploy that leaks them eats into max_connections.
+        ("Postgres pool", lambda: __import__(
+            "app.db.postgres", fromlist=["Database"]
+        ).Database.close()),
+    ):
+        try:
+            close()
+        except Exception as e:
+            logger.warning(f"Error closing {name} during shutdown: {type(e).__name__}: {e}")
     logger.info("Shutdown complete")
 
 
@@ -129,6 +143,17 @@ app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
 
 logger.info("Production middleware configured (rate limiting, compression)")
 
+# Serve uploaded avatars. Supabase Storage used to host these and hand back a
+# public URL; with it gone they are written to UPLOAD_DIR and served from here.
+# Single-instance only - see app/services/local_storage.py.
+_avatar_dir = Path(settings.UPLOAD_DIR) / "avatars"
+_avatar_dir.mkdir(parents=True, exist_ok=True)
+app.mount(
+    settings.AVATAR_BASE_URL,
+    StaticFiles(directory=str(_avatar_dir)),
+    name="avatars",
+)
+
 
 # Request correlation, timing and proportionate logging.
 #
@@ -186,7 +211,6 @@ async def health_check():
     """
     import time as _time
     from redis import Redis
-    from app.db.supabase import Database
 
     global _health_cache
     expires_at, cached = _health_cache
@@ -214,12 +238,22 @@ async def health_check():
         health_status["dependencies"]["redis"] = {"status": "unhealthy", "error": type(e).__name__}
         overall_healthy = False
 
-    # Check Supabase/Database
+    # Check PostgreSQL.
+    #
+    # `SELECT 1` through the pool, not a table read. The old check queried
+    # `repositories`, which conflated "the database is up" with "this table
+    # exists and is readable" - a mid-migration schema would report the whole
+    # app unhealthy.
     try:
-        supabase = Database.get_client()
-        # Simple query to verify connection
-        supabase.table("repositories").select("id").limit(1).execute()
-        health_status["dependencies"]["database"] = {"status": "healthy"}
+        from app.db.postgres import check_connection
+
+        if check_connection():
+            health_status["dependencies"]["database"] = {"status": "healthy"}
+        else:
+            health_status["dependencies"]["database"] = {
+                "status": "unhealthy", "error": "connection failed"
+            }
+            overall_healthy = False
     except Exception as e:
         logger.error(f"Health check: database unhealthy: {e}")
         health_status["dependencies"]["database"] = {"status": "unhealthy", "error": type(e).__name__}

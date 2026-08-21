@@ -1,12 +1,11 @@
 from typing import Optional, Dict, Any
-from datetime import datetime
-from app.db.supabase import get_db, get_service_db, new_anon_db
+from app.db.postgres import get_db, get_service_db
 from app.core.security import create_access_token, create_refresh_token
 from app.core.concurrency import run_blocking
 from app.services.redis_service import get_redis_service
 from app.core.logging import get_logger
 from app.services.encryption_service import encrypt_token, redact_sensitive
-from supabase import Client
+from app.services import local_auth
 import httpx
 import asyncio
 
@@ -95,8 +94,8 @@ def _issue_session(user_id: str, email: Optional[str] = None) -> Dict[str, str]:
 
 class AuthService:
     def __init__(self):
-        self.db: Client = get_db()
-        self.service_db: Client = get_service_db()
+        self.db = get_db()
+        self.service_db = get_service_db()
         self.redis = get_redis_service()
 
     @staticmethod
@@ -106,78 +105,49 @@ class AuthService:
             get_redis_service().delete(f"db:user:{user_id}")
     
     async def signup(self, email: str, password: str, full_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Create an account with a locally-hashed password.
+
+        Supabase Auth used to own credentials; they now live in
+        users.password_hash. app/services/local_auth.py holds no session state,
+        which removes the class of bug behind AUDIT.md C-1 entirely rather than
+        guarding against it.
+        """
         try:
-            # SECURITY: use a fresh, session-less client. The shared anon client
-            # retains the session of whoever last authenticated on this process.
-            auth_response = await run_blocking(
-                lambda: new_anon_db().auth.sign_up({
-                    "email": email,
-                    "password": password
-                })
-            )
-            
-            if not auth_response.user:
-                raise Exception("Failed to create user")
-            
-            user_data = {
-                "id": auth_response.user.id,
-                "email": email,
-                "full_name": full_name,
-                "created_at": datetime.utcnow().isoformat()
-            }
-            
-            await run_blocking(
-                lambda: self.service_db.table("users").insert(user_data).execute()
-            )
-            
-            session = _issue_session(auth_response.user.id, email)
-            access_token = session["access_token"]
-            refresh_token = session["refresh_token"]
-            
+            user = await local_auth.register(self.db, email, password, full_name)
+            session = _issue_session(user["id"], email)
+
             return {
                 "user": {
-                    "id": auth_response.user.id,
+                    "id": user["id"],
                     "email": email,
-                    "full_name": full_name
+                    "full_name": full_name,
                 },
-                "access_token": access_token,
-                "refresh_token": refresh_token
+                "access_token": session["access_token"],
+                "refresh_token": session["refresh_token"],
             }
-        except Exception as e:
-            logger.error(f"Signup failed: {str(e)}")
+        except local_auth.AuthError:
             raise
-    
+        except Exception as e:
+            logger.error(f"Signup failed: {type(e).__name__}: {e}")
+            raise
+
     async def login(self, email: str, password: str) -> Dict[str, Any]:
-        try:
-            # SECURITY: fresh client per login so no session leaks into the
-            # process-wide client and gets picked up by another user's request.
-            auth_response = await run_blocking(
-                lambda: new_anon_db().auth.sign_in_with_password({
-                    "email": email,
-                    "password": password
-                })
-            )
-            
-            if not auth_response.user:
-                raise Exception("Invalid credentials")
-            
-            user_data = await run_blocking(
-                lambda: self.service_db.table("users").select("*").eq("id", auth_response.user.id).single().execute()
-            )
-            
-            session = _issue_session(auth_response.user.id, email)
-            access_token = session["access_token"]
-            refresh_token = session["refresh_token"]
-            
-            return {
-                "user": user_data.data,
-                "access_token": access_token,
-                "refresh_token": refresh_token
-            }
-        except Exception as e:
-            logger.error(f"Login failed: {str(e)}")
-            raise
-    
+        """
+        Verify credentials locally and issue a session.
+
+        Unknown email and wrong password are indistinguishable to the caller, and
+        both cost the same time - see local_auth.verify_password.
+        """
+        user = await local_auth.authenticate(self.db, email, password)
+        session = _issue_session(user["id"], email)
+
+        return {
+            "user": user,
+            "access_token": session["access_token"],
+            "refresh_token": session["refresh_token"],
+        }
+
     async def github_oauth(self, code: str) -> Dict[str, Any]:
         from app.core.config import get_settings
         import asyncio
@@ -598,58 +568,24 @@ class AuthService:
     
     async def change_password(self, user_id: str, current_password: str, new_password: str) -> bool:
         """
-        Change a user's password.
+        Change a password.
 
-        SECURITY: the current password is verified against Supabase Auth before the
-        change is applied, and the update is addressed to user_id explicitly via the
-        service-role admin API. The previous implementation ignored current_password
-        and called update_user() on the shared anon client, which acts on whichever
-        account last signed in on that process - i.e. it could change the wrong
-        user's password.
+        Addressed to user_id explicitly. See AUDIT.md C-1: the Supabase version
+        ignored current_password and applied the change to whichever session the
+        shared client happened to hold, so it could change the wrong account's
+        password. Local auth has no session state for that to go wrong with.
         """
         try:
-            user = await self.get_user(user_id)
-            if not user:
-                logger.warning("Password change requested for unknown user")
-                return False
-
-            email = user.get("email")
-            if not email:
-                logger.warning(f"Password change: user {user_id[:8]}... has no email on record")
-                return False
-
-            # Step 1: verify the current password on a throwaway client so no
-            # session is retained anywhere after this call.
-            verify_client = new_anon_db()
-            try:
-                verify_response = verify_client.auth.sign_in_with_password({
-                    "email": email,
-                    "password": current_password
-                })
-                if not verify_response.user or verify_response.user.id != user_id:
-                    logger.warning(f"Password change: current password rejected for {user_id[:8]}...")
-                    return False
-            except Exception:
-                logger.warning(f"Password change: current password rejected for {user_id[:8]}...")
-                return False
-            finally:
-                try:
-                    verify_client.auth.sign_out()
-                except Exception:
-                    pass
-
-            # Step 2: apply the change to this specific user id, not "the current session".
-            self.service_db.auth.admin.update_user_by_id(
-                user_id,
-                {"password": new_password}
+            changed = await local_auth.change_password(
+                self.db, user_id, current_password, new_password
             )
-
-            logger.info(f"Password changed for user {user_id[:8]}...")
-            return True
+            if changed:
+                self.invalidate_user_cache(user_id)
+            return changed
         except Exception as e:
             logger.error(f"Password change failed: {type(e).__name__}")
             return False
-    
+
     async def delete_user(self, user_id: str) -> bool:
         try:
             await run_blocking(
@@ -661,17 +597,35 @@ class AuthService:
             logger.error(f"Delete user failed: {str(e)}")
             return False
     
-    async def upload_avatar(self, user_id: str, file_data: bytes, filename: str) -> str:
+    async def upload_avatar(
+        self, user_id: str, file_data: bytes, filename: str, content_type: str = None
+    ) -> str:
+        """
+        Store an avatar and record its URL.
+
+        Supabase Storage is gone; app/services/local_storage.py writes to disk.
+        The stored filename is generated rather than taken from the upload -
+        the old path was f"avatars/{user_id}/{filename}", which interpolated a
+        client-supplied filename straight into a storage path.
+        """
+        from app.services import local_storage
+
         try:
-            file_path = f"avatars/{user_id}/{filename}"
-            
-            self.service_db.storage.from_("avatars").upload(file_path, file_data)
-            
-            public_url = self.service_db.storage.from_("avatars").get_public_url(file_path)
-            
+            previous = (await self.get_user(user_id) or {}).get("avatar_url")
+
+            public_url = await run_blocking(
+                local_storage.store_avatar, user_id, file_data, filename, content_type
+            )
+
             await self.update_user(user_id, {"avatar_url": public_url})
-            
+
+            # Only after the new one is safely recorded, so a failure mid-way
+            # cannot leave the user with no avatar at all.
+            await run_blocking(local_storage.delete_avatar, previous)
+
             return public_url
+        except local_storage.StorageError:
+            raise
         except Exception as e:
-            logger.error(f"Avatar upload failed: {str(e)}")
+            logger.error(f"Avatar upload failed: {type(e).__name__}: {e}")
             raise

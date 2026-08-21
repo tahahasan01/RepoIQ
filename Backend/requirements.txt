@@ -8,11 +8,17 @@ fastapi==0.115.6
 uvicorn[standard]==0.32.1
 python-multipart==0.0.20
 
-# --- Database / auth ---
-supabase==2.3.0
+# --- Database ---
+# Replaces supabase==2.3.0. Supabase was three products in one: a database, an
+# auth provider and a file store. Those are now Postgres, local_auth.py and
+# local_storage.py. Dropping it also lifts the httpx<0.25 pin it forced.
+psycopg[binary]==3.2.3
+psycopg-pool==3.2.4
+
+# --- Auth ---
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-httpx>=0.24.0,<0.25.0  # Pinned by supabase 2.3.0
+httpx>=0.27.0
 
 # --- Config ---
 python-dotenv==1.0.1

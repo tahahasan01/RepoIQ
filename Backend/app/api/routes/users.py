@@ -128,7 +128,7 @@ async def search_users(
     caller's organisations, email is no longer returned, and LIKE wildcards in the
     query are escaped so `%` cannot enumerate.
     """
-    from app.db.supabase import get_service_db
+    from app.db.postgres import get_service_db
     from app.core.logging import get_logger
     from app.services.organization_service import OrganizationService
     from app.services.team_service import escape_like

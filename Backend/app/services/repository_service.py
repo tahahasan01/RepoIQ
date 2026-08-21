@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import re
-from app.db.supabase import get_service_db
+from app.db.postgres import get_service_db
 from app.services.github_service import create_github_service
 from app.services.redis_service import get_redis_service
 from app.core.concurrency import run_blocking

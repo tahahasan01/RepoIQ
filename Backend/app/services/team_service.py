@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional
-from app.db.supabase import get_service_db
+from app.db.postgres import get_service_db
 from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 

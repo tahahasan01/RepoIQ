@@ -363,102 +363,127 @@ class TestLikeWildcardEscaping:
 # ---------------------------------------------------------------------------
 
 class TestPasswordChange:
-    """C-1: current_password was ignored and the update hit the wrong session."""
+    """
+    C-1: current_password was ignored, and the update was applied through a
+    shared client that carried whichever session last signed in - so it could
+    change a different user's password.
+
+    Rewritten for local auth. The bug is now impossible by construction rather
+    than guarded against: local_auth holds no session state and every function
+    takes the user it operates on as an explicit argument.
+    """
 
     @pytest.fixture
-    def auth_service(self):
-        from app.services.auth_service import AuthService
-        service = AuthService.__new__(AuthService)
-        service.db = MagicMock()
-        service.service_db = MagicMock()
-        return service
+    def db(self):
+        return MagicMock()
 
     @pytest.mark.asyncio
-    async def test_rejects_wrong_current_password(self, auth_service):
-        auth_service.get_user = AsyncMock(return_value={
-            "id": "user-1", "email": "user@example.com"
-        })
+    async def test_rejects_wrong_current_password(self, db):
+        from app.services import local_auth
 
-        failing_client = MagicMock()
-        failing_client.auth.sign_in_with_password.side_effect = Exception("Invalid login")
+        stored = local_auth.hash_password("correct-horse")
+        db.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value =             MagicMock(data={"id": "user-1", "password_hash": stored})
 
-        with patch("app.services.auth_service.new_anon_db", return_value=failing_client):
-            result = await auth_service.change_password("user-1", "wrong", "newpassword123")
+        changed = await local_auth.change_password(db, "user-1", "wrong", "new-password")
 
-        assert result is False
-        auth_service.service_db.auth.admin.update_user_by_id.assert_not_called()
+        assert changed is False
+        db.table.return_value.update.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_updates_the_addressed_user_not_the_session(self, auth_service):
-        auth_service.get_user = AsyncMock(return_value={
-            "id": "user-1", "email": "user@example.com"
-        })
+    async def test_correct_password_updates_the_addressed_user(self, db):
+        from app.services import local_auth
 
-        verify_client = MagicMock()
-        verify_client.auth.sign_in_with_password.return_value = MagicMock(
-            user=MagicMock(id="user-1")
-        )
+        stored = local_auth.hash_password("correct-horse")
+        db.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value =             MagicMock(data={"id": "user-1", "password_hash": stored})
 
-        with patch("app.services.auth_service.new_anon_db", return_value=verify_client):
-            result = await auth_service.change_password("user-1", "correct", "newpassword123")
+        changed = await local_auth.change_password(db, "user-1", "correct-horse", "new-password")
 
-        assert result is True
-        auth_service.service_db.auth.admin.update_user_by_id.assert_called_once_with(
-            "user-1", {"password": "newpassword123"}
-        )
+        assert changed is True
+        # Scoped to the id we were given - not to "the current session".
+        db.table.return_value.update.return_value.eq.assert_called_with("id", "user-1")
 
     @pytest.mark.asyncio
-    async def test_rejects_when_verified_identity_differs(self, auth_service):
-        """Defence in depth: the verified session must be the addressed user."""
-        auth_service.get_user = AsyncMock(return_value={
-            "id": "user-1", "email": "user@example.com"
-        })
+    async def test_unknown_user_cannot_change_anything(self, db):
+        from app.services import local_auth
 
-        verify_client = MagicMock()
-        verify_client.auth.sign_in_with_password.return_value = MagicMock(
-            user=MagicMock(id="someone-else")
-        )
+        db.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value =             MagicMock(data=None)
 
-        with patch("app.services.auth_service.new_anon_db", return_value=verify_client):
-            result = await auth_service.change_password("user-1", "correct", "newpassword123")
+        assert await local_auth.change_password(db, "ghost", "x", "y") is False
+        db.table.return_value.update.assert_not_called()
 
-        assert result is False
-        auth_service.service_db.auth.admin.update_user_by_id.assert_not_called()
-
-    def test_auth_mutations_do_not_use_the_shared_client(self):
-        """The shared anon client carries the last login's session."""
+    def test_no_session_state_exists_to_get_wrong(self):
+        """The structural reason C-1 cannot recur."""
         import inspect
-        from app.services.auth_service import AuthService
+        from app.services import local_auth
 
-        for method in (AuthService.login, AuthService.signup, AuthService.change_password):
-            source = inspect.getsource(method)
-            assert "self.db.auth" not in source, f"{method.__name__} uses the shared client"
+        source = inspect.getsource(local_auth)
+        assert "sign_in_with_password" not in source
+        assert ".auth." not in source
+
+    def test_password_hashing_survives_the_bcrypt_72_byte_limit(self):
+        """
+        bcrypt only reads the first 72 bytes. Older libraries truncated
+        silently, making two long passphrases that differ late IDENTICAL;
+        modern bcrypt raises instead, turning that into a signup crash.
+        """
+        from app.services.local_auth import hash_password, verify_password
+
+        long_a = "x" * 199 + "a"
+        long_b = "x" * 199 + "b"
+        stored = hash_password(long_a)
+
+        assert verify_password(long_a, stored) is True
+        assert verify_password(long_b, stored) is False
+
+    def test_missing_hash_is_a_failed_login_not_a_crash(self):
+        """GitHub-only accounts have no password_hash."""
+        from app.services.local_auth import verify_password
+
+        assert verify_password("anything", None) is False
+
+    def test_malformed_hash_is_a_failed_login_not_a_500(self):
+        from app.services.local_auth import verify_password
+
+        assert verify_password("anything", "not-a-bcrypt-hash") is False
 
 
-class TestServiceClientIsReused:
-    """H-8: a new Supabase client was constructed on every service instantiation."""
+class TestConnectionPoolIsReused:
+    """
+    H-8: a new database client was constructed on every service instantiation,
+    and services are constructed per request.
 
-    def test_service_client_is_cached(self):
-        from app.db.supabase import Database
+    Under Postgres this matters more, not less: these are real connections
+    against a server with a hard max_connections, shared across every API and
+    Celery worker.
+    """
 
-        Database._service_client = None
-        with patch("app.db.supabase.create_client", return_value=MagicMock()) as create:
-            Database.get_service_client()
-            Database.get_service_client()
-            Database.get_service_client()
+    def test_pool_is_created_once(self):
+        from app.db import postgres
 
-        assert create.call_count == 1
-        Database._service_client = None
+        postgres.Database._pool = None
+        with patch("app.db.postgres.ConnectionPool", return_value=MagicMock()) as ctor:
+            postgres.Database.get_pool()
+            postgres.Database.get_pool()
+            postgres.Database.get_pool()
 
-    def test_anon_client_factory_is_not_cached(self):
-        """Auth flows need a session-less client each time."""
-        from app.db.supabase import Database
+        assert ctor.call_count == 1
+        postgres.Database._pool = None
 
-        with patch("app.db.supabase.create_client", return_value=MagicMock()) as create:
-            Database.new_anon_client()
-            Database.new_anon_client()
+    def test_client_is_reused_across_calls(self):
+        from app.db import postgres
 
-        assert create.call_count == 2
+        postgres._client = None
+        with patch.object(postgres.Database, "get_pool", return_value=MagicMock()):
+            assert postgres.get_db() is postgres.get_db()
+        postgres._client = None
+
+    def test_pool_is_bounded(self):
+        """An unbounded pool exhausts the server's connection budget."""
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        assert 0 < settings.DB_POOL_MAX_SIZE <= 25
+        assert settings.DB_POOL_TIMEOUT > 0, "an unbounded wait turns a blip into a hang"
 
 
 # ---------------------------------------------------------------------------

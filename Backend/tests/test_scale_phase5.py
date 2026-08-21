@@ -426,6 +426,18 @@ class TestLifecycle:
         assert source.count("Shutting down application...") == 0
 
     def test_startup_warms_shared_clients(self):
+        """
+        Opens the connection pool and Redis up front so the first request after
+        a deploy does not pay to establish them. (Was get_service_client() under
+        Supabase; the pool is the equivalent now.)
+        """
         import main
         source = inspect.getsource(main.lifespan)
-        assert "get_service_client()" in source
+        assert "Database.get_pool()" in source
+        assert "get_redis_service()" in source
+
+    def test_shutdown_returns_pooled_connections(self):
+        """A deploy that leaks connections eats into Postgres max_connections."""
+        import main
+        source = inspect.getsource(main.lifespan)
+        assert "Database.close" in source

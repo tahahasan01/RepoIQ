@@ -14,9 +14,21 @@ class Settings(BaseSettings):
     PORT: int = 8000
     WORKERS: int = 4
     
-    SUPABASE_URL: str
-    SUPABASE_KEY: str
-    SUPABASE_SERVICE_KEY: str
+    # PostgreSQL. Replaces the three SUPABASE_* settings.
+    #
+    # Supabase was doing three separate jobs: a database, an auth provider and a
+    # file store. Those are now Postgres, app/services/local_auth.py and
+    # app/services/local_storage.py respectively.
+    DATABASE_URL: str = "postgresql://repoiq:repoiq_dev@localhost:5432/repoiq"
+
+    # Pool sizing matters now in a way it did not with PostgREST, where a
+    # "connection" was just an HTTP request. Postgres has a hard max_connections
+    # (100 by default) shared across every API worker AND every Celery worker,
+    # so this is set deliberately: WORKERS x DB_POOL_MAX_SIZE must stay well
+    # under it, with headroom for the workers and for psql sessions.
+    DB_POOL_MIN_SIZE: int = 2
+    DB_POOL_MAX_SIZE: int = 10
+    DB_POOL_TIMEOUT: float = 10.0
     
     GITHUB_CLIENT_ID: str
     GITHUB_CLIENT_SECRET: str
@@ -117,7 +129,12 @@ class Settings(BaseSettings):
     ALLOWED_HEADERS: str = "Authorization,Content-Type,X-Requested-With,Accept,Origin"
     
     MAX_UPLOAD_SIZE: int = 5242880
+    # Where uploaded avatars go now that Supabase Storage is gone. A local
+    # directory is correct for single-node and development; point AVATAR_BASE_URL
+    # at a CDN and swap the backend in local_storage.py for object storage when
+    # running more than one instance.
     UPLOAD_DIR: str = "uploads"
+    AVATAR_BASE_URL: str = "/static/avatars"
 
     # Analysis sampling.
     # The analysis reads a SAMPLE of a repository, not all of it. Scores and
