@@ -1,8 +1,27 @@
 # Migrating from an OAuth App to a GitHub App
 
-**Status:** not done. This requires registering an application under your GitHub
-account, which cannot be done from the codebase. Everything below is the plan and
-the code-level impact.
+**Status: the code is built and tested. Only the registration is outstanding** —
+that requires an application registered under your GitHub account, which cannot be
+done from the codebase.
+
+Everything is behind `GITHUB_AUTH_MODE`, which defaults to `oauth`. Nothing changes
+until you flip it, and flipping it back is a one-line revert.
+
+Already implemented:
+
+| Piece | Where |
+|---|---|
+| App JWT signing (RS256), installation-token minting and caching | `app/services/github_app.py` |
+| Token resolution routed through the app when enabled | `app/services/github_token.py` |
+| Install URL served from the login endpoint | `app/api/routes/auth.py` |
+| `users.github_installation_id` column | `database/migrations/003_github_app_installations.sql` |
+| Config | `GITHUB_AUTH_MODE`, `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY` |
+| Tests | `tests/test_github_app.py` — 22 tests |
+
+The PEM is accepted either as a literal key or with escaped newlines, because
+Railway, Vercel and Docker env vars cannot hold real newlines — a pasted PEM
+arrives as one line and would otherwise fail at first login with an unhelpful
+parse error.
 
 ## Why this is the outstanding security item
 
@@ -80,14 +99,42 @@ so the change is contained:
 Config already anticipates this: `GITHUB_OAUTH_SCOPES` exists precisely so the
 OAuth path can be retired without touching call sites.
 
-## Suggested sequencing
+## Rollout
 
-1. Register the app, add `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` settings.
-2. Implement installation-token minting behind a feature flag, defaulting off.
-3. Support both paths at once: existing users keep their OAuth token, new users
-   install the app.
-4. Prompt existing users to migrate.
-5. Remove the OAuth path and delete every stored `github_access_token`.
+Step 2 is done. The rest:
 
-Step 5 is the one that actually retires the risk — until stored long-lived tokens
-are deleted, they remain a target regardless of what new users get.
+1. **Register the app** (above) and note the App ID, slug and private key.
+2. ~~Implement installation-token minting behind a feature flag~~ — **done**,
+   `GITHUB_AUTH_MODE` defaults to `oauth`.
+3. **Run the migration**: `database/migrations/003_github_app_installations.sql`
+   (adds a nullable column; safe to run while still on the OAuth path).
+4. **Set the secrets** and flip `GITHUB_AUTH_MODE=app` in a staging environment
+   first:
+
+   ```
+   GITHUB_AUTH_MODE=app
+   GITHUB_APP_ID=123456
+   GITHUB_APP_SLUG=your-app-slug
+   GITHUB_APP_PRIVATE_KEY=-----BEGIN RSA PRIVATE KEY-----\nMIIEow...\n-----END RSA PRIVATE KEY-----
+   ```
+
+   The `\n` sequences are intentional and supported — most secret stores cannot
+   hold real newlines in a value.
+
+5. **Run both paths together.** Existing users keep working on their stored OAuth
+   token; new users install the app. `resolve_github_token_for_user()` already
+   handles a user with an installation and a user without.
+6. **Prompt existing users to migrate.** A user with no
+   `github_installation_id` gets an actionable error telling them to install,
+   rather than an opaque failure.
+7. **Destroy the stored tokens.** The commented-out UPDATE at the bottom of the
+   migration file.
+
+**Step 7 is the one that actually retires the risk.** Until the stored long-lived
+`repo`-scoped tokens are deleted, they remain a target regardless of what new
+users get. Do not skip it because the new path already works.
+
+## Rolling back
+
+Set `GITHUB_AUTH_MODE=oauth`. Nothing else needs reverting — as long as step 7
+has not run.

@@ -42,6 +42,21 @@ class Settings(BaseSettings):
     # Deployments that only ever analyse public repositories can safely set
     # GITHUB_OAUTH_SCOPES="public_repo read:user user:email".
     GITHUB_OAUTH_SCOPES: str = "repo read:user user:email"
+
+    # --- GitHub App (the least-privilege alternative to the above) -----------
+    #
+    # "oauth" (default) uses the OAuth App path described above.
+    # "app"   uses a GitHub App: per-permission, per-repository grants and
+    #         1-hour installation tokens, with nothing long-lived stored at rest.
+    #
+    # Switching requires registering an app under your GitHub account and
+    # setting the three values below. See Backend/GITHUB_APP_MIGRATION.md.
+    GITHUB_AUTH_MODE: str = "oauth"
+    GITHUB_APP_ID: Optional[str] = None
+    GITHUB_APP_SLUG: Optional[str] = None
+    # PEM private key. Secret stores usually cannot hold real newlines, so an
+    # escaped-newline form is accepted and normalised.
+    GITHUB_APP_PRIVATE_KEY: Optional[str] = None
     
     OPENAI_API_KEY: str
     OPENAI_MODEL: str = "gpt-4o-mini"

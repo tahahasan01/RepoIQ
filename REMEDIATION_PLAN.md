@@ -634,7 +634,64 @@ the one that actually retires the risk.
 
 ### Still open
 
-Nothing from the audit. The remaining items are product decisions rather than
-defects: raising `ANALYSIS_MAX_FILES` beyond 150, running the GitHub App
-migration, and promoting the advisory CI steps (black/isort/eslint) to blocking
-once the existing violations are burned down in their own commit.
+Nothing from the audit.
+
+---
+
+## Phase 6 — GitHub App auth path — 2026-08-21
+
+**Backend: 289 passed** (22 new in `tests/test_github_app.py`), flake8 clean,
+bandit high-severity clean.
+
+The GitHub App migration was previously documented but not built, on the grounds
+that it needs an app registered under the account owner's GitHub. That is true of
+the *registration* — it is not true of the code, and registering an app against
+code that cannot use it achieves nothing. The code path is now built and tested.
+
+`app/services/github_app.py`:
+
+- RS256 app-JWT signing, verified in tests against a real generated RSA key
+  rather than assumed. `iat` is backdated 60s and the lifetime capped at 9
+  minutes, both for GitHub's clock-skew tolerance.
+- Installation-token minting, cached for 55 minutes against a 60-minute token
+  lifetime so one cannot expire mid-analysis. Nothing is stored at rest — tokens
+  are derived from the private key on demand, so there is no long-lived per-user
+  credential in the database to leak.
+- The PEM is accepted with escaped newlines as well as literal ones. Railway,
+  Vercel and Docker env vars cannot hold real newlines, so a pasted key arrives
+  as a single line; without normalising it the failure is a parse error at first
+  login, which is a miserable thing to debug.
+- `install_url()` carries the same single-use `state` nonce as the OAuth flow, so
+  login-CSRF protection is identical.
+- Installation-repository listing is paginated and bounded, because a GitHub App
+  only sees repositories selected at install time — sync must ask the
+  installation, not the user.
+
+Wiring:
+
+- `github_token.resolve_github_token_for_user()` is still the only place a token
+  is produced, which is what keeps this contained: it mints an installation token
+  in app mode and decrypts the stored one otherwise. Routes, Celery workers and
+  agents are all unaffected by which mode is active.
+- `/auth/github/authorize` returns the install URL in app mode and the OAuth URL
+  otherwise, tagged with `mode` so the frontend can label the button.
+- `database/migrations/003_github_app_installations.sql` adds a nullable
+  `users.github_installation_id`, safe to run while still on the OAuth path, and
+  carries the commented-out UPDATE that destroys the stored OAuth tokens once
+  migration is complete.
+
+**Disabled by default.** `GITHUB_AUTH_MODE=oauth`; tests assert the OAuth path is
+completely unaffected while the flag is off, and rolling back is one env var.
+
+### Genuinely still open
+
+- **Registering the app** — needs your GitHub account. Playwright cannot do it:
+  its browser has no authenticated GitHub session, and I should not be handling
+  your credentials. `Backend/GITHUB_APP_MIGRATION.md` has the exact permissions
+  to request and a 7-step rollout.
+- **Advisory CI steps → blocking** — black would reformat 64 files, isort 58, and
+  eslint reports 264 errors (mostly `no-explicit-any`). The formatters are a
+  mechanical sweep best done as its own commit so it does not bury real changes;
+  the eslint errors are a genuine typing effort, not a codemod.
+- **`ANALYSIS_MAX_FILES` beyond 150** — a product/cost decision now that
+  incremental analysis makes coverage cheap.

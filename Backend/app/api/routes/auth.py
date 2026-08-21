@@ -171,9 +171,20 @@ async def github_authorize():
     from urllib.parse import urlencode
     from app.core.config import get_settings
     from app.services.oauth_state import issue_state
+    from app.services import github_app
 
     settings = get_settings()
     state = issue_state()
+
+    # GitHub App mode: send the user to install the app instead. They choose
+    # which repositories to grant, and access comes from short-lived
+    # installation tokens rather than a stored long-lived `repo` token.
+    if github_app.is_enabled():
+        return {
+            "auth_url": github_app.install_url(state),
+            "state": state,
+            "mode": "app",
+        }
 
     params = {
         "client_id": settings.GITHUB_CLIENT_ID,
@@ -184,7 +195,7 @@ async def github_authorize():
 
     auth_url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
 
-    return {"auth_url": auth_url, "state": state}
+    return {"auth_url": auth_url, "state": state, "mode": "oauth"}
 
 
 @router.post("/refresh", response_model=TokenResponse)

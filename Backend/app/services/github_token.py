@@ -39,15 +39,34 @@ def decrypt_stored_token(stored: Optional[str]) -> str:
 
 async def resolve_github_token_for_user(user_id: str) -> str:
     """
-    Look up and decrypt the GitHub token for a user id.
+    Produce a usable GitHub token for a user.
 
-    Raises GitHubTokenUnavailable if there is no token or it cannot be decrypted.
+    This is the ONLY place a token is produced, which is what keeps the GitHub
+    App migration contained: in "app" mode it mints a fresh one-hour installation
+    token from the app's private key; in "oauth" mode it decrypts the long-lived
+    token stored at signup. Every caller - routes, Celery workers, agents - goes
+    through here and is unaffected by which mode is active.
+
+    Raises GitHubTokenUnavailable if no token can be produced.
     """
     from app.services.auth_service import AuthService
+    from app.services import github_app
 
     user = await AuthService().get_user(user_id)
     if not user:
         raise GitHubTokenUnavailable("User not found")
+
+    if github_app.is_enabled():
+        installation_id = user.get("github_installation_id")
+        if not installation_id:
+            raise GitHubTokenUnavailable(
+                "GitHub App is not installed for this account. Please install it "
+                "and choose which repositories to grant access to."
+            )
+        try:
+            return await github_app.get_installation_token(str(installation_id))
+        except github_app.GitHubAppError as e:
+            raise GitHubTokenUnavailable(str(e))
 
     try:
         return decrypt_stored_token(user.get("github_access_token"))
