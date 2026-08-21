@@ -1,0 +1,208 @@
+# RepoIQ — Remediation Build Plan
+
+Companion to [`AUDIT.md`](./AUDIT.md). Every task below cites the audit finding it closes.
+Branch: `hardening/phase-1-4`.
+
+**Status legend:** `TODO` · `WIP` · `DONE` · `DEFERRED`
+
+---
+
+## Phase 0 — Deploy blockers (cross-tenant + auth correctness)
+
+Nothing else ships until this phase is green. These are the six criticals plus the one high
+that leaks PII platform-wide.
+
+| # | Task | Closes | Files | Status |
+|---|---|---|---|---|
+| 0.1 | Password change: verify current password; stop using the shared anon client for auth mutations | C-1 | `db/supabase.py`, `services/auth_service.py`, `api/routes/users.py` | DONE |
+| 0.2 | Gate `/metrics`, `/cache/stats`, `/cache/invalidate` behind an admin key; `SCAN` not `KEYS`; sanitise `/health` | C-5 | `main.py`, `api/dependencies.py`, `services/redis_service.py` | DONE |
+| 0.3 | Team authorisation: repo-assignment ownership, role gate on member add/remove, `role` enum | C-2, C-3 | `services/team_service.py`, `api/routes/teams.py` | DONE |
+| 0.4 | Column allowlist on team member listing (stop returning `users(*)`) | C-4 | `services/team_service.py` | DONE |
+| 0.5 | `Cache-Control: private`; full-digest per-user cache key | C-6 | `middleware/cache_middleware.py` | DONE |
+| 0.6 | Scope `/users/search` to shared orgs, drop `email`, escape `%`/`_` wildcards | H-4 | `api/routes/users.py`, `services/team_service.py` | DONE |
+
+**Acceptance:** a user in org A cannot read, assign, or mutate anything belonging to org B;
+no unauthenticated endpoint mutates state; no endpoint returns another user's email or token.
+
+---
+
+## Phase 1 — Security completion
+
+| # | Task | Closes | Files | Status |
+|---|---|---|---|---|
+| 1.1 | Enforce token invalidation in `get_current_user` (add `iat`, check `auth:invalidated:*`) | H-1 | `core/security.py`, `api/dependencies.py`, `api/routes/auth.py` | DONE |
+| 1.2 | Rate limiter: honour `TRUSTED_PROXY_COUNT`, fail closed, install middleware unconditionally | H-2 | `middleware/rate_limiter.py`, `main.py` | DONE |
+| 1.3 | Webhook SSRF guard (private-range denylist, https-only) + move `/test` retries off the request path | H-3 | `services/webhook_service.py`, `api/routes/webhooks.py` | DONE |
+| 1.4 | Stop passing decrypted GitHub tokens to Celery; workers re-fetch by `user_id` | H-10 | `api/routes/analysis.py`, `tasks/analysis_tasks.py` | DONE |
+| 1.5 | OAuth: add `state` nonce, narrow scope to `read:user user:email` | H-11 | `api/routes/auth.py`, `services/auth_service.py` | DONE |
+| 1.6 | Typed response model for the OAuth callback (stop shipping `github_access_token`) | H-12 | `api/routes/auth.py`, `schemas/__init__.py` | DONE |
+| 1.7 | Wire up `TOKEN_ENCRYPTION_KEY` with a migration path off `SECRET_KEY` | M-4 | `services/encryption_service.py` | DONE |
+| 1.8 | Replace `detail=str(e)` with sanitised messages (55 sites); drop the token-error oracle | M-13, M-14 | `api/routes/*.py`, `api/dependencies.py` | DONE |
+| 1.9 | Refresh-token rotation with reuse detection | M-12 | `core/security.py`, `api/routes/auth.py` | DONE |
+| 1.10 | Verified-email check in GitHub OAuth account matching | M-11 | `services/auth_service.py` | DONE |
+
+---
+
+## Phase 2 — Performance (the slowness)
+
+| # | Task | Closes | Files | Status |
+|---|---|---|---|---|
+| 2.1 | Delete `JSONOptimizationMiddleware` (silent response corruption) | H-5 | `main.py`, `middleware/compression.py` | TODO |
+| 2.2 | Move all sync I/O off the event loop; `asyncio.sleep` not `time.sleep`; async DNS | H-7 | `services/*.py`, `agents/base_agent.py` | TODO |
+| 2.3 | Memoise the Supabase service client; inject services as FastAPI dependencies | H-8 | `db/supabase.py`, `api/dependencies.py` | PARTIAL — client memoised in Phase 0; DI still TODO |
+| 2.4 | Replace hand-rolled compression with `GZipMiddleware`; fix or drop the response cache | H-6 | `main.py`, `middleware/` | TODO |
+| 2.5 | Collapse six cache layers to one; `SCAN`-based prefix invalidation | M-8, perf#4 | `services/repository_service.py`, `services/github_service.py` | TODO |
+| 2.6 | Close the per-agent `httpx.Client` leak; add OpenAI timeouts | P-5 | `agents/base_agent.py` | TODO |
+| 2.7 | Frontend: fix `manualChunks` alias paths; allow refetch on mount for live data | P-3, perf#6 | `vite.config.ts`, `src/App.tsx` | TODO |
+| 2.8 | Frontend: clear the correct query-cache key on logout; drop the dead `require()` | H-13 | `src/lib/api.ts`, `src/App.tsx`, `src/lib/queryPersister.ts` | TODO |
+
+---
+
+## Phase 3 — Trust in the pipeline
+
+| # | Task | Closes | Files | Status |
+|---|---|---|---|---|
+| 3.1 | Remove every `\|\| true` from CI; delete the conftest fallback app | H-14 | `.github/workflows/ci.yml`, `tests/conftest.py` | PARTIAL — conftest stub deleted; CI `\|\| true` still TODO |
+| 3.2 | Move analysis to Celery; shared cancellation state | H-9 | `api/routes/analysis.py`, `tasks/analysis_tasks.py` | TODO |
+| 3.3 | Raise or disclose the 15-file analysis limit; report `files_analyzed`/`files_total` | P-1 | `tasks/analysis_tasks.py`, frontend | TODO |
+| 3.4 | Commit SHA in the analysis cache key | P-2 | `tasks/analysis_tasks.py` | TODO |
+| 3.5 | Collapse to a single app entrypoint; align Dockerfile/compose/Procfile | M-1 | `main.py`, `app/main.py`, `Dockerfile` | TODO |
+| 3.6 | RLS decision: scoped clients, or documented service-role + tenant-filter checklist | M-2 | `db/`, docs | TODO |
+| 3.7 | SPA route guards | M-15 | `src/App.tsx` | TODO |
+| 3.8 | Pin `celery`; upgrade `langchain`/`langgraph`/`fastapi`; remove `install_log*.txt` | hygiene | `requirements.txt` | TODO |
+| 3.9 | Fix the OAuth redirect-URI mismatch (8081 → 8080) in both `.env.example` files | login bug | `Backend/.env.example`, `Frontend/.env.example` | TODO |
+
+---
+
+## Phase 4 — Product correctness
+
+| # | Task | Closes | Status |
+|---|---|---|---|
+| 4.1 | Incremental analysis: chunk repos, cache per-file results by blob SHA | P-1 | TODO |
+| 4.2 | Prompt-injection hardening + per-user OpenAI spend caps | P-4 | TODO |
+| 4.3 | `delete_webhook` must report real affected-row counts | P-6 | TODO |
+| 4.4 | Repo sync must remove revoked repositories | M-9 | TODO |
+
+
+---
+
+## Phase 0 completion record — 2026-08-21
+
+All six Phase 0 tasks are implemented and covered by regression tests.
+
+**Test suite: 65 passed** (42 new in `tests/test_security_phase0.py`, 23 pre-existing).
+Run: `cd Backend && pytest tests/ -q`
+
+### Found while executing Phase 0 (not in the original audit)
+
+**L-1 — `main.py` never called `setup_logging()`.** `HIGH`
+The production entrypoint (`main:app`, per `railway.toml` / `nixpacks.toml` / `Procfile`)
+never configured structlog. Only `app/main.py` — the entrypoint that is *not* deployed —
+did. Consequences on every deployed request:
+
+- `filter_by_level` never ran, so all 46 `logger.debug()` calls printed on every
+  request, synchronously, to stdout. Several sit on hot paths (cache hit/miss,
+  per-file GitHub fetches). A direct, measurable contributor to the reported slowness.
+- ~124 log statements contain emoji. On a stream with a legacy encoding (cp1252 on
+  Windows, C locale in some containers) writing one raises `UnicodeEncodeError`
+  *from inside the logging call*. Several of those statements are in middleware, so
+  the exception escaped the request and turned a healthy 200 into a **500**.
+
+Reproduced during verification: `GET /metrics` returned 500 with
+`UnicodeEncodeError: 'charmap' codec can't encode character '⚡'` raised from
+`cache_middleware.py` line 130.
+
+**Fixed:** `setup_logging()` is now called from `main.py` before the app is built;
+the log stream is reconfigured to UTF-8 with `errors="replace"`; the level derives
+from `settings.DEBUG`; loguru is pointed at the same stream and level.
+
+**L-2 — `add_team_member` swallowed its own `ValueError`s.** `MEDIUM`
+The blanket `except Exception` caught the "user not found" / "invalid role"
+`ValueError`s the method raises, so the route's `except ValueError -> 400` branch was
+unreachable and every validation failure surfaced as a generic failure. Now re-raised.
+
+
+---
+
+## Phase 1 completion record — 2026-08-21
+
+All ten Phase 1 tasks implemented. **Test suite: 125 passed**
+(60 new in `tests/test_security_phase1.py`, 42 Phase 0, 23 pre-existing).
+
+### What changed
+
+- **1.1 / 1.9 — session revocation and refresh rotation.** New
+  `app/services/session_revocation.py`. Access and refresh tokens now carry `iat`;
+  refresh tokens carry a unique `jti`. `get_current_user` and `get_optional_user`
+  consult a per-user revocation watermark, and `/auth/refresh` additionally
+  validates the presented `jti` against the registered one - replay of a
+  superseded refresh token revokes every session for that user. All three login
+  paths (signup, login, GitHub OAuth) mint tokens through `_issue_session()`,
+  which clears the stale watermark and registers the new refresh jti.
+  `/auth/logout` now returns **503** rather than falsely reporting success when
+  the watermark cannot be persisted.
+  *Availability trade-off, chosen deliberately:* revocation checks **fail open**
+  (a Redis outage must not log the whole product out), while OAuth state
+  verification **fails closed** (an unverifiable callback is otherwise entirely
+  unauthenticated).
+
+- **1.2 — rate limiting.** `X-Forwarded-For` is honoured only as far as
+  `TRUSTED_PROXY_COUNT`, indexing from the right so a spoofed leading hop cannot
+  shift identity; with the default of 0 the header is ignored outright.
+  `TokenBucket.consume` now propagates Redis errors so the in-memory fallback is
+  actually reachable. The middleware is installed unconditionally - it no longer
+  vanishes for the life of a process that booted during a Redis blip. Added an
+  `/api/v1/auth` bucket (20 burst, 1/5s). Authenticated callers are bucketed by
+  token digest rather than IP, since `request.state.user` is never populated
+  (auth is a route dependency, which runs after all middleware).
+
+- **1.3 — webhook SSRF.** New `app/services/url_guard.py`: https-only, rejects
+  loopback / private / link-local / multicast / reserved / unspecified addresses
+  and blocked hostnames, and rejects a hostname where *any* resolved address is
+  internal (DNS-rebinding answers). Validated at registration **and** re-validated
+  at delivery, because DNS answers change between the two.
+  `follow_redirects=False` so a 302 cannot walk past the check. `/webhooks/{id}/test`
+  passes `max_attempts=1` - the default ladder sleeps 5s + 30s + 300s, holding a
+  request-path connection open for over five minutes.
+
+- **1.4 — no tokens in the broker.** `analyze_repository_task` and
+  `auto_fix_issues_task` take `user_id`; the worker resolves and decrypts the
+  token itself via the new `app/services/github_token.py`, which
+  `dependencies.get_github_token` now shares so the two paths cannot drift.
+
+- **1.5 / 1.6 — OAuth.** New `app/services/oauth_state.py` issues single-use
+  nonces (10-minute TTL, atomic test-and-burn via DELETE). Scope narrowed from
+  `repo` (write access to every private repository) to `read:user user:email`;
+  `repo` belongs on the auto-fix flow that actually opens PRs. The callback
+  response is now typed `PublicUser` instead of `dict` - FastAPI does not filter a
+  bare dict, so the stored `github_access_token` was being serialised to the SPA
+  and written to localStorage. Frontend updated to round-trip `state`.
+
+- **1.7 — key separation.** `TOKEN_ENCRYPTION_KEY` is now used when set, with the
+  `SECRET_KEY`-derived key retained as a decrypt-only fallback, so adopting it
+  needs no migration and no re-auth stampede. Rotating `SECRET_KEY` no longer
+  orphans every stored GitHub token. The PBKDF2-with-fixed-salt construction is
+  documented as suboptimal-but-frozen: changing it invalidates existing
+  ciphertext, and the key material is high-entropy rather than a password.
+
+- **1.8 — error leakage.** New `app/api/errors.py::safe_detail` logs the exception
+  and returns a stable client-facing sentence. Applied to all 56 leaking handlers
+  across 10 route files. Two deliberate exceptions, covered by a test:
+  `UnsafeUrlError` and service-raised `ValueError` carry messages authored for
+  users. `_analyze_token_error` no longer distinguishes bad-signature from
+  malformed (a forgery oracle); expiry stays distinguishable because the SPA needs
+  it and it leaks nothing beyond the token's own `exp`.
+
+- **1.10 — verified email only.** GitHub account matching now requires
+  `verified: true`, and the synthetic fallback moved from `@github.com` (a real,
+  deliverable domain that could collide with a genuine account) to
+  `@users.noreply.github.com`.
+
+### Follow-up noted while working
+
+- `analysis.py` still writes raw exception text into `analysis_results.error_message`,
+  which is returned by the results endpoint. Same leak class as 1.8, different
+  channel. Queued for Phase 2.
+- `add_team_member` calls `find_user_by_identifier` a second time purely to echo
+  the resolved user. Harmless but a wasted round-trip; fold into Phase 2.3's
+  dependency-injection pass.
