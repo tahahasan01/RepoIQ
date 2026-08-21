@@ -11,9 +11,9 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io/)
-[![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](https://supabase.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 
-[Features](#-features) • [Demo & Screenshots](#-demo) • [Tech Stack](#-tech-stack) • [Installation](#-installation) • [Usage](#-usage) • [API](#-api-documentation)
+[Features](#-features) • [Tech Stack](#-tech-stack) • [Installation](#-installation) • [Scoring](#-how-scoring-works) • [Usage](#-usage) • [API](#-api-documentation)
 
 </div>
 
@@ -28,6 +28,7 @@
 - [System Architecture](#-system-architecture)
 - [Installation](#-installation)
 - [Configuration](#-configuration)
+- [How Scoring Works](#-how-scoring-works)
 - [Usage](#-usage)
 - [API Documentation](#-api-documentation)
 - [Project Structure](#-project-structure)
@@ -233,7 +234,7 @@
 | **Python** | 3.11+ | Language | Type hints, Async/await |
 | **Celery** | 5.4.0 | Task Queue | Background jobs, Scheduling |
 | **Redis** | 5.2.0 | Caching & Queue | Cache, Pub/Sub, Queue |
-| **Supabase** | 2.9.1 | Database | PostgreSQL, Auth, Storage |
+| **PostgreSQL** | 16 | Database | Accessed directly via psycopg 3 with a connection pool |
 | **OpenAI** | 1.54.4 | AI Analysis | GPT-4, Embeddings |
 | **GitHub API** | - | Integration | OAuth, Repos, Files |
 | **Pydantic** | 2.10.3 | Validation | Data models, Settings |
@@ -290,7 +291,7 @@
 │   Services   │    │  AI Agents   │    │ Task Queue   │
 │              │    │              │    │              │
 │ • GitHub API │    │ • Security   │    │  Celery +    │
-│ • Supabase   │    │ • Quality    │    │  Redis       │
+│ • Postgres   │    │ • Quality    │    │  Redis       │
 │ • Cache      │    │ • Architecture│   │              │
 │ • Repository │    │ • Documentation│  │ Background   │
 │              │    │ • Best Practices│ │ Analysis     │
@@ -300,7 +301,7 @@
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                  Data Layer (Supabase PostgreSQL)            │
+│                     Data Layer (PostgreSQL 16)               │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
 │  │ Users & Auth │  │ Repositories │  │  Analysis    │       │
 │  └──────────────┘  └──────────────┘  │   Results    │       │
@@ -322,10 +323,10 @@
 ### Data Flow
 
 1. **User Login**: GitHub OAuth → JWT token → Session storage
-2. **Repository Sync**: GitHub API → Supabase → Frontend cache
+2. **Repository Sync**: GitHub API → PostgreSQL → Frontend cache
 3. **Analysis Trigger**: User action → Celery task → Background processing
 4. **AI Analysis**: Code → OpenAI GPT-4 → Structured results
-5. **Results Storage**: Issues → Supabase → Redis cache → Frontend
+5. **Results Storage**: Issues → PostgreSQL → Redis cache → Frontend
 6. **Report Generation**: Analysis data → PDF rendering → Download
 
 ---
@@ -334,184 +335,291 @@
 
 ### Prerequisites
 
-- **Node.js** >= 18.0.0
+- **Node.js** >= 18
 - **Python** >= 3.11
-- **Redis** >= 6.0 (for caching)
-- **Git**
-- **GitHub Account** (for OAuth)
-- **OpenAI API Key** (for AI analysis)
-- **Supabase Account** (for database)
+- **Docker** (easiest way to get PostgreSQL and Redis)
+- **GitHub account** — to register the GitHub App
+- **OpenAI API key** — the AI review does not run without it
 
-### 1️⃣ Clone Repository
+### 1️⃣ Clone
 
 ```bash
 git clone https://github.com/tahahasan01/RepoIQ.git
 cd RepoIQ
 ```
 
-### 2️⃣ Backend Setup
+### 2️⃣ PostgreSQL and Redis
+
+The ports below are deliberately non-default so RepoIQ does not collide with
+another project already using 5432/6379. If two projects share a Redis, they
+share session tokens, rate-limit counters and Celery queues — stopping one
+breaks the other.
+
+```bash
+docker run -d --name repoiq-postgres -p 5433:5432 \
+  -e POSTGRES_USER=repoiq -e POSTGRES_PASSWORD=repoiq_dev -e POSTGRES_DB=repoiq \
+  --restart unless-stopped postgres:16-alpine
+
+docker run -d --name repoiq-redis -p 6380:6379 \
+  --restart unless-stopped redis:7-alpine
+```
+
+Load the schema:
+
+```bash
+docker exec -i repoiq-postgres psql -U repoiq -d repoiq < Backend/database/postgres_schema.sql
+```
+
+If you are upgrading an existing database rather than creating a fresh one,
+apply the migrations in `Backend/database/migrations/` in numeric order.
+
+### 3️⃣ Backend
 
 ```bash
 cd Backend
 
-# Create virtual environment
-python -m venv venv
-
-# Activate virtual environment
+python -m venv .venv
 # Windows:
-venv\Scripts\activate
+.venv\Scripts\activate
 # macOS/Linux:
-source venv/bin/activate
+source .venv/bin/activate
 
-# Install dependencies
 pip install -r requirements.txt
-
-# Create .env file
 cp .env.example .env
 ```
 
-**Edit `Backend/.env`:**
+**Edit `Backend/.env`** — the variable names below are the real ones read by
+`app/core/config.py`:
 
 ```env
 # Database
-SUPABASE_URL=your_supabase_url
-SUPABASE_KEY=your_supabase_key
-DATABASE_URL=your_database_url
+DATABASE_URL=postgresql://repoiq:repoiq_dev@localhost:5433/repoiq
 
-# Authentication
-JWT_SECRET=your_random_secret_key_here
-JWT_ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=30
+# Redis (broker, cache, rate limits, session revocation)
+REDIS_URL=redis://localhost:6380/0
 
-# GitHub OAuth
-GITHUB_CLIENT_ID=your_github_client_id
-GITHUB_CLIENT_SECRET=your_github_client_secret
-GITHUB_REDIRECT_URI=http://localhost:8000/api/v1/auth/github/callback
+# Auth — generate with: python -c "import secrets; print(secrets.token_urlsafe(64))"
+SECRET_KEY=
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+REFRESH_TOKEN_EXPIRE_DAYS=7
 
-# OpenAI
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-4
+# GitHub App (see step 5)
+GITHUB_AUTH_MODE=github_app
+GITHUB_APP_ID=
+GITHUB_APP_SLUG=
+GITHUB_APP_CLIENT_ID=
+GITHUB_APP_CLIENT_SECRET=
+GITHUB_APP_PRIVATE_KEY=
+GITHUB_REDIRECT_URI=http://localhost:8080/auth/github/callback
 
-# Redis
-REDIS_URL=redis://localhost:6379/0
+# AI
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4o-mini
 
 # CORS
-CORS_ORIGINS=["http://localhost:8081"]
-
-# Server
-DEBUG=false
-LOG_LEVEL=INFO
+ALLOWED_ORIGINS=http://localhost:8080
 ```
 
-**Start Redis:**
-
-```bash
-# Windows (with Docker)
-docker run -d -p 6379:6379 redis:latest
-
-# macOS
-brew services start redis
-
-# Linux
-sudo systemctl start redis
-```
-
-**Run Backend:**
+**Run the API:**
 
 ```bash
 python main.py
+# or: uvicorn app.main:app --reload --port 8000
 ```
 
-Backend will run on `http://localhost:8000`
+**Run the Celery worker — this is not optional:**
 
-### 3️⃣ Frontend Setup
+```bash
+celery -A app.core.celery_app worker --loglevel=info -Q celery,analysis
+# Windows also needs: --pool=solo
+```
+
+> Without a worker the API falls back to running analyses **in-process**. It
+> logs a warning and still works, but each analysis occupies an API worker for
+> its full duration and is lost on restart. Fine for a quick local look; not
+> how you should run it.
+
+Backend runs on `http://localhost:8000` — interactive docs at `/docs`.
+
+### 4️⃣ Frontend
 
 ```bash
 cd ../Frontend
-
-# Install dependencies
 npm install
-
-# Create .env file
 cp .env.example .env
 ```
 
 **Edit `Frontend/.env`:**
 
 ```env
-VITE_API_URL=http://localhost:8000/api/v1
-VITE_GITHUB_CLIENT_ID=your_github_client_id
-VITE_GITHUB_REDIRECT_URI=http://localhost:8081/auth/github/callback
+VITE_API_BASE_URL=http://localhost:8000/api/v1
 ```
-
-**Run Frontend:**
 
 ```bash
 npm run dev
 ```
 
-Frontend will run on `http://localhost:8081`
+Frontend runs on `http://localhost:8080`.
 
-### 4️⃣ GitHub OAuth Setup
+> A **production** build with `VITE_API_BASE_URL` unset fails the build on
+> purpose. It used to fall back to `localhost`, which meant the deployed site
+> loaded and then every request quietly failed against the visitor's own
+> machine.
 
-1. Go to [GitHub Developer Settings](https://github.com/settings/developers)
-2. Click **New OAuth App**
-3. Fill in:
-   - **Application name**: RepoIQ
-   - **Homepage URL**: `http://localhost:8081`
-   - **Authorization callback URL**: `http://localhost:8081/auth/github/callback`
-4. Copy **Client ID** and **Client Secret**
-5. Add to both Backend and Frontend `.env` files
+### 5️⃣ GitHub App
 
-### 5️⃣ Supabase Setup
+RepoIQ uses a **GitHub App**, not an OAuth App. An OAuth App can only ask for
+`repo` — full read *and write* access to every repository you can reach. A
+GitHub App is installed per-repository with read-only contents, so RepoIQ can
+never push, and it gets 5,000 requests/hour per installation instead of sharing
+your personal rate limit.
 
-1. Create account at [Supabase](https://supabase.com)
-2. Create new project
-3. Go to **Settings** → **API**
-4. Copy **URL** and **anon/public key**
-5. Run database migrations (SQL scripts in `Backend/database/`)
+1. Go to **Settings → Developer settings → GitHub Apps → New GitHub App**
+2. **Callback URL**: `http://localhost:8080/auth/github/callback`
+3. Enable **Request user authorization (OAuth) during installation**
+4. **Repository permissions**: Contents `Read-only`, Metadata `Read-only`,
+   Pull requests `Read-only`
+5. **Account permissions**: Email addresses `Read-only`
+6. Create the app, then note the **App ID**, **slug**, and **Client ID**
+7. **Generate a client secret** and a **private key** (`.pem`) — GitHub shows
+   each exactly once
+8. Install the app on the repositories you want analysed
+
+Load the private key into `.env` without pasting a multi-line PEM by hand:
+
+```bash
+python scripts/install_github_app_key.py path/to/key.pem
+python scripts/install_github_app_key.py --client-secret
+```
+
+It validates the key, writes it in escaped form, and shreds the source file.
+
+See `Backend/GITHUB_APP_MIGRATION.md` for the full rollout, including how to
+add a production callback URL and retire any stored OAuth tokens.
 
 ---
 
 ## ⚙️ Configuration
 
-### Environment Variables
+Every setting below is read from the environment by `Backend/app/core/config.py`.
+Nothing needs editing in code.
 
-#### Backend Configuration
+### Required
 
-| Variable | Description | Required | Default |
-|----------|-------------|----------|---------|
-| `SUPABASE_URL` | Supabase project URL | ✅ | - |
-| `SUPABASE_KEY` | Supabase API key | ✅ | - |
-| `JWT_SECRET` | Secret for JWT tokens | ✅ | - |
-| `GITHUB_CLIENT_ID` | GitHub OAuth client ID | ✅ | - |
-| `GITHUB_CLIENT_SECRET` | GitHub OAuth secret | ✅ | - |
-| `OPENAI_API_KEY` | OpenAI API key | ✅ | - |
-| `REDIS_URL` | Redis connection URL | ✅ | redis://localhost:6379 |
-| `DEBUG` | Enable debug mode | ❌ | false |
-| `LOG_LEVEL` | Logging level | ❌ | INFO |
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `SECRET_KEY` | JWT signing key — must be random and secret |
+| `OPENAI_API_KEY` | Model provider key; the AI review fails loudly without it |
+| `GITHUB_APP_ID` / `GITHUB_APP_SLUG` | From the GitHub App |
+| `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` | From the GitHub App |
+| `GITHUB_APP_PRIVATE_KEY` | The `.pem`, escaped — use the installer script |
+| `GITHUB_REDIRECT_URI` | Must match the App's callback URL exactly |
 
-#### Frontend Configuration
+### Analysis
 
-| Variable | Description | Required | Default |
-|----------|-------------|----------|---------|
-| `VITE_API_URL` | Backend API URL | ✅ | http://localhost:8000/api/v1 |
-| `VITE_GITHUB_CLIENT_ID` | GitHub OAuth client ID | ✅ | - |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANALYSIS_MAX_FILES` | `150` | Upper bound on files reviewed per run |
+| `ANALYSIS_BATCH_SIZE` | `8` | Files per AI call — fewer is more accurate, slower |
+| `ANALYSIS_MAX_FILE_BYTES` | `51200` | Files above this are skipped |
+| `ANALYSIS_EXECUTION_MODE` | `auto` | `auto` \| `celery` \| `inline` |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Tokenizer follows this automatically |
+| `OPENAI_DAILY_TOKEN_BUDGET_PER_USER` | `2000000` | Hard per-user daily ceiling |
 
-### Advanced Configuration
+### Security and limits
 
-**Cache Settings** (`Backend/app/core/config.py`):
-```python
-CACHE_TTL = 3600  # 1 hour
-CACHE_ENABLED = True
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Access token lifetime |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime |
+| `RATE_LIMIT_PER_MINUTE` | `60` | Per-IP request ceiling |
+| `ALLOWED_ORIGINS` | localhost set | Comma-separated CORS origins |
+| `ADMIN_API_KEY` | unset | Gates ops endpoints; **unset disables them (404)** |
+| `TOKEN_ENCRYPTION_KEY` | unset | Encrypts stored GitHub tokens at rest |
+| `TRUSTED_PROXY_COUNT` | `0` | Hops to trust in `X-Forwarded-For` |
+| `DEBUG` | `false` | Never enable in production |
+
+### Cache TTLs
+
+`CACHE_TTL_USER` (3600), `CACHE_TTL_REPOS` (600), `CACHE_TTL_FILES` (3600),
+`CACHE_TTL_ANALYSIS` (86400), `CACHE_TTL_ISSUES` (3600) — seconds. Analyses and
+issues are immutable once written, so they are cached for a day.
+
+---
+
+## 📊 How Scoring Works
+
+The score is the product's headline number, so it is computed by one function —
+`Backend/app/services/scoring.py` — that every analysis path calls. Full runs and
+cache-warm incremental runs produce the same number for the same findings.
+
+### From findings to a score
+
+Each finding carries a severity, and severity carries a penalty:
+
+| Severity | Penalty |
+|----------|---------|
+| Critical | 15 |
+| High | 7 |
+| Medium | 3 |
+| Low | 1 |
+| Info | 0 |
+
+Penalties accumulate per dimension, then decay exponentially:
+
+```
+score = 100 × e^(−penalty / 60)
 ```
 
-**Analysis Settings** (`Backend/app/tasks/analysis_tasks.py`):
-```python
-MAX_FILES = 15  # Files per analysis
-MAX_TOKENS = 8000  # Per file
-TIMEOUT = 90  # Seconds
+Exponential decay rather than `100 − penalty` because linear penalties saturate:
+once you hit the floor, additional findings stop changing anything — precisely
+the range where the difference matters most. Decay stays strictly monotonic
+across the whole range and can never go negative.
+
 ```
+1 critical  → 78      6 critical  → 22
+3 critical  → 47     60 critical  →  0
+```
+
+### Combining dimensions
+
+| Dimension | Weight |
+|-----------|--------|
+| Security | 35% |
+| Quality | 30% |
+| Architecture | 20% |
+| Documentation | 15% |
+
+The overall score is the weighted average **capped at 15 points above the
+weakest dimension**. A weighted average alone let sixty critical vulnerabilities
+sit behind three healthy dimensions and average out to 65 — a headline number
+that actively reassures you about a repository that should alarm you. Stated
+plainly: *a repository is never much better than its worst dimension.*
+
+### What the score is computed from
+
+Findings come from two sources:
+
+- **The AI review** — batched model passes over the source. If every batch
+  fails, the analysis is recorded as **failed**, not completed. A static-only
+  pass is never presented as a finished review.
+- **A static scanner** — regex rules for well-understood patterns
+  (`shell=True`, f-string SQL, hardcoded secrets). Rules are gated by language,
+  so Python rules do not fire on SQL or JavaScript, and each rule reports at
+  most once per line.
+
+The model's own self-assessment is deliberately discarded. Scores are derived
+only from findings, so the same finding is never penalised twice and any number
+can be explained by the list that produced it.
+
+### A caveat worth knowing
+
+An analysis reviews a **sample** — up to `ANALYSIS_MAX_FILES` (default 150),
+chosen by importance. The result carries `files_analyzed` and
+`ai_batches_succeeded` / `ai_batches_total` so partial coverage can be
+disclosed. The score is absolute, not normalised by repository size: treat it
+as a verdict on what was reviewed, not proof about every file in the repo.
 
 ---
 
@@ -917,13 +1025,28 @@ Layer 3: Database (< 500ms)
 ### Running Tests
 
 ```bash
-# Backend tests
 cd Backend
-pytest
+pytest                                   # 386 tests
+pytest tests/test_scoring.py -v          # scoring properties
+pytest tests/test_analysis_integrity.py  # scanner precision, failure honesty
+```
 
-# Frontend tests
+Tests are hermetic: `conftest.py` points `REPOIQ_ENV_FILE` at a path that does
+not exist, so a stray `.env` cannot change a result. Fixtures that truncate
+tables assert they are pointed at a disposable database first — an earlier
+version wiped the development database.
+
+If you want the database-backed tests, create the test database once:
+
+```bash
+docker exec repoiq-postgres psql -U repoiq -d postgres -c "CREATE DATABASE repoiq_test;"
+docker exec -i repoiq-postgres psql -U repoiq -d repoiq_test < Backend/database/postgres_schema.sql
+```
+
+```bash
 cd Frontend
-npm test
+npx tsc --noEmit    # typecheck
+npm run build       # production build
 ```
 
 ### Code Quality
@@ -993,7 +1116,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **OpenAI** - GPT-4 API for intelligent code analysis
 - **GitHub** - OAuth and API for repository access
-- **Supabase** - Database and authentication
+- **PostgreSQL** - Database
 - **Vercel** - Inspiration for UI/UX design
 - **Shadcn/ui** - Beautiful component library
 
