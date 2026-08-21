@@ -527,15 +527,25 @@ class ApiClient {
     return this.request<any>(`/github/disconnect`, { method: 'POST' });
   }
 
-  async githubCallback(code: string, state?: string | null) {
+  async githubCallback(
+    code: string,
+    state?: string | null,
+    installationId?: string | null
+  ) {
     // `state` is the CSRF nonce issued by /auth/github/authorize and echoed back
     // by GitHub. The backend burns it on first use.
+    //
+    // `installation_id` is only present in GitHub App mode, on the callback
+    // after a fresh install. The backend needs it to record which installation
+    // belongs to this user; without it, login succeeds but every repository
+    // call then fails because there is no installation to mint a token from.
+    const body: Record<string, string> = { code };
+    if (state) body.state = state;
+    if (installationId) body.installation_id = installationId;
+
     return this.request<{ access_token: string; refresh_token: string; user?: any }>(
       '/auth/github/callback',
-      {
-        method: 'POST',
-        body: JSON.stringify(state ? { code, state } : { code }),
-      }
+      { method: 'POST', body: JSON.stringify(body) }
     );
   }
 

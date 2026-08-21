@@ -20,6 +20,14 @@ sys.path.insert(0, backend_dir_str)
 print(f"[TEST SETUP] Added to sys.path: {backend_dir_str}", file=sys.stderr)
 print(f"[TEST SETUP] Full sys.path: {sys.path[:3]}...", file=sys.stderr)
 
+# Isolate the suite from any local .env.
+#
+# pydantic-settings reads .env by default, so once a developer configures the
+# app for real, tests start reading their configuration and results diverge from
+# a clean checkout. Pointing at a path that cannot exist makes the suite depend
+# only on what is set explicitly below.
+os.environ["REPOIQ_ENV_FILE"] = str(backend_dir / "does-not-exist.env")
+
 # Set environment variables for testing
 os.environ.setdefault("SECRET_KEY", "test_secret_key_for_testing_12345678901234567890")
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")

@@ -68,7 +68,15 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen grid md:grid-cols-2 bg-gradient-to-br from-background via-background to-purple-950/20">
+    // ACCESSIBILITY: this page is designed dark - the card, the quote panel and
+    // every text colour below are hardcoded dark-theme classes (bg-gray-900/40,
+    // text-gray-400, text-white). The background used `from-background`, which
+    // follows the OS theme, so on a light-mode machine the dark card rendered
+    // over a light page and the body text became grey-on-grey - effectively
+    // unreadable on the first screen every user sees. Pinning the surface dark
+    // matches the rest of the page rather than leaving the two halves to
+    // disagree. Making the whole page theme-aware would be the fuller fix.
+    <div className="min-h-screen grid md:grid-cols-2 bg-gradient-to-br from-gray-950 via-gray-900 to-purple-950/40">
       <div className="relative overflow-hidden bg-gradient-to-br from-teal-600/20 via-teal-500/10 to-transparent hidden md:flex items-center justify-center">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_50%,rgba(6,182,212,0.15),transparent_50%)]" />
         <div className="relative w-full max-w-xl px-12 space-y-8">

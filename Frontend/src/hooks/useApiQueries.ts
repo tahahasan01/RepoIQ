@@ -88,12 +88,27 @@ export const queryKeys = {
 // ============================================
 
 export function useCurrentUser(options?: Partial<UseQueryOptions<any>>) {
+  // Only ask who the user is when there is a token to ask with.
+  //
+  // This hook runs from usePrefetchOnLogin, which is mounted app-wide - so on
+  // the landing and login pages it fired GET /auth/me with no credentials,
+  // collected a 403, retried, and logged "Session expired. Please log in again."
+  // twice in the console of a page where being logged out is the expected
+  // state. Wasted round trips, and console noise that hides real errors.
+  let hasToken = false;
+  try {
+    hasToken = Boolean(localStorage.getItem('token'));
+  } catch {
+    hasToken = false;
+  }
+
   return useQuery({
     queryKey: queryKeys.currentUser,
     queryFn: () => apiClient.getCurrentUser(),
     staleTime: 5 * 60 * 1000, // 5 minutes
     gcTime: 30 * 60 * 1000, // 30 minutes
     retry: 1,
+    enabled: hasToken,
     ...options,
   });
 }

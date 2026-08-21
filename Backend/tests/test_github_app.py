@@ -374,3 +374,164 @@ class TestAppClientCredentialsAreSeparate:
         source = inspect.getsource(github_app.exchange_user_code)
         assert "app_client_credentials()" in source
         assert "settings.GITHUB_CLIENT_SECRET" not in source
+
+
+class TestAppModeRepositoryLoading:
+    """
+    Found by running the real thing: an installation token cannot call GET /user,
+    so GitHubService.get_repositories() 403'd and the dashboard was empty after a
+    successful login. Verified live against api.github.com.
+    """
+
+    def test_installation_tokens_are_detected(self):
+        from app.services.github_service import GitHubService
+
+        svc = GitHubService.__new__(GitHubService)
+        svc.access_token = "ghs_installationtoken"
+        assert svc._is_installation_token() is True
+
+        svc.access_token = "gho_useroauthtoken"
+        assert svc._is_installation_token() is False
+
+    def test_get_repositories_avoids_get_user_for_installations(self):
+        import inspect
+        from app.services.github_service import GitHubService
+
+        source = inspect.getsource(GitHubService.get_repositories)
+        assert "_is_installation_token()" in source
+        assert "_get_installation_repositories" in source
+
+    def test_installation_repository_shape_matches_the_oauth_path(self):
+        from app.services.github_service import GitHubService
+
+        payload = {
+            "id": 1, "name": "r", "full_name": "o/r", "private": True,
+            "html_url": "https://github.com/o/r", "description": None,
+            "language": "Python", "stargazers_count": 3, "forks_count": 1,
+            "open_issues_count": 2, "default_branch": "main",
+            "created_at": "x", "updated_at": "y", "size": 10,
+        }
+        shaped = GitHubService._format_installation_repository(payload)
+
+        assert set(shaped) == {
+            "id", "name", "full_name", "private", "description", "url", "language",
+            "stars", "forks", "open_issues", "default_branch", "created_at",
+            "updated_at", "size",
+        }
+        assert shaped["stars"] == 3 and shaped["private"] is True
+
+    def test_missing_default_branch_falls_back(self):
+        """An empty repo reports default_branch as null."""
+        from app.services.github_service import GitHubService
+
+        shaped = GitHubService._format_installation_repository(
+            {"id": 1, "name": "r", "full_name": "o/r", "private": False,
+             "html_url": "u", "default_branch": None}
+        )
+        assert shaped["default_branch"] == "main"
+
+
+class TestEmptyRepositoriesDoNotCrashAnalysis:
+    """
+    Found by running the real thing: clicking Analyze on a repository with no
+    commits raised an unhandled GithubException. Users own empty repos and they
+    appear in the list like any other.
+    """
+
+    def test_409_empty_repository_is_recognised(self):
+        from github import GithubException
+        from app.services.github_service import _is_empty_repository
+
+        exc = GithubException(409, {"message": "Git Repository is empty."}, None)
+        assert _is_empty_repository(exc) is True
+
+    def test_404_empty_repository_is_recognised(self):
+        from github import GithubException
+        from app.services.github_service import _is_empty_repository
+
+        exc = GithubException(404, {"message": "This repository is empty."}, None)
+        assert _is_empty_repository(exc) is True
+
+    def test_ordinary_404_is_not_treated_as_empty(self):
+        from github import GithubException
+        from app.services.github_service import _is_empty_repository
+
+        exc = GithubException(404, {"message": "Not Found"}, None)
+        assert _is_empty_repository(exc) is False
+
+
+class TestPermissionErrorsAreNotRetried:
+    """
+    Found by running the real thing: a 403 permission denial was retried three
+    times with exponential backoff - 7 seconds of delay before surfacing a
+    failure that could never succeed.
+    """
+
+    def test_permission_denial_is_not_retryable(self):
+        from github import GithubException
+        from app.services.github_service import _is_permission_error
+
+        exc = GithubException(403, {"message": "Resource not accessible by integration"}, None)
+        assert _is_permission_error(exc) is True
+
+    def test_rate_limit_is_still_retryable(self):
+        from github import GithubException
+        from app.services.github_service import _is_permission_error
+
+        exc = GithubException(403, {"message": "API rate limit exceeded"}, None)
+        assert _is_permission_error(exc) is False
+
+
+class TestCallbackRecordsTheInstallation:
+    """
+    Found by tracing the flow: nothing wrote github_installation_id, so an App
+    login succeeded and then every repository call failed with "the GitHub App
+    is not installed for this account".
+    """
+
+    def test_auth_service_has_an_app_login_path(self):
+        from app.services.auth_service import AuthService
+
+        assert hasattr(AuthService, "github_app_login")
+
+    def test_app_login_persists_the_installation_id(self):
+        import inspect
+        from app.services.auth_service import AuthService
+
+        source = inspect.getsource(AuthService.github_app_login)
+        assert '"github_installation_id"' in source
+
+    def test_app_login_stores_no_long_lived_token(self):
+        """The entire point of the migration."""
+        import inspect
+        from app.services.auth_service import AuthService
+
+        source = inspect.getsource(AuthService.github_app_login)
+        assert '"github_access_token"' not in source
+
+    def test_callback_routes_to_the_app_path_when_enabled(self):
+        import inspect
+        from app.api.routes import auth
+
+        source = inspect.getsource(auth.github_callback)
+        assert "github_app.is_enabled()" in source
+        assert "github_app_login" in source
+
+    def test_callback_accepts_installation_id(self):
+        from app.api.routes.auth import GitHubCallbackRequest
+
+        assert "installation_id" in GitHubCallbackRequest.model_fields
+
+
+class TestWorkerLoggingIsConfigured:
+    """
+    Found by running the real thing: the Celery worker never called
+    setup_logging(), so emoji log lines raised UnicodeEncodeError mid-task.
+    Now that analyses run on Celery, this is the path that matters.
+    """
+
+    def test_celery_app_configures_logging(self):
+        import inspect
+        from app.core import celery_app
+
+        assert "setup_logging()" in inspect.getsource(celery_app)

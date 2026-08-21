@@ -12,6 +12,41 @@ settings = get_settings()
 logger = get_logger(__name__)
 
 
+def _is_empty_repository(exc: GithubException) -> bool:
+    """
+    Whether this error means "the repository has no commits yet".
+
+    GitHub reports it as 409 from the trees API and 404 from the contents API,
+    both with a message saying the repository is empty. It is a perfectly normal
+    state for a repo a user owns and clicks Analyze on, so it must produce an
+    empty result rather than an exception.
+    """
+    if exc.status not in (404, 409):
+        return False
+    data = getattr(exc, "data", None)
+    message = str(data.get("message", "")) if isinstance(data, dict) else str(exc)
+    return "empty" in message.lower()
+
+
+def _is_permission_error(exc: GithubException) -> bool:
+    """
+    Distinguish a permanent 403 from a rate-limit 403.
+
+    GitHub uses 403 for both. A rate limit says "rate limit exceeded" or carries
+    a retry-after; a permission denial says "Resource not accessible by
+    integration" or "Forbidden". Only the former is worth retrying.
+    """
+    message = ""
+    data = getattr(exc, "data", None)
+    if isinstance(data, dict):
+        message = str(data.get("message", ""))
+    message = (message or str(exc)).lower()
+
+    if "rate limit" in message or "abuse" in message or "secondary rate" in message:
+        return False
+    return "not accessible" in message or "forbidden" in message or "permission" in message
+
+
 def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0):
     """Decorator for exponential backoff retry on transient failures."""
     def decorator(func):
@@ -22,6 +57,15 @@ def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0):
                 try:
                     return func(*args, **kwargs)
                 except GithubException as e:
+                    # GitHub returns 403 for BOTH rate limiting and permission
+                    # denial. Retrying a permission error is pointless - it will
+                    # never start working - and costs 7 seconds of backoff before
+                    # surfacing the real problem. Observed live: an installation
+                    # token calling GET /user retried three times before failing.
+                    if e.status == 403 and _is_permission_error(e):
+                        logger.error(f"Permission denied by GitHub, not retrying: {e.data}")
+                        raise
+
                     # Retry on rate limit (403), server errors (5xx), or timeouts
                     if e.status in [403, 429, 500, 502, 503, 504]:
                         last_exception = e
@@ -101,8 +145,95 @@ class GitHubService:
         self.redis.set(cache_key, user_info, ttl=3600)
         return user_info
     
+    def _is_installation_token(self) -> bool:
+        """
+        Whether this service holds a GitHub App installation token.
+
+        Installation tokens use the documented `ghs_` prefix. They are NOT user
+        tokens: GET /user returns 403 "Resource not accessible by integration",
+        so any code path that starts from `client.get_user()` fails outright.
+        """
+        return bool(self.access_token) and self.access_token.startswith("ghs_")
+
+    def _get_installation_repositories(self, per_page: int = 30) -> List[Dict[str, Any]]:
+        """
+        Repositories this installation was granted, via /installation/repositories.
+
+        A GitHub App only ever sees the repositories the user selected at install
+        time, so there is no "all repos for this user" to enumerate - the
+        installation itself is the scope.
+        """
+        repos: List[Dict[str, Any]] = []
+        page = 1
+
+        while len(repos) < per_page:
+            response = httpx.get(
+                "https://api.github.com/installation/repositories",
+                params={"per_page": min(100, per_page - len(repos)), "page": page},
+                headers={
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                timeout=30.0,
+            )
+            if response.status_code != 200:
+                raise GithubException(
+                    response.status_code,
+                    {"message": "Could not list installation repositories"},
+                    None,
+                )
+
+            batch = response.json().get("repositories", [])
+            if not batch:
+                break
+
+            repos.extend(self._format_installation_repository(r) for r in batch)
+            if len(batch) < 100:
+                break
+            page += 1
+
+        return repos[:per_page]
+
+    @staticmethod
+    def _format_installation_repository(repo: Dict[str, Any]) -> Dict[str, Any]:
+        """Shape a REST repository payload like _format_repository does for PyGithub."""
+        return {
+            "id": repo["id"],
+            "name": repo["name"],
+            "full_name": repo["full_name"],
+            "private": repo["private"],
+            "description": repo.get("description"),
+            "url": repo["html_url"],
+            "language": repo.get("language"),
+            "stars": repo.get("stargazers_count", 0),
+            "forks": repo.get("forks_count", 0),
+            "open_issues": repo.get("open_issues_count", 0),
+            "default_branch": repo.get("default_branch") or "main",
+            "created_at": repo.get("created_at"),
+            "updated_at": repo.get("updated_at"),
+            "size": repo.get("size", 0),
+        }
+
     @retry_with_backoff(max_retries=3, base_delay=1.0)
     def get_repositories(self, page: int = 1, per_page: int = 30) -> List[Dict[str, Any]]:
+        # GitHub App mode: an installation token cannot call GET /user, so the
+        # whole get_user().get_repos() path 403s. Verified against live GitHub:
+        # without this branch, sync returns zero repositories and the dashboard
+        # is empty after a successful login.
+        if self._is_installation_token():
+            cache_key = f"github:installrepos:{hash(self.access_token) & 0xffffffff}:{page}:{per_page}"
+            cached = self.redis.get(cache_key)
+            if cached:
+                return cached
+
+            repos = self._get_installation_repositories(per_page=per_page)
+            # Short TTL: the user can change which repositories are granted at
+            # any time from GitHub, and that must show up quickly.
+            self.redis.set(cache_key, repos, ttl=300)
+            logger.info(f"✅ Fetched {len(repos)} repositories from the installation")
+            return repos
+
         if not self.user:
             self.user = self.client.get_user()
         
@@ -172,16 +303,28 @@ class GitHubService:
         
         try:
             repo = self.client.get_repo(full_name)
-            
+
             # Use Git Trees API with recursive=True for SINGLE API call
             # This is MUCH faster than recursive get_contents calls
             try:
                 tree = repo.get_git_tree(branch, recursive=True)
-            except GithubException:
+            except GithubException as first_error:
+                # An empty repository (no commits) is a normal thing for a user
+                # to own and click Analyze on. GitHub answers 409 "Git Repository
+                # is empty" here and 404 "This repository is empty" from the
+                # contents fallback, so without this the whole analysis died with
+                # an unhandled GithubException. Verified against a real empty repo.
+                if _is_empty_repository(first_error):
+                    logger.info(f"{full_name} is empty - nothing to analyse")
+                    return []
+
                 # Fallback to master branch
                 try:
                     tree = repo.get_git_tree("master", recursive=True)
                 except GithubException as e:
+                    if _is_empty_repository(e):
+                        logger.info(f"{full_name} is empty - nothing to analyse")
+                        return []
                     logger.error(f"Failed to get tree for {full_name}: {e}")
                     # Fallback to old method if Trees API fails
                     return self._get_files_recursive(full_name, branch, path)
@@ -214,7 +357,9 @@ class GitHubService:
             
             try:
                 contents = repo.get_contents(path, ref=branch)
-            except:
+            except GithubException as e:
+                if _is_empty_repository(e):
+                    return []
                 contents = repo.get_contents(path, ref="master")
             
             files = []

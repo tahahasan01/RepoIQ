@@ -1,7 +1,16 @@
 from celery import Celery
 from .config import get_settings
+from .logging import setup_logging
 
 settings = get_settings()
+
+# The worker is a separate process with its own module-level state, so it needs
+# the same logging setup main.py does. Without it structlog stays unconfigured:
+# filter_by_level never applies (every logger.debug in the analysis path prints)
+# and the ~124 emoji-bearing log statements raise UnicodeEncodeError on a
+# non-UTF-8 stream - which, inside a task, kills the analysis. Now that analyses
+# run on Celery rather than in the API process, this is the path that matters.
+setup_logging()
 
 celery_app = Celery(
     "coderabbit",

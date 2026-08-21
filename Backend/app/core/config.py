@@ -1,3 +1,5 @@
+import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Optional
 from functools import lru_cache
@@ -157,8 +159,15 @@ class Settings(BaseSettings):
     def api_prefix(self) -> str:
         return self.API_V1_PREFIX
     
+    # REPOIQ_ENV_FILE lets a caller point at a different env file, or at none.
+    #
+    # The test suite sets it to a path that does not exist, so tests read only
+    # the variables conftest sets explicitly. Without that, results depend on
+    # whatever .env the developer happens to have locally - a suite that passes
+    # on a clean checkout and fails once someone configures the app is worse
+    # than no suite, because it trains people to ignore failures.
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.getenv("REPOIQ_ENV_FILE", ".env"),
         case_sensitive=True,
         extra="ignore",
     )

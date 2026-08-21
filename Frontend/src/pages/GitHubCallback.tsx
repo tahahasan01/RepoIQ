@@ -27,6 +27,8 @@ export default function GitHubCallback() {
       const params = new URLSearchParams(window.location.search);
       const code = params.get("code");
       const state = params.get("state");
+      // Present only in GitHub App mode, after a fresh installation.
+      const installationId = params.get("installation_id");
       const error = params.get("error");
 
       if (error) {
@@ -49,7 +51,7 @@ export default function GitHubCallback() {
         window.history.replaceState({}, document.title, window.location.pathname);
         
         const startTime = performance.now();
-        const response = await apiClient.githubCallback(code, state);
+        const response = await apiClient.githubCallback(code, state, installationId);
         console.log(`[GitHub OAuth] Token exchange took ${Math.round(performance.now() - startTime)}ms`);
         
         // Store tokens IMMEDIATELY

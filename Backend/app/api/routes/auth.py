@@ -51,6 +51,9 @@ class GitHubCallbackRequest(BaseModel):
     # Optional for one release so sessions started before this change can still
     # complete. Make it required once clients are updated - see AUDIT.md H-11.
     state: Optional[str] = None
+    # GitHub passes this on the callback after a fresh App installation. Absent
+    # on a returning login, in which case it is looked up from the user token.
+    installation_id: Optional[str] = None
 
 
 class RefreshTokenRequest(BaseModel):
@@ -129,10 +132,24 @@ async def github_callback(callback_data: GitHubCallbackRequest):
             detail="This login link is no longer valid. Please start a new GitHub login."
         )
 
+    from app.services import github_app
+
     auth_service = AuthService()
 
     try:
-        result = await auth_service.github_oauth(callback_data.code)
+        # GitHub App mode needs its own completion path: the code is exchanged
+        # with the App's client credentials (not the OAuth App's), and what gets
+        # persisted is the installation id rather than a long-lived repo token.
+        # Without this branch, App logins succeeded and then every repository
+        # call failed with "the GitHub App is not installed for this account",
+        # because nothing ever wrote github_installation_id.
+        if github_app.is_enabled():
+            result = await auth_service.github_app_login(
+                callback_data.code,
+                callback_data.installation_id,
+            )
+        else:
+            result = await auth_service.github_oauth(callback_data.code)
 
         # github_oauth already returns user data, so we include it in the response
         return TokenWithUserResponse(

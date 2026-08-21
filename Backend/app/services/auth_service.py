@@ -447,6 +447,108 @@ class AuthService:
             logger.error(f"GitHub OAuth failed: {str(e)}")
             raise
     
+    async def github_app_login(
+        self, code: str, installation_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Complete a GitHub App sign-in.
+
+        The counterpart to github_oauth() for GITHUB_AUTH_MODE=app. The important
+        difference is what is NOT stored: no long-lived `repo`-scoped token ever
+        touches the database. All that persists is which installation belongs to
+        this user; repository access is a one-hour token minted on demand from
+        the app's private key.
+
+        The user token obtained here is used only to establish identity, and is
+        discarded when this function returns.
+        """
+        import uuid
+        from app.services import github_app
+
+        # 1. Identity. Uses the GitHub App's own client credentials, which are
+        #    distinct from the OAuth App's.
+        token_data = await github_app.exchange_user_code(code)
+        user_token = token_data.get("access_token")
+        if not user_token:
+            raise Exception("GitHub did not return a user token")
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
+            headers = {"Authorization": f"Bearer {user_token}",
+                       "Accept": "application/vnd.github+json"}
+            user_response, email_response = await asyncio.gather(
+                client.get("https://api.github.com/user", headers=headers),
+                client.get("https://api.github.com/user/emails", headers=headers),
+            )
+
+        github_user = user_response.json()
+        github_username = github_user.get("login")
+        if not github_username:
+            raise Exception("Could not read the GitHub profile")
+
+        # SECURITY: only a verified address may match an existing account - see
+        # the same reasoning in github_oauth().
+        emails = email_response.json()
+        email = github_user.get("email")
+        if not email and isinstance(emails, list):
+            primary = next((e for e in emails if e.get("primary") and e.get("verified")), None)
+            primary = primary or next((e for e in emails if e.get("verified")), None)
+            email = primary["email"] if primary else f"{github_username}@users.noreply.github.com"
+
+        # 2. Which installation is this user's. GitHub passes installation_id on
+        #    the callback after a fresh install; on a returning login it does
+        #    not, so fall back to asking.
+        if not installation_id:
+            installation_id = await github_app.get_user_installation_id(user_token)
+
+        if not installation_id:
+            raise Exception(
+                "The GitHub App is not installed for this account. Please install "
+                "it and choose which repositories to grant access to."
+            )
+
+        # 3. Upsert. Note github_access_token is deliberately absent.
+        existing = await _retry_db_operation(
+            lambda: self.service_db.table("users").select("*")
+            .eq("github_username", github_username).execute()
+        )
+        record = existing.data[0] if existing.data else None
+
+        if not record:
+            by_email = await _retry_db_operation(
+                lambda: self.service_db.table("users").select("*").eq("email", email).execute()
+            )
+            record = by_email.data[0] if by_email.data else None
+
+        payload = {
+            "github_username": github_username,
+            "github_installation_id": str(installation_id),
+            "github_connected": True,
+            "avatar_url": github_user.get("avatar_url"),
+            "full_name": github_user.get("name") or (record or {}).get("full_name"),
+        }
+
+        if record:
+            await _retry_db_operation(
+                lambda: self.service_db.table("users").update(payload)
+                .eq("id", record["id"]).execute()
+            )
+            self.invalidate_user_cache(record["id"])
+            user = {**record, **payload}
+        else:
+            user = {"id": str(uuid.uuid4()), "email": email, "bio": github_user.get("bio"), **payload}
+            await _retry_db_operation(
+                lambda: self.service_db.table("users").insert(user).execute()
+            )
+
+        session = _issue_session(user["id"], email)
+        logger.info(f"GitHub App login complete for {redact_sensitive(user['id'])}")
+
+        return {
+            "user": user,
+            "access_token": session["access_token"],
+            "refresh_token": session["refresh_token"],
+        }
+
     async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         """
         Fetch a user record.
