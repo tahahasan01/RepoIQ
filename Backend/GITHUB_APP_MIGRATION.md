@@ -1,8 +1,8 @@
 # Migrating from an OAuth App to a GitHub App
 
-**Status: the code is built and tested. Only the registration is outstanding** —
-that requires an application registered under your GitHub account, which cannot be
-done from the codebase.
+**Status: the app is registered and the code is built and tested.** What remains
+is generating the two secrets (private key, client secret) and flipping the flag —
+see "What you still need to do" below.
 
 Everything is behind `GITHUB_AUTH_MODE`, which defaults to `oauth`. Nothing changes
 until you flip it, and flipping it back is a one-line revert.
@@ -15,8 +15,8 @@ Already implemented:
 | Token resolution routed through the app when enabled | `app/services/github_token.py` |
 | Install URL served from the login endpoint | `app/api/routes/auth.py` |
 | `users.github_installation_id` column | `database/migrations/003_github_app_installations.sql` |
-| Config | `GITHUB_AUTH_MODE`, `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY` |
-| Tests | `tests/test_github_app.py` — 22 tests |
+| Config | `GITHUB_AUTH_MODE`, `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY` |
+| Tests | `tests/test_github_app.py` — 26 tests |
 
 The PEM is accepted either as a literal key or with escaped newlines, because
 Railway, Vercel and Docker env vars cannot hold real newlines — a pasted PEM
@@ -65,7 +65,73 @@ every user shares their own 5,000/hr budget with every other tool they have
 authorised. Under a GitHub App each installation gets its own budget, so
 throughput scales with the number of customers instead of competing with them.
 
-## Registration (you must do this)
+## The app is registered
+
+Created 2026-08-21 under the personal account **@tahahasan01**.
+
+| | |
+|---|---|
+| Name | RepoIQ Code Intelligence |
+| Slug | `repoiq-code-intelligence` |
+| App ID | `4673401` |
+| Client ID | `Iv23liI2R5feYNQ42ohU` |
+| Install page | https://github.com/apps/repoiq-code-intelligence |
+| Settings | https://github.com/settings/apps/repoiq-code-intelligence |
+
+None of the above is secret — App ID and Client ID appear in URLs and JWT claims.
+The two secrets, **the private key and the client secret, have not been generated
+yet**; see "What you still need to do".
+
+Permissions granted (nothing else):
+
+| Permission | Level | Why |
+|---|---|---|
+| Repository → Contents | Read-only | Reading files to analyse |
+| Repository → Metadata | Read-only | Mandatory, granted automatically |
+| Repository → Pull requests | Read and write | Auto-fix opens PRs |
+| Account → Email addresses | Read-only | Sign-in identity |
+
+Other settings:
+
+- **Any account** — installable by your users, not just you.
+- **Request user authorization (OAuth) during installation** — enabled, so
+  install and sign-in are one flow. The code depends on this.
+- **Expire user authorization tokens** — enabled. User tokens are short-lived.
+- **Webhook** — disabled. RepoIQ does not consume GitHub webhooks; its own
+  webhook feature is outbound to user-supplied endpoints, which is unrelated.
+- **Callback URL** — `http://localhost:8080/auth/github/callback`. Add the
+  production URL under "Identifying and authorizing users" before deploying.
+
+## What you still need to do
+
+1. **Generate the private key.**
+   https://github.com/settings/apps/repoiq-code-intelligence#private-key →
+   *Generate a private key*. GitHub downloads a `.pem` **once**. Put it straight
+   into your secret store as `GITHUB_APP_PRIVATE_KEY` and delete the downloaded
+   file. Escaped newlines are supported, so pasting it as a single line is fine.
+
+2. **Generate a client secret.** Same settings page → *Generate a new client
+   secret* → `GITHUB_APP_CLIENT_SECRET`. This is what exchanges the
+   user-authorization code at sign-in.
+
+3. **Run the migration**:
+   `database/migrations/003_github_app_installations.sql`.
+
+4. **Set the env vars** (staging first):
+
+   ```
+   GITHUB_AUTH_MODE=app
+   GITHUB_APP_ID=4673401
+   GITHUB_APP_SLUG=repoiq-code-intelligence
+   GITHUB_APP_CLIENT_ID=Iv23liI2R5feYNQ42ohU
+   GITHUB_APP_CLIENT_SECRET=<from step 2>
+   GITHUB_APP_PRIVATE_KEY=<from step 1>
+   ```
+
+5. **Install it on your own account** from the install page and verify a login
+   end to end before exposing it to users.
+
+## Original registration steps (for reference)
 
 1. **Settings → Developer settings → GitHub Apps → New GitHub App**
 2. Permissions — request only these:

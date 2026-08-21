@@ -326,3 +326,51 @@ class TestMigrationIsContained:
         assert migration.exists()
         text = migration.read_text(encoding="utf-8")
         assert "github_installation_id" in text
+
+
+class TestAppClientCredentialsAreSeparate:
+    """
+    A GitHub App issues its own OAuth client id/secret, distinct from the OAuth
+    App's. During migration both paths are live, so sharing one pair would break
+    whichever cohort was not configured.
+    """
+
+    def test_app_credentials_are_preferred(self, monkeypatch):
+        from app.services import github_app
+
+        monkeypatch.setattr(github_app.settings, "GITHUB_APP_CLIENT_ID", "Iv23app", raising=False)
+        monkeypatch.setattr(github_app.settings, "GITHUB_APP_CLIENT_SECRET", "app-secret", raising=False)
+        monkeypatch.setattr(github_app.settings, "GITHUB_CLIENT_ID", "oauth-id", raising=False)
+        monkeypatch.setattr(github_app.settings, "GITHUB_CLIENT_SECRET", "oauth-secret", raising=False)
+
+        assert github_app.app_client_credentials() == ("Iv23app", "app-secret")
+
+    def test_falls_back_to_oauth_credentials_after_full_cutover(self, monkeypatch):
+        from app.services import github_app
+
+        monkeypatch.setattr(github_app.settings, "GITHUB_APP_CLIENT_ID", None, raising=False)
+        monkeypatch.setattr(github_app.settings, "GITHUB_APP_CLIENT_SECRET", None, raising=False)
+        monkeypatch.setattr(github_app.settings, "GITHUB_CLIENT_ID", "oauth-id", raising=False)
+        monkeypatch.setattr(github_app.settings, "GITHUB_CLIENT_SECRET", "oauth-secret", raising=False)
+
+        assert github_app.app_client_credentials() == ("oauth-id", "oauth-secret")
+
+    def test_missing_credentials_raise_clearly(self, monkeypatch):
+        from app.services import github_app
+
+        for name in (
+            "GITHUB_APP_CLIENT_ID", "GITHUB_APP_CLIENT_SECRET",
+            "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET",
+        ):
+            monkeypatch.setattr(github_app.settings, name, None, raising=False)
+
+        with pytest.raises(github_app.GitHubAppNotConfigured, match="CLIENT"):
+            github_app.app_client_credentials()
+
+    def test_exchange_uses_the_helper_not_the_oauth_settings(self):
+        import inspect
+        from app.services import github_app
+
+        source = inspect.getsource(github_app.exchange_user_code)
+        assert "app_client_credentials()" in source
+        assert "settings.GITHUB_CLIENT_SECRET" not in source

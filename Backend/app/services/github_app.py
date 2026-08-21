@@ -73,6 +73,28 @@ def _private_key() -> str:
     return key
 
 
+def app_client_credentials() -> tuple:
+    """
+    The GitHub App's own OAuth client id and secret.
+
+    A GitHub App issues its own pair, separate from the OAuth App's. During
+    migration both paths are live - existing users authenticate against the OAuth
+    App, new users install the GitHub App - so reusing one pair would break
+    whichever cohort was not configured.
+
+    Falls back to the OAuth values so a deployment that has fully cut over need
+    not set them twice.
+    """
+    client_id = settings.GITHUB_APP_CLIENT_ID or settings.GITHUB_CLIENT_ID
+    client_secret = settings.GITHUB_APP_CLIENT_SECRET or settings.GITHUB_CLIENT_SECRET
+
+    if not (client_id and client_secret):
+        raise GitHubAppNotConfigured(
+            "GITHUB_APP_CLIENT_ID / GITHUB_APP_CLIENT_SECRET are not set"
+        )
+    return client_id, client_secret
+
+
 def create_app_jwt() -> str:
     """
     Mint a short-lived JWT signed with the app's private key.
@@ -225,12 +247,14 @@ async def exchange_user_code(code: str) -> Dict[str, Any]:
     ONLY to identify who is signing in - repository access comes from the
     installation token, never from this.
     """
+    client_id, client_secret = app_client_credentials()
+
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
         response = await client.post(
             "https://github.com/login/oauth/access_token",
             data={
-                "client_id": settings.GITHUB_CLIENT_ID,
-                "client_secret": settings.GITHUB_CLIENT_SECRET,
+                "client_id": client_id,
+                "client_secret": client_secret,
                 "code": code,
                 "redirect_uri": settings.GITHUB_REDIRECT_URI,
             },

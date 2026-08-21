@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     GITHUB_AUTH_MODE: str = "oauth"
     GITHUB_APP_ID: Optional[str] = None
     GITHUB_APP_SLUG: Optional[str] = None
+    # A GitHub App has its OWN client id/secret, distinct from the OAuth App's.
+    # They must be separate settings rather than reusing GITHUB_CLIENT_ID/SECRET,
+    # because during migration both paths run at once: existing users still
+    # authenticate against the OAuth App while new users install the GitHub App.
+    # Sharing one pair would break whichever cohort was not currently configured.
+    # Falls back to the OAuth values when unset, so a deployment that has fully
+    # cut over does not need to set them twice.
+    GITHUB_APP_CLIENT_ID: Optional[str] = None
+    GITHUB_APP_CLIENT_SECRET: Optional[str] = None
     # PEM private key. Secret stores usually cannot hold real newlines, so an
     # escaped-newline form is accepted and normalised.
     GITHUB_APP_PRIVATE_KEY: Optional[str] = None
