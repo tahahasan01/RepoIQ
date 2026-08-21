@@ -86,6 +86,16 @@ export default function GitHubCallback() {
           });
         }
       } catch (err: any) {
+        // Signed in, but the GitHub App is not installed yet. That is a normal
+        // first-run state rather than an error: send the user to install it
+        // instead of dropping them on the login page with a failure message.
+        const detail = err?.detail ?? err?.response?.data?.detail;
+        if (detail?.action === "install" && detail?.install_url) {
+          setStatus("Redirecting to install RepoIQ on GitHub...");
+          window.location.href = detail.install_url;
+          return;
+        }
+
         console.error("[GitHub OAuth] Callback failed:", err);
         // Clear any partially stored data
         localStorage.removeItem("token");

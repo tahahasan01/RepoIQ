@@ -501,9 +501,14 @@ class AuthService:
             installation_id = await github_app.get_user_installation_id(user_token)
 
         if not installation_id:
-            raise Exception(
-                "The GitHub App is not installed for this account. Please install "
-                "it and choose which repositories to grant access to."
+            # Authorised but not installed. This is a normal state, not an
+            # error: the user gets sent to the install page rather than shown a
+            # failure. Raised as a typed exception so the route can answer with
+            # the install URL instead of a generic 400.
+            from app.services.github_app import GitHubAppNotInstalled
+
+            raise GitHubAppNotInstalled(
+                "The GitHub App is not installed for this account."
             )
 
         # 3. Upsert. Note github_access_token is deliberately absent.

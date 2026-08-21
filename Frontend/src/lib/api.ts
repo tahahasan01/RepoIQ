@@ -383,12 +383,25 @@ class ApiClient {
           detail: 'An error occurred',
         }));
 
-        const message = Array.isArray(errorData.detail)
-          ? errorData.detail.map(e => e.msg).join(', ')
-          : errorData.detail;
+        // `detail` can be a string, FastAPI's validation array, or a structured
+        // object (e.g. the 409 that tells the client to send the user to the
+        // GitHub App install page). Flattening everything to a string threw that
+        // structure away and produced "[object Object]" for the object case, so
+        // callers had no way to act on it. Keep the message for display and
+        // attach the original detail for callers that need to branch on it.
+        const rawDetail: any = errorData.detail;
+        const message = Array.isArray(rawDetail)
+          ? rawDetail.map((e: any) => e.msg).join(', ')
+          : typeof rawDetail === 'string'
+            ? rawDetail
+            : rawDetail?.message ?? `HTTP ${response.status}`;
 
         log.warn('Error:', message);
-        throw new Error(message || `HTTP ${response.status}`);
+
+        const error: any = new Error(message || `HTTP ${response.status}`);
+        error.detail = rawDetail;
+        error.status = response.status;
+        throw error;
       }
 
       const data = await response.json();

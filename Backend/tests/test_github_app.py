@@ -191,9 +191,18 @@ class TestInstallFlow:
         assert "github.com/apps/repoiq/installations/new" in url
         assert "state=nonce-abc" in url
 
-    def test_authorize_route_returns_the_install_url_in_app_mode(
+    def test_authorize_route_returns_the_SIGN_IN_url_not_the_install_url(
         self, client, monkeypatch, rsa_keypair
     ):
+        """
+        Regression: this used to return the install URL, so a user who had
+        already installed the app clicked "Continue with GitHub" and landed on
+        GitHub's install screen instead of being signed into RepoIQ. Nothing
+        happened and no code came back.
+
+        Sign-in must use the OAuth authorize endpoint, which redirects straight
+        back with a code for anyone already authorised.
+        """
         from app.services import github_app
 
         monkeypatch.setattr(github_app.settings, "GITHUB_AUTH_MODE", "app", raising=False)
@@ -202,8 +211,48 @@ class TestInstallFlow:
         body = client.get("/api/v1/auth/github/authorize").json()
 
         assert body["mode"] == "app"
-        assert "/apps/repoiq/installations/new" in body["auth_url"]
+        assert "login/oauth/authorize" in body["auth_url"]
+        assert "installations/new" not in body["auth_url"]
         assert "state=" in body["auth_url"]
+
+        # The install URL is still offered, for the user who has not installed yet.
+        assert "/apps/repoiq/installations/new" in body["install_url"]
+
+    def test_login_url_uses_the_app_client_id(self, monkeypatch, rsa_keypair):
+        from app.services import github_app
+
+        monkeypatch.setattr(
+            github_app.settings, "GITHUB_APP_CLIENT_ID", "Iv23appclient", raising=False
+        )
+        monkeypatch.setattr(
+            github_app.settings, "GITHUB_APP_CLIENT_SECRET", "sec", raising=False
+        )
+
+        url = github_app.login_url("nonce")
+
+        assert "client_id=Iv23appclient" in url
+        assert "state=nonce" in url
+
+    def test_not_installed_is_a_typed_exception_not_a_generic_error(self):
+        """
+        So the route can answer with the install URL rather than a dead-end
+        error. Being authorised but not installed is a normal first-run state.
+        """
+        from app.services.github_app import GitHubAppNotInstalled
+        import inspect
+        from app.services.auth_service import AuthService
+
+        assert issubclass(GitHubAppNotInstalled, RuntimeError)
+        assert "GitHubAppNotInstalled" in inspect.getsource(AuthService.github_app_login)
+
+    def test_callback_answers_not_installed_with_the_install_url(self):
+        import inspect
+        from app.api.routes import auth
+
+        source = inspect.getsource(auth.github_callback)
+        assert "GitHubAppNotInstalled" in source
+        assert "install_url" in source
+        assert "HTTP_409_CONFLICT" in source
 
 
 class TestInstallationTokens:

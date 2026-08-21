@@ -157,6 +157,21 @@ async def github_callback(callback_data: GitHubCallbackRequest):
             refresh_token=result["refresh_token"],
             user=PublicUser.from_record(result.get("user"))
         )
+    except github_app.GitHubAppNotInstalled:
+        # Authorised but not installed - a normal first-run state, not a failure.
+        # 409 with the install URL lets the client redirect rather than showing
+        # the user a dead end.
+        from app.services.oauth_state import issue_state
+
+        logger.info("GitHub App sign-in: user has not installed the app yet")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Install RepoIQ on your GitHub account to continue.",
+                "action": "install",
+                "install_url": github_app.install_url(issue_state()),
+            },
+        )
     except Exception as e:
         # SECURITY: Don't expose internal error details
         raise HTTPException(
@@ -193,12 +208,20 @@ async def github_authorize():
     settings = get_settings()
     state = issue_state()
 
-    # GitHub App mode: send the user to install the app instead. They choose
-    # which repositories to grant, and access comes from short-lived
-    # installation tokens rather than a stored long-lived `repo` token.
+    # GitHub App mode: this is the SIGN-IN url, not the install url.
+    #
+    # Sending a returning user to the install page shows them GitHub's install
+    # screen again rather than logging them in - they already installed it, so
+    # nothing happens and no code comes back. The authorize endpoint redirects
+    # straight back with a code for anyone who has already authorised, so the
+    # user usually never sees a GitHub screen at all.
+    #
+    # install_url is returned alongside so the client can send a user who has
+    # not installed the app to the right place without a second round trip.
     if github_app.is_enabled():
         return {
-            "auth_url": github_app.install_url(state),
+            "auth_url": github_app.login_url(state),
+            "install_url": github_app.install_url(state),
             "state": state,
             "mode": "app",
         }

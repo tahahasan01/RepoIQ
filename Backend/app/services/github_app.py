@@ -47,6 +47,15 @@ class GitHubAppError(RuntimeError):
     """A GitHub App API call failed."""
 
 
+class GitHubAppNotInstalled(RuntimeError):
+    """
+    The user authorised the app but has not installed it on any account.
+
+    A normal state, not a failure: the caller should send them to install_url()
+    rather than showing an error.
+    """
+
+
 def is_enabled() -> bool:
     """Whether the GitHub App path is active for this deployment."""
     return (settings.GITHUB_AUTH_MODE or "oauth").lower() == "app"
@@ -222,10 +231,15 @@ async def list_installation_repositories(installation_id: str) -> list:
 
 def install_url(state: str) -> str:
     """
-    Where to send a user to install the app.
+    Where to send a user who has NOT installed the app yet.
 
-    Carries the same single-use `state` nonce as the OAuth flow, so the callback
-    is protected against login-CSRF identically.
+    This is NOT the sign-in URL. Sending a returning user here just shows them
+    GitHub's install screen again instead of logging them in - they already
+    installed it, so there is nothing to do and no code comes back. Use
+    login_url() for sign-in; this is only for the "you need to install it first"
+    branch of the callback.
+
+    Carries the same single-use `state` nonce as the login flow.
     """
     if not settings.GITHUB_APP_SLUG:
         raise GitHubAppNotConfigured("GITHUB_APP_SLUG is not set")
@@ -236,6 +250,35 @@ def install_url(state: str) -> str:
         f"https://github.com/apps/{settings.GITHUB_APP_SLUG}/installations/new"
         f"?{urlencode({'state': state})}"
     )
+
+
+def login_url(state: str) -> str:
+    """
+    Where to send a user to SIGN IN.
+
+    A GitHub App with "Request user authorization during installation" enabled
+    uses the ordinary OAuth authorize endpoint for sign-in, with the App's own
+    client id. GitHub then:
+
+      - already authorised and installed -> redirects straight back with a code,
+        so the user never sees a GitHub screen at all;
+      - authorised but not installed     -> comes back with a code, and the
+        callback sends them to install_url();
+      - neither                          -> shows the authorise prompt once.
+
+    The previous implementation returned install_url() here, which meant a
+    returning user clicking "Continue with GitHub" landed on GitHub's install
+    page instead of being signed into RepoIQ.
+    """
+    from urllib.parse import urlencode
+
+    client_id, _ = app_client_credentials()
+
+    return "https://github.com/login/oauth/authorize?" + urlencode({
+        "client_id": client_id,
+        "redirect_uri": settings.GITHUB_REDIRECT_URI,
+        "state": state,
+    })
 
 
 async def exchange_user_code(code: str) -> Dict[str, Any]:
