@@ -450,16 +450,28 @@ class TestOAuthStateNonce:
 
         assert consume_state("anything") is False
 
-    def test_authorize_url_carries_state_and_readonly_scope(self, client):
+    def test_authorize_url_carries_a_state_nonce(self, client):
         response = client.get("/api/v1/auth/github/authorize")
 
         assert response.status_code == 200
-        auth_url = response.json()["auth_url"]
+        assert "state=" in response.json()["auth_url"]
 
-        assert "state=" in auth_url
+    def test_authorize_url_requests_repo_scope(self, client):
+        """
+        `repo` is required, not an oversight. An OAuth App has no read-only
+        private-repository scope, and this product analyses private repos and
+        opens fix PRs. Narrowing this breaks both. Least privilege here means
+        migrating to a GitHub App, not trimming the scope string.
+        """
+        auth_url = client.get("/api/v1/auth/github/authorize").json()["auth_url"]
+
+        assert "repo" in auth_url
         assert "read%3Auser" in auth_url or "read:user" in auth_url
-        # `repo` grants write access to every private repository.
-        assert "scope=repo" not in auth_url
+
+    def test_scope_is_configurable(self):
+        from app.core.config import get_settings
+
+        assert "repo" in get_settings().GITHUB_OAUTH_SCOPES
 
 
 class TestOAuthCallbackResponseIsFiltered:

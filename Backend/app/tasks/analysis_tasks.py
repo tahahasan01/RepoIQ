@@ -169,7 +169,7 @@ async def _run_analysis(repo_id: str, user_id: str, github_token: str, analysis_
 
 async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, analysis_id: str) -> Dict[str, Any]:
     repo_service = RepositoryService()
-    orchestrator = AgentOrchestrator()
+    orchestrator = AgentOrchestrator(user_id=user_id)
     token_optimizer = get_token_optimizer()
     cache_service = get_analysis_cache()
     toon_service = get_toon_service()
@@ -429,7 +429,7 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     
     # Run analysis with TOON-compressed content
     logger.info(f"Running AI analysis on {len(code_files)} files...")
-    analysis_result = await orchestrator.analyze_repository(code_files, project_context)
+    analysis_result = await orchestrator.analyze_repository(code_files, project_context, user_id=user_id)
     
     # Track token usage
     total_tokens = token_optimizer.count_tokens(compressed_toon)
@@ -545,7 +545,7 @@ async def _run_auto_fix_for_user(repo_id: str, user_id: str, issue_ids: list) ->
 
 async def _run_auto_fix(repo_id: str, user_id: str, github_token: str, issue_ids: list) -> Dict[str, Any]:
     repo_service = RepositoryService()
-    orchestrator = AgentOrchestrator()
+    orchestrator = AgentOrchestrator(user_id=user_id)
     
     repo = await repo_service.get_repository(repo_id, user_id)
     if not repo:

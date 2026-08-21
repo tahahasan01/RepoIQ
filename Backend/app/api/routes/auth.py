@@ -159,11 +159,14 @@ async def github_authorize():
     flow against the attacker's GitHub account (or bind the attacker's account to
     the victim's session).
 
-    Scope is `read:user user:email` - read-only. It was `repo`, which grants write
-    access to every private repository the user can reach; an analysis product has
-    no need for that, and it made any token disclosure catastrophic rather than
-    merely bad. Requesting `repo` belongs on the auto-fix flow that actually opens
-    pull requests, not on login.
+    Scope comes from settings.GITHUB_OAUTH_SCOPES and includes `repo`. An earlier
+    pass narrowed this to `read:user user:email` on the reasoning that an analysis
+    tool should not hold write access. That was wrong and would have broken the
+    product: OAuth Apps have no read-only private-repository scope, so `repo` is
+    the minimum that can read a private repo at all, and auto-fix additionally
+    needs write access to open pull requests. See the note on
+    Settings.GITHUB_OAUTH_SCOPES, and the GitHub App migration that would actually
+    deliver least privilege.
     """
     from urllib.parse import urlencode
     from app.core.config import get_settings
@@ -175,7 +178,7 @@ async def github_authorize():
     params = {
         "client_id": settings.GITHUB_CLIENT_ID,
         "redirect_uri": settings.GITHUB_REDIRECT_URI,
-        "scope": "read:user user:email",
+        "scope": settings.GITHUB_OAUTH_SCOPES,
         "state": state,
     }
 

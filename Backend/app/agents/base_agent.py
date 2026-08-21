@@ -5,6 +5,7 @@ import httpx
 from app.core.config import get_settings
 from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
+from app.services.llm_budget import enforce_spend_budget, record_spend
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -36,43 +37,86 @@ def get_openai_client() -> OpenAI:
     return _shared_openai_client
 
 
+class LLMResponseTruncated(Exception):
+    """The model hit max_tokens mid-answer, so the response is incomplete."""
+
+
 class BaseAgent(ABC):
     def __init__(self):
         self.client = get_openai_client()
-        # Use gpt-4o-mini - fastest OpenAI model with excellent quality
-        self.model = "gpt-4o-mini"
-        self.temperature = 0.3  # Lower temperature for faster, more consistent responses
-        self.max_tokens = 2000  # Reduced for faster responses
-        
+        self.model = settings.OPENAI_MODEL
+        self.temperature = 0.3  # Lower temperature for more consistent responses
+        self.max_tokens = settings.OPENAI_MAX_OUTPUT_TOKENS
+
     @abstractmethod
     async def analyze(self, code: str, file_path: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         pass
-    
+
     @abstractmethod
     def get_agent_type(self) -> str:
         pass
-    
-    async def _call_llm(self, messages: List[Dict[str, str]], temperature: Optional[float] = None) -> str:
+
+    async def _call_llm(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float] = None,
+        json_mode: bool = False,
+        user_id: Optional[str] = None,
+    ) -> str:
         """
-        PERF: the OpenAI client is synchronous, so this must go through the
-        threadpool. Called directly, it blocked the event loop for the entire
-        completion - which also meant the orchestrator's asyncio.gather() over
-        several agents ran them strictly one after another while starving every
-        other request on the worker. Now they genuinely overlap.
+        Call the model and return the completion text.
+
+        PERF: the OpenAI client is synchronous, so this goes through the
+        threadpool. Called directly it blocked the event loop for the entire
+        completion, which also meant the orchestrator's asyncio.gather() over
+        several agents ran them strictly one after another.
+
+        json_mode asks the API to guarantee syntactically valid JSON. Callers
+        that parse the response should use it: the previous approach of asking
+        the model nicely and then hunting for ``` fences failed whenever the
+        model wrapped, prefixed or truncated its answer, and the failure was
+        swallowed into an empty result.
+
+        Raises LLMResponseTruncated when the model stopped at max_tokens. That
+        used to surface as a JSONDecodeError caught into `{"issues": []}` - i.e.
+        a batch that found real problems silently reported none.
         """
+        if user_id:
+            # Cost control: a single user could previously drive unbounded spend.
+            await enforce_spend_budget(user_id)
+
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature if temperature is not None else self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+
         try:
             response = await run_blocking(
-                lambda: self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=temperature or self.temperature,
-                    max_tokens=self.max_tokens
-                )
+                lambda: self.client.chat.completions.create(**kwargs)
             )
-            return response.choices[0].message.content
         except Exception as e:
             logger.error(f"LLM call failed: {str(e)}")
             raise
+
+        choice = response.choices[0]
+
+        if user_id and getattr(response, "usage", None):
+            record_spend(user_id, response.usage.total_tokens)
+
+        if choice.finish_reason == "length":
+            logger.error(
+                f"LLM response truncated at max_tokens={self.max_tokens}; "
+                "raise OPENAI_MAX_OUTPUT_TOKENS or reduce the batch size"
+            )
+            raise LLMResponseTruncated(
+                f"Model stopped at the {self.max_tokens} token output limit"
+            )
+
+        return choice.message.content or ""
     
     def calculate_score(self, issues: List[Dict[str, Any]]) -> int:
         if not issues:

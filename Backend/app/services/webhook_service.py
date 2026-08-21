@@ -100,15 +100,26 @@ class WebhookService:
             return []
     
     async def delete_webhook(self, webhook_id: str, user_id: str) -> bool:
-        """Delete a webhook."""
+        """
+        Delete a webhook. True only if a row was actually removed.
+
+        This used to return True unconditionally without inspecting the result,
+        so DELETE /webhooks/{someone-elses-id} answered "deleted successfully".
+        That is both a lie to the caller and a weak existence oracle.
+        """
         try:
-            self.db.table("webhooks")\
+            result = self.db.table("webhooks")\
                 .delete()\
                 .eq("id", webhook_id)\
                 .eq("user_id", user_id)\
                 .execute()
-            logger.info(f"🗑️ Webhook deleted: {webhook_id}")
-            return True
+
+            deleted = bool(result.data)
+            if deleted:
+                logger.info(f"🗑️ Webhook deleted: {webhook_id}")
+            else:
+                logger.info(f"No webhook {webhook_id} owned by this user; nothing deleted")
+            return deleted
         except Exception as e:
             logger.error(f"Failed to delete webhook: {e}")
             return False

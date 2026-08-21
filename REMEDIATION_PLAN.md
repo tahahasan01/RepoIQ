@@ -78,10 +78,10 @@ no unauthenticated endpoint mutates state; no endpoint returns another user's em
 
 | # | Task | Closes | Status |
 |---|---|---|---|
-| 4.1 | Incremental analysis: chunk repos, cache per-file results by blob SHA | P-1 | TODO |
-| 4.2 | Prompt-injection hardening + per-user OpenAI spend caps | P-4 | TODO |
-| 4.3 | `delete_webhook` must report real affected-row counts | P-6 | TODO |
-| 4.4 | Repo sync must remove revoked repositories | M-9 | TODO |
+| 4.1 | Incremental analysis: chunk repos, cache per-file results by blob SHA | P-1 | DONE |
+| 4.2 | Prompt-injection hardening + per-user OpenAI spend caps | P-4 | DONE |
+| 4.3 | `delete_webhook` must report real affected-row counts | P-6 | DONE |
+| 4.4 | Repo sync must remove revoked repositories | M-9 | DONE |
 
 
 ---
@@ -400,3 +400,105 @@ zero deprecation warnings. **Frontend: tsc clean, build green.**
   tenant-filter review checklist is an architectural decision for the team, not a
   mechanical edit. Phases 0 and 1 closed the specific gaps this exposed (C-2, C-3,
   C-4); the structural question remains open.
+
+
+---
+
+## Phase 4 completion record — 2026-08-21
+
+**Backend: 223 passed** (32 new in `tests/test_ai_phase4.py`), flake8 clean,
+bandit high-severity clean. **Frontend: tsc clean, tests pass.**
+
+### CORRECTION: the Phase 1 OAuth scope change was wrong
+
+Phase 1.5 narrowed `GITHUB_OAUTH_SCOPES` from `repo` to `read:user user:email`,
+reasoning that a read-only analysis tool should not hold write access. **That
+reasoning was wrong and the change would have broken the product.**
+
+- An OAuth App has **no read-only private-repository scope**. `public_repo`
+  covers public repositories only; `repo` is the minimum that can read a private
+  one at all. The product analyses private repositories — `is_private` is a
+  tracked column — so the narrowed scope would have made every private repo
+  invisible.
+- Auto-fix calls `create_branch`, `update_file` and `create_pull_request`, which
+  need write access regardless.
+
+Reverted to `repo read:user user:email`, now configurable via
+`GITHUB_OAUTH_SCOPES` with the reasoning recorded in `Settings` so it is not
+re-narrowed by someone reading only the audit. **The genuine least-privilege fix
+is migrating to a GitHub App** (fine-grained per-repo permissions — Contents:
+read, Pull requests: write — and short-lived installation tokens). That is an app
+registration change, not a config change; added as a follow-up below.
+
+The finding behind H-11 still stands: a token with `repo` scope is highly
+sensitive. What actually mitigates it is the work already done — encryption at
+rest with a separate key, keeping the token out of the Celery broker, and out of
+API responses.
+
+### AI call correctness
+
+Every one of these failed **silently** — the analysis still returned a result, it
+was just the wrong one.
+
+- **Truncated responses reported "no issues".** `max_tokens` was hardcoded at
+  2000 while the prompt asks for multiple findings with descriptions and
+  suggestions across an 8-file batch. The model stopped mid-JSON, `json.loads`
+  raised, and the handler returned `{"issues": [], scores: 50}`. A batch that
+  found real problems reported none. Now `OPENAI_MAX_OUTPUT_TOKENS` (default
+  8000) and `finish_reason == "length"` raises `LLMResponseTruncated`.
+- **JSON mode.** The response was parsed by hunting for ``` fences, which broke
+  on any prefix, wrapper or truncation. Now `response_format={"type":
+  "json_object"}`, so the API guarantees parseable JSON.
+- **Failed batches no longer skew scores.** The `{"issues": [], scores: 50}`
+  sentinel was averaged in with successful batches, dragging a repository's score
+  toward 50 — indistinguishable in the UI from a genuine finding of "mediocre
+  code". Failures now return `None` and are excluded from the average.
+- **The prompt was manufacturing false positives.** It said "YOU MUST FIND
+  ISSUES", "You MUST find at least 5 real issues" and "Perfect 100 is
+  IMPOSSIBLE". On clean code that instructs the model to invent findings — worse
+  than a miss, because fabricated issues discredit the genuine ones beside them.
+  Replaced with accuracy rules that explicitly permit an empty result.
+- **Prompt injection containment.** Repository content went straight into the
+  prompt with no framing. It is now fenced in BEGIN/END UNTRUSTED markers, the
+  model is told to treat it as data, and injection attempts are themselves
+  reportable as a `prompt_injection` finding.
+
+### Async correctness
+
+- **The "parallel" static analysis was sequential.** The wrappers were
+  `async def` bodies calling `_run_static_analysis` synchronously with no await,
+  so each coroutine ran start-to-finish the instant the loop reached it —
+  `gather()` bought nothing but overhead, and blocked the loop throughout. Now
+  dispatched through `run_blocking`, with a test asserting concurrent LLM calls
+  actually overlap in wall-clock time.
+
+### Cost control
+
+- **`app/services/llm_budget.py`** — rolling per-user daily token allowance
+  (`OPENAI_DAILY_TOKEN_BUDGET_PER_USER`, default 2M, 0 disables). Nothing bounded
+  spend before this. Enforced at the start of each model call and recorded from
+  the response's actual usage. Fails **open** on a Redis outage: the cap catches
+  runaway usage, it is not a security boundary, and refusing all analysis during
+  a cache blip is the worse failure.
+
+### Smaller fixes
+
+- **4.3** `delete_webhook` returned `True` without checking the result, so
+  deleting someone else's webhook id answered "deleted successfully".
+- **4.4** Repository sync only inserted and updated, so a row survived the user
+  losing upstream access. Since ownership checks are "is there a row with your
+  user_id", a stale row kept granting access to cached file contents and analysis
+  results. Now pruned, with associated caches invalidated — and deliberately
+  never on an empty sync result, which is far more likely an API blip than the
+  user genuinely owning nothing.
+
+### Remaining follow-ups
+
+- **4.1 Incremental analysis** — chunk repositories and cache per-file results by
+  blob SHA so the 15-file sample limit stops mattering. The Phase 3 disclosure
+  (`files_eligible`) makes the current limit honest; this makes it unnecessary.
+- **GitHub App migration** — the real least-privilege answer for repository
+  access, replacing the OAuth App's all-or-nothing `repo` scope.
+- **3.6 RLS decision** — still open; an architectural call for the team.
+- **~50 Supabase reads still on the event loop** — deferred from Phase 2 pending
+  the dependency-injection pass (2.3).

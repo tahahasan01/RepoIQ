@@ -19,8 +19,40 @@ class Settings(BaseSettings):
     GITHUB_CLIENT_ID: str
     GITHUB_CLIENT_SECRET: str
     GITHUB_REDIRECT_URI: str
+
+    # OAuth scopes requested at login.
+    #
+    # `repo` is required and cannot be narrowed further with an OAuth App:
+    #   - the product analyses PRIVATE repositories, and an OAuth App has no
+    #     read-only private-repo scope. `public_repo` covers public repos only;
+    #     `repo` is the minimum that can read a private one.
+    #   - auto-fix creates branches, commits files and opens pull requests
+    #     (GitHubService.create_branch / update_file / create_pull_request),
+    #     which needs write access regardless.
+    #
+    # This does mean the stored token can write to every repository the user can
+    # reach, which is why encryption-at-rest (TOKEN_ENCRYPTION_KEY) and keeping
+    # the token out of task queues and API responses matter as much as they do.
+    #
+    # The real least-privilege fix is migrating to a GitHub App, which supports
+    # fine-grained per-repository permissions (Contents: read, Pull requests:
+    # write) and short-lived installation tokens. That is an app-registration
+    # change, not a config change - tracked as a follow-up in REMEDIATION_PLAN.md.
+    #
+    # Deployments that only ever analyse public repositories can safely set
+    # GITHUB_OAUTH_SCOPES="public_repo read:user user:email".
+    GITHUB_OAUTH_SCOPES: str = "repo read:user user:email"
     
     OPENAI_API_KEY: str
+    OPENAI_MODEL: str = "gpt-4o-mini"
+    # Output token ceiling per model call. Was hardcoded at 2000, which the
+    # analysis prompt routinely exceeded - the model stopped mid-JSON, the parse
+    # failed, and the failure was swallowed into an empty issue list with neutral
+    # 50 scores. A batch that found real problems reported none.
+    OPENAI_MAX_OUTPUT_TOKENS: int = 8000
+    # Rolling daily token allowance per user. 0 disables the cap.
+    # Nothing bounded LLM spend before this.
+    OPENAI_DAILY_TOKEN_BUDGET_PER_USER: int = 2_000_000
     
     # Redis configuration
     REDIS_URL: str = "redis://localhost:6379/0"

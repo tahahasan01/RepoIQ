@@ -140,6 +140,16 @@ class RepositoryService:
                 logger.info(f"✅ Batch inserted {len(to_insert)} new repositories")
             if to_update:
                 logger.info(f"✅ Updated {len(to_update)} existing repositories")
+
+            # SECURITY: drop repositories the user can no longer see.
+            #
+            # Sync only ever inserted and updated, so a repository row survived
+            # the user losing access to it upstream - being removed from an org,
+            # a repo being deleted or made private. Ownership checks throughout
+            # the app are "is there a repositories row with your user_id", so a
+            # stale row kept granting access to cached file contents and analysis
+            # results for a repository the user no longer has any right to.
+            await self._prune_revoked_repositories(user_id, github_repo_ids)
             
             # Invalidate every cached page for this user.
             #
@@ -156,6 +166,61 @@ class RepositoryService:
             logger.error(f"Repository sync failed: {str(e)}")
             raise
     
+    async def _prune_revoked_repositories(
+        self, user_id: str, visible_github_ids: List[int]
+    ) -> int:
+        """
+        Remove this user's repository rows whose GitHub ids were not returned by
+        the sync, i.e. repositories they can no longer see.
+
+        Only called with a non-empty sync result. If GitHub returned nothing, that
+        is far more likely to be a transient API failure than the user genuinely
+        having zero repositories, and deleting everything on that basis would be
+        destructive.
+        """
+        if not visible_github_ids:
+            return 0
+
+        try:
+            def _prune():
+                existing = self.db.table("repositories")\
+                    .select("id, github_repo_id")\
+                    .eq("user_id", user_id)\
+                    .execute()
+
+                visible = set(visible_github_ids)
+                stale = [
+                    row["id"] for row in (existing.data or [])
+                    if row.get("github_repo_id") not in visible
+                ]
+                if not stale:
+                    return []
+
+                self.db.table("repositories")\
+                    .delete()\
+                    .eq("user_id", user_id)\
+                    .in_("id", stale)\
+                    .execute()
+                return stale
+
+            stale_ids = await run_blocking(_prune)
+
+            for repo_id in stale_ids:
+                self.redis.delete(f"db:repo:{repo_id}")
+                self.redis.invalidate(f"file:content:{repo_id}:*")
+                self.redis.delete(f"files:list:{repo_id}")
+                self.redis.delete(f"db:history:{repo_id}")
+
+            if stale_ids:
+                logger.info(
+                    f"🗑️ Removed {len(stale_ids)} repositories the user no longer has access to"
+                )
+            return len(stale_ids)
+        except Exception as e:
+            # Never fail a sync over pruning - the user still wants their list.
+            logger.error(f"Failed to prune revoked repositories: {type(e).__name__}: {e}")
+            return 0
+
     async def get_batch_latest_analyses(self, user_id: str) -> Dict[str, Dict[str, Any]]:
         """Fetch all latest analyses for user's repos in a single optimized query"""
         try:
