@@ -1,7 +1,6 @@
 from typing import Dict, List, Any, Optional
 from .base_agent import BaseAgent
 from app.core.logging import get_logger
-import os
 
 logger = get_logger(__name__)
 

@@ -62,7 +62,7 @@ jobs:
           ALLOWED_ORIGINS: http://localhost:3000,http://localhost:8080
           PYTHONPATH: ${{ github.workspace }}/Backend
         run: |
-          python -m pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing
+          python -m pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=25
 
       - name: Upload coverage
         uses: codecov/codecov-action@v3
@@ -92,17 +92,31 @@ jobs:
           python -m pip install --upgrade pip
           pip install flake8 black isort
 
-      - name: Check formatting with Black
+      # BLOCKING. Undefined names, unused imports/variables and syntax errors
+      # fail the build. These are the classes that catch real bugs - an
+      # undefined name is a guaranteed NameError at runtime.
+      - name: Lint with flake8 (blocking)
         working-directory: Backend
-        run: black --check app/ --line-length 120 || true
+        run: |
+          flake8 app/ main.py             --max-line-length=120             --select=E9,F63,F7,F82,F401,F811,F841             --count --statistics
 
-      - name: Check imports with isort
+      # ADVISORY. Style only. The codebase predates any formatter, so enforcing
+      # these would mean a repo-wide reformat that buries real changes in noise.
+      # Reformat deliberately in its own commit, then promote these to blocking.
+      - name: Check formatting with Black (advisory)
         working-directory: Backend
-        run: isort --check-only app/ || true
+        continue-on-error: true
+        run: black --check app/ --line-length 120
 
-      - name: Lint with flake8
+      - name: Check imports with isort (advisory)
         working-directory: Backend
-        run: flake8 app/ --max-line-length=120 --ignore=E501,W503 --count --statistics || true
+        continue-on-error: true
+        run: isort --check-only app/
+
+      - name: Full flake8 report (advisory)
+        working-directory: Backend
+        continue-on-error: true
+        run: flake8 app/ --max-line-length=120 --ignore=E501,W503 --count --statistics
 
   # ============================================
   # FRONTEND TESTS
@@ -126,13 +140,15 @@ jobs:
         working-directory: Frontend
         run: npm install
 
-      - name: Run type check
+      # `npm run build -- --noEmit` did not typecheck anything: --noEmit is a
+      # tsc flag and this forwards it to vite build, which ignores it. Run tsc.
+      - name: Run type check (blocking)
         working-directory: Frontend
-        run: npm run build -- --noEmit || true
+        run: npx tsc --noEmit
 
-      - name: Run tests
+      - name: Run tests (blocking)
         working-directory: Frontend
-        run: npm test -- --run --coverage || true
+        run: npm test -- --run
 
   # ============================================
   # FRONTEND LINT
@@ -156,9 +172,12 @@ jobs:
         working-directory: Frontend
         run: npm install
 
-      - name: Run ESLint
+      # ADVISORY until the existing violations are burned down; promote to
+      # blocking in the same commit that fixes them.
+      - name: Run ESLint (advisory)
         working-directory: Frontend
-        run: npm run lint || true
+        continue-on-error: true
+        run: npm run lint
 
   # ============================================
   # SECURITY SCAN
@@ -180,13 +199,21 @@ jobs:
         run: |
           pip install bandit safety
 
-      - name: Run Bandit security scan
+      # BLOCKING on high-confidence, high-severity findings only (-lll -iii).
+      # The report artifact below still carries everything for triage.
+      - name: Run Bandit security scan (blocking on high severity)
         working-directory: Backend
-        run: bandit -r app/ -ll -ii --format json --output bandit-report.json || true
+        run: bandit -r app/ -lll -iii --format screen
 
-      - name: Check dependencies with Safety
+      - name: Bandit full report (advisory)
         working-directory: Backend
-        run: safety check -r requirements.txt --json --output safety-report.json || true
+        continue-on-error: true
+        run: bandit -r app/ -ll -ii --format json --output bandit-report.json
+
+      - name: Check dependencies with Safety (advisory)
+        working-directory: Backend
+        continue-on-error: true
+        run: safety check -r requirements.txt --json --output safety-report.json
 
       - name: Upload security reports
         uses: actions/upload-artifact@v4
@@ -220,8 +247,7 @@ jobs:
         env:
           VITE_API_BASE_URL: ${{ secrets.API_BASE_URL || 'http://localhost:8000/api/v1' }}
         run: |
-          rm -rf node_modules package-lock.json
-          npm install
+          npm ci
           npm run build
 
       - name: Upload build artifacts

@@ -95,6 +95,9 @@ async def login(login_data: LoginRequest):
             refresh_token=result["refresh_token"]
         )
     except Exception as e:
+        # Log the real cause; return an indistinguishable message either way so
+        # the response cannot separate "no such account" from "wrong password".
+        logger.info(f"Login failed: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials"

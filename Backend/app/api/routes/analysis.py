@@ -2,14 +2,12 @@ from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks, 
 from loguru import logger
 from app.schemas import AutoFixRequest
 from app.services.repository_service import RepositoryService
-from app.tasks.analysis_tasks import analyze_repository_task, auto_fix_issues_task
+from app.tasks.analysis_tasks import auto_fix_issues_task
 from app.api.dependencies import get_current_user, get_github_token
 from app.api.errors import safe_detail
+from app.services import analysis_registry
 
 router = APIRouter(prefix="/analysis", tags=["Analysis"])
-
-# Track currently running analysis per user
-_running_analyses: dict[str, str] = {}  # user_id -> analysis_id
 
 
 @router.post("/repositories/{repo_id}/analyze")
@@ -23,17 +21,33 @@ async def start_analysis(
     
     logger.info(f"[start_analysis] User {current_user['id']} requesting analysis for repo {repo_id}")
     
-    # Cancel any existing running analysis for this user
+    # Cancel any existing running analysis for this user.
+    # Backed by Redis so this works across workers - a module-level dict only
+    # saw the analyses started on this particular process.
     user_id = current_user['id']
-    if user_id in _running_analyses:
-        previous_analysis_id = _running_analyses[user_id]
-        logger.info(f"[start_analysis] Cancelling previous analysis {previous_analysis_id}")
+    previous_analysis_id = analysis_registry.get_running(user_id)
+    if previous_analysis_id:
         try:
-            await repo_service.update_analysis(previous_analysis_id, {
-                "status": "cancelled",
-                "error_message": "Cancelled: New analysis started"
-            })
-            logger.info(f"[start_analysis] ✅ Cancelled previous analysis {previous_analysis_id}")
+            # CORRECTNESS: only cancel an analysis that is genuinely still running.
+            #
+            # This used to write status="cancelled" unconditionally. Because the
+            # running marker was never cleared on success, a user's *completed*
+            # analysis was still listed as running - so starting a second analysis
+            # overwrote the first one's status. get_latest_analysis() and the
+            # history endpoint both filter on status == "completed", so the
+            # previous run's scores and issues silently disappeared from the UI.
+            previous = await repo_service.get_analysis(previous_analysis_id)
+            if previous and previous.get("status") in ("pending", "starting", "in_progress"):
+                logger.info(f"[start_analysis] Cancelling previous analysis {previous_analysis_id}")
+                analysis_registry.request_cancellation(previous_analysis_id)
+                await repo_service.update_analysis(previous_analysis_id, {
+                    "status": "cancelled",
+                    "error_message": "Cancelled: New analysis started"
+                })
+                logger.info(f"[start_analysis] ✅ Cancelled previous analysis {previous_analysis_id}")
+            else:
+                # Already finished - just release the stale marker.
+                analysis_registry.clear_running(user_id, previous_analysis_id)
         except Exception as e:
             logger.warning(f"[start_analysis] Failed to cancel previous analysis: {str(e)}")
     
@@ -80,7 +94,7 @@ async def start_analysis(
         logger.info(f"[start_analysis] ✅ Background task added for analysis {analysis_id}")
         
         # Track this as the current running analysis
-        _running_analyses[user_id] = analysis_id
+        analysis_registry.set_running(user_id, analysis_id)
         
         return {
             "analysis_id": analysis_id,
@@ -150,7 +164,6 @@ async def get_analysis_results(
     if cached_analysis:
         logger.info(f"[get_analysis_results] ⚡ INSTANT: Using cached analysis for repo {repo_id}")
         # Still need to get the latest analysis to ensure freshness
-        pass
     
     analysis = await repo_service.get_latest_analysis(repo["id"])
     logger.info(f"[get_analysis_results] repo_id={repo_id} (resolved={repo['id']}), analysis={analysis}")
@@ -289,9 +302,16 @@ async def cancel_analysis(
                 "status": analysis["status"]
             }
         
-        # Signal the running background task to stop at the next checkpoint
-        from app.tasks.analysis_tasks import request_cancellation
-        request_cancellation(analysis_id)
+        # Signal the running task to stop at its next checkpoint. This crosses
+        # process boundaries, so it reaches the worker actually running the job.
+        if not analysis_registry.request_cancellation(analysis_id):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Could not signal the running analysis to stop because a "
+                    "backend service is unavailable. Please try again."
+                )
+            )
         
         # Mark as cancelled in DB
         await repo_service.update_analysis(analysis_id, {
@@ -300,9 +320,7 @@ async def cancel_analysis(
         })
         
         # Remove from running analyses if it's the current one
-        user_id = current_user["id"]
-        if user_id in _running_analyses and _running_analyses[user_id] == analysis_id:
-            del _running_analyses[user_id]
+        analysis_registry.clear_running(current_user["id"], analysis_id)
         
         logger.info(f"[cancel_analysis] ✅ Cancelled analysis {analysis_id}")
         

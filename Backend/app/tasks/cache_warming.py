@@ -1,7 +1,6 @@
 """
 Cache warming tasks for pre-populating cache with frequently accessed data.
 """
-from typing import List, Dict, Any
 from app.services.repository_service import RepositoryService
 from app.services.github_service import create_github_service
 from app.services.redis_service import get_redis_service

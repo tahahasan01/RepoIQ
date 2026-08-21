@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import List
 import re
 from github import GithubException
-from app.schemas import GitHubRepo, RepositoryResponse
+from app.schemas import RepositoryResponse
 from app.services.repository_service import RepositoryService
 from app.services.github_service import create_github_service
 from app.api.dependencies import get_current_user, get_github_token

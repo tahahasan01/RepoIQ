@@ -2,7 +2,7 @@
 Analysis results caching service for improving performance and reducing redundant processing.
 """
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import hashlib
 from redis import Redis

@@ -63,14 +63,14 @@ no unauthenticated endpoint mutates state; no endpoint returns another user's em
 | # | Task | Closes | Files | Status |
 |---|---|---|---|---|
 | 3.1 | Remove every `\|\| true` from CI; delete the conftest fallback app | H-14 | `.github/workflows/ci.yml`, `tests/conftest.py` | PARTIAL — conftest stub deleted; CI `\|\| true` still TODO |
-| 3.2 | Move analysis to Celery; shared cancellation state | H-9 | `api/routes/analysis.py`, `tasks/analysis_tasks.py` | TODO |
-| 3.3 | Raise or disclose the 15-file analysis limit; report `files_analyzed`/`files_total` | P-1 | `tasks/analysis_tasks.py`, frontend | TODO |
-| 3.4 | Commit SHA in the analysis cache key | P-2 | `tasks/analysis_tasks.py` | TODO |
-| 3.5 | Collapse to a single app entrypoint; align Dockerfile/compose/Procfile | M-1 | `main.py`, `app/main.py`, `Dockerfile` | TODO |
-| 3.6 | RLS decision: scoped clients, or documented service-role + tenant-filter checklist | M-2 | `db/`, docs | TODO |
-| 3.7 | SPA route guards | M-15 | `src/App.tsx` | TODO |
-| 3.8 | Pin `celery`; upgrade `langchain`/`langgraph`/`fastapi`; remove `install_log*.txt` | hygiene | `requirements.txt` | TODO |
-| 3.9 | Fix the OAuth redirect-URI mismatch (8081 → 8080) in both `.env.example` files | login bug | `Backend/.env.example`, `Frontend/.env.example` | TODO |
+| 3.2 | Move analysis to Celery; shared cancellation state | H-9 | `api/routes/analysis.py`, `tasks/analysis_tasks.py` | DONE |
+| 3.3 | Raise or disclose the 15-file analysis limit; report `files_analyzed`/`files_total` | P-1 | `tasks/analysis_tasks.py`, frontend | DONE |
+| 3.4 | Commit SHA in the analysis cache key | P-2 | `tasks/analysis_tasks.py` | DONE |
+| 3.5 | Collapse to a single app entrypoint; align Dockerfile/compose/Procfile | M-1 | `main.py`, `app/main.py`, `Dockerfile` | DONE |
+| 3.6 | RLS decision: scoped clients, or documented service-role + tenant-filter checklist | M-2 | `db/`, docs | DEFERRED — architectural decision, see record below |
+| 3.7 | SPA route guards | M-15 | `src/App.tsx` | DONE |
+| 3.8 | Pin `celery`; upgrade `langchain`/`langgraph`/`fastapi`; remove `install_log*.txt` | hygiene | `requirements.txt` | DONE |
+| 3.9 | Fix the OAuth redirect-URI mismatch (8081 → 8080) in both `.env.example` files | login bug | `Backend/.env.example`, `Frontend/.env.example` | DONE |
 
 ---
 
@@ -303,3 +303,100 @@ All ten Phase 1 tasks implemented. **Test suite: 125 passed**
   sessionStorage. Removing the response-cache middleware took out one layer; the
   rest needs a deliberate decision about which layer owns freshness, not a
   mechanical edit.
+
+
+---
+
+## Phase 3 completion record — 2026-08-21
+
+**Backend: 189 passed** (40 new in `tests/test_hardening_phase3.py`), flake8 gate clean,
+zero deprecation warnings. **Frontend: tsc clean, build green.**
+
+### What changed
+
+- **3.1 — CI can fail now.** Removed every `|| true`. Steps are explicitly either
+  blocking or `continue-on-error: true` with "(advisory)" in the name, and a test
+  asserts that labelling stays honest. Blocking: backend pytest with
+  `--cov-fail-under=25`, flake8 on `E9,F63,F7,F82,F401,F811,F841`, frontend
+  `npx tsc --noEmit`, vitest, and bandit at high severity/confidence. Advisory
+  (until the existing violations are burned down in their own commit): black,
+  isort, full flake8, eslint, safety.
+  Two CI steps were also not doing what they claimed: `npm run build -- --noEmit`
+  forwards a tsc flag to vite, which ignores it — so nothing was typechecked; and
+  the build job ran `rm -rf node_modules package-lock.json && npm install`,
+  discarding the lockfile it was supposed to verify. Now `npx tsc --noEmit` and
+  `npm ci`.
+  To make the flake8 gate passable, cleared 33 unused imports and 4 unused
+  variables. **The gate immediately paid for itself**: it caught an `Optional`
+  that autoflake had removed while unused and that I then reintroduced a use for.
+
+- **3.5 — one entrypoint.** Dockerfile, docker-compose and start.sh ran
+  `app.main:app`; Railway, nixpacks and the Procfile ran `main:app`. These were
+  **different applications**: `app.main` registered 5 of 11 routers, so webhooks,
+  organizations, teams, developers, executive and alerts 404'd in Docker while
+  working on Railway. It also used `allow_methods=["*"]`, had no rate limiting and
+  no admin gating. All six manifests now point at `main:app`, and `app/main.py` is
+  a shim re-exporting the real app so any stale reference still gets the right one.
+
+- **3.2 — analysis state is shared across workers.** New
+  `app/services/analysis_registry.py`. `_running_analyses` and
+  `_cancelled_analyses` were module-level, i.e. per-process — with `WORKERS=4` a
+  cancel request only worked if it happened to land on the process running the
+  analysis, and otherwise did nothing while reporting success. Both now live in
+  Redis with TTLs, and `/cancel` returns 503 rather than lying when the flag
+  cannot be set.
+
+  **Found while doing this:** the running marker was never cleared on success, so
+  every completed analysis left a stale entry — and `start_analysis` used it to
+  unconditionally write `status="cancelled"` onto the previous analysis. Since
+  `get_latest_analysis()` and the history endpoint both filter on
+  `status == "completed"`, **starting a second analysis silently erased the first
+  one's scores and issues from the UI.** Now only genuinely in-flight analyses are
+  cancelled, and the marker is released in a `finally` on every exit path.
+
+- **3.3 — the analysis discloses its sample size.** `MAX_FILES = 15` was hardcoded
+  and reported nowhere, so scores presented as repository-wide were computed from
+  well under 1% of any real repository. Now `settings.ANALYSIS_MAX_FILES` /
+  `ANALYSIS_MAX_FILE_BYTES`, and the result carries `files_eligible` alongside
+  `files_analyzed` so the UI can say "analysed N of M files". Raising the limit is
+  now a config change; making it unnecessary is Phase 4.1.
+
+- **3.4 — analysis cache keyed on the commit.** `commit_sha = None  # TODO` meant
+  every analysis of a repository shared one cache entry, so re-running after a
+  push returned the previous commit's findings as current. Added
+  `GitHubService.get_default_branch_sha`; when no SHA can be resolved the cache is
+  skipped entirely rather than risking a stale key.
+
+- **3.7 — SPA route guards.** 13 routes now sit behind `ProtectedRoute`, which
+  redirects to `/login` with `state.from` so the user lands where they were going.
+  The API always enforced authorization, so this was never a data breach — but an
+  unauthenticated visitor got a rendered shell that fired requests and settled
+  into an error state.
+
+- **3.8 — dependency hygiene.** Removed 11 packages that were declared but
+  imported nowhere, including the whole `langchain` / `langgraph` family
+  (January 2024 pins with a large transitive tree and CVEs since — the agents call
+  the OpenAI SDK directly), plus `slowapi`, `radon`, `validators`, `aiofiles`,
+  `orjson` and `Pillow`. Pinned `celery`, which was unpinned so builds were not
+  reproducible. Upgraded fastapi 0.104→0.115, pydantic 2.5→2.10, openai
+  1.6→1.59, PyGithub 2.1→2.5, uvicorn, redis, structlog, loguru, cryptography.
+  **Verified, not assumed:** installed the new set and ran the suite — 189 pass.
+  Also migrated the three class-based `Config` blocks to `ConfigDict` /
+  `SettingsConfigDict` and `regex=` to `pattern=`, so the suite now passes under
+  `-W error::DeprecationWarning` and the next major upgrade is not blocked.
+  Deleted the two committed pip logs (404 lines).
+
+- **M-5 (pulled forward) — no more pickle.** `RedisService` fell back to
+  `pickle.loads()` on any cache value that would not parse as JSON. That is
+  arbitrary code execution in the API process for anyone who can write to Redis.
+  JSON only now; an unparseable entry is treated as a cache miss.
+
+### Deferred
+
+- **3.6 — RLS decision.** Every service uses the service-role key, which bypasses
+  the RLS policies defined in `002_organizations_and_teams.sql`, so all tenant
+  isolation is application-level `.eq("user_id", ...)`. Choosing between
+  per-request scoped clients and documented service-role + a mandatory
+  tenant-filter review checklist is an architectural decision for the team, not a
+  mechanical edit. Phases 0 and 1 closed the specific gaps this exposed (C-2, C-3,
+  C-4); the structural question remains open.

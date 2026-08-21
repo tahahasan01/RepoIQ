@@ -1,29 +1,58 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-multipart==0.0.6
+# Runtime dependencies.
+#
+# Everything here is imported by application code. Packages that were listed but
+# never imported have been removed - see the note at the bottom.
+
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.20
+
+# --- Database / auth ---
 supabase==2.3.0
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-python-dotenv==1.0.0
-pydantic[email]==2.5.0
-pydantic-settings==2.1.0
-PyGithub==2.1.1
-httpx>=0.24.0,<0.25.0  # Compatible with supabase 2.3.0
-openai==1.6.1
-langchain==0.1.0
-langchain-openai==0.0.2
-langchain-community==0.0.10
-langgraph==0.0.20
-tiktoken==0.5.2
-celery
-redis==5.0.1
-aiofiles==23.2.1
-Pillow==10.4.0
-validators==0.22.0
-orjson==3.11.5
-structlog==23.2.0
-loguru==0.7.2
-slowapi==0.1.9
-radon==6.0.1
-bandit==1.7.5
-cryptography>=41.0.0  # For AES-256-GCM token encryption
+httpx>=0.24.0,<0.25.0  # Pinned by supabase 2.3.0
+
+# --- Config ---
+python-dotenv==1.0.1
+pydantic[email]==2.10.4
+pydantic-settings==2.7.0
+
+# --- GitHub ---
+PyGithub==2.5.0
+
+# --- AI ---
+openai==1.59.6
+tiktoken==0.8.0
+
+# --- Async / queue / cache ---
+celery==5.4.0  # was unpinned: builds were not reproducible
+redis==5.2.1
+anyio>=3.7.1  # to_thread.run_sync, used by app/core/concurrency.py
+
+# --- Logging ---
+structlog==24.4.0
+loguru==0.7.3
+
+# --- Crypto ---
+cryptography>=44.0.0  # AES-256-GCM token encryption
+
+# ---------------------------------------------------------------------------
+# Removed - present in requirements but imported nowhere in the codebase:
+#
+#   langchain==0.1.0, langchain-openai==0.0.2, langchain-community==0.0.10,
+#   langgraph==0.0.20
+#       January 2024 releases carrying a large transitive tree and a number of
+#       CVEs since. The agents call the OpenAI SDK directly.
+#   radon==6.0.1, bandit==1.7.5
+#       Static-analysis tools. bandit runs in CI, which installs it itself;
+#       neither is imported at runtime.
+#   slowapi==0.1.9
+#       Only ever used by app/main.py, which is now a shim. Rate limiting is
+#       app/middleware/rate_limiter.py.
+#   validators==0.22.0, aiofiles==23.2.1, orjson==3.11.5, Pillow==10.4.0
+#       No imports and no dynamic references.
+#
+# If any of these is reintroduced, import it somewhere or leave it out.
+# ---------------------------------------------------------------------------

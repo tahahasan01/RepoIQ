@@ -391,8 +391,6 @@ IMPORTANT: You MUST find at least 5 real issues. Real code is never perfect!"""
     async def generate_improvement_roadmap(self, issues: List[Dict[str, Any]]) -> Dict[str, Any]:
         critical_issues = [i for i in issues if i.get("severity") == "critical"]
         high_issues = [i for i in issues if i.get("severity") == "high"]
-        medium_issues = [i for i in issues if i.get("severity") == "medium"]
-        low_issues = [i for i in issues if i.get("severity") == "low"]
         
         quick_wins = []
         for issue in critical_issues[:5]:

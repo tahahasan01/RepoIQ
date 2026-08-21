@@ -7,28 +7,34 @@ from app.services.token_optimizer import get_token_optimizer
 from app.services.cache_service import get_analysis_cache
 from app.services.toon_service import get_toon_service
 from app.tasks.cache_warming import warm_cache_on_analysis_completion
+from app.core.concurrency import run_blocking
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from typing import Dict, Any
 import asyncio
 
 logger = get_logger(__name__)
+settings = get_settings()
 
 # ─── Cancellation mechanism ─────────────────────────────────────────────────
-# In-memory set of analysis IDs that have been requested for cancellation.
-# Works because BackgroundTasks run in the same process as the FastAPI server.
-_cancelled_analyses: set[str] = set()
-
-
-def request_cancellation(analysis_id: str):
-    """Mark an analysis as cancelled so the running task will stop at the next checkpoint."""
-    _cancelled_analyses.add(analysis_id)
-    logger.info(f"[cancellation] Registered cancellation request for analysis {analysis_id}")
+# Backed by Redis, not a module-level set.
+#
+# The previous implementation relied on "BackgroundTasks run in the same process
+# as the FastAPI server". That holds for a single worker and nothing else: with
+# WORKERS=4 or more than one instance, a cancel request only worked if it landed
+# on the process running the analysis, and otherwise did nothing while telling
+# the user it had succeeded.
+from app.services.analysis_registry import (
+    is_cancelled,
+    clear_cancellation,
+    clear_running,
+)
 
 
 def _check_cancelled(analysis_id: str):
-    """Raise an exception if this analysis has been cancelled. Call at key checkpoints."""
-    if analysis_id in _cancelled_analyses:
-        _cancelled_analyses.discard(analysis_id)
+    """Raise if this analysis has been cancelled. Call at key checkpoints."""
+    if is_cancelled(analysis_id):
+        clear_cancellation(analysis_id)
         logger.info(f"[cancellation] Analysis {analysis_id} detected cancellation — aborting")
         raise AnalysisCancelled(analysis_id)
 
@@ -52,9 +58,16 @@ async def _warm_cache_background(analysis_id: str, repo_id: str, user_id: str, g
 
 # Synchronous version without Celery/Redis
 async def run_analysis_sync(repo_id: str, user_id: str, github_token: str, analysis_id: str) -> Dict[str, Any]:
-    """Run analysis synchronously without using Celery/Redis"""
+    """
+    Run an analysis in-process.
+
+    The running marker is cleared in every exit path. It previously was not
+    cleared on success at all, so `_running_analyses` grew unboundedly and each
+    completed analysis left a stale entry that caused the NEXT analysis start to
+    "cancel" an already-finished one.
+    """
     logger.info(f"⚡ Starting synchronous repository analysis: {repo_id} (analysis_id: {analysis_id})")
-    
+
     try:
         result = await _run_analysis(repo_id, user_id, github_token, analysis_id)
         logger.info(f"✅ Repository analysis completed successfully: {repo_id}")
@@ -71,7 +84,7 @@ async def run_analysis_sync(repo_id: str, user_id: str, github_token: str, analy
         except Exception as update_error:
             logger.error(f"Failed to update cancelled analysis status: {str(update_error)}")
         # Clean up the cancellation flag in case it wasn't cleared
-        _cancelled_analyses.discard(analysis_id)
+        clear_cancellation(analysis_id)
         return {"analysis_id": analysis_id, "status": "cancelled"}
     except Exception as e:
         logger.error(f"❌ Repository analysis failed for {repo_id}: {type(e).__name__}: {str(e)}")
@@ -88,8 +101,11 @@ async def run_analysis_sync(repo_id: str, user_id: str, github_token: str, analy
             logger.info(f"Marked analysis {analysis_id} as failed in database")
         except Exception as update_error:
             logger.error(f"Failed to update analysis status: {str(update_error)}")
-        
+
         raise
+    finally:
+        # Every exit path - success, cancellation, failure - releases the slot.
+        clear_running(user_id, analysis_id)
 
 
 class CallbackTask(Task):
@@ -173,8 +189,24 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     github_service = create_github_service(github_token)
     
     # Check cache first
-    commit_sha = None  # TODO: Get actual commit SHA from GitHub API
-    cached_result = cache_service.get_cached_analysis(repo_id, commit_sha)
+    # CORRECTNESS: key the cache on the commit being analysed.
+    #
+    # This was `commit_sha = None`, so every analysis of a repository hit the
+    # same cache entry regardless of what had changed - re-running after a push
+    # returned the PREVIOUS commit's findings and reported them as current.
+    commit_sha = None
+    try:
+        commit_sha = await run_blocking(
+            github_service.get_default_branch_sha,
+            repo["full_name"],
+            repo["default_branch"],
+        )
+    except Exception as e:
+        # No SHA means no safe cache key: analyse fresh rather than risk
+        # returning stale findings for a different commit.
+        logger.warning(f"Could not resolve commit SHA, skipping analysis cache: {e}")
+
+    cached_result = cache_service.get_cached_analysis(repo_id, commit_sha) if commit_sha else None
     if cached_result:
         logger.info(f"Using cached analysis for repo {repo_id}")
         # Update DB with cached results
@@ -285,12 +317,22 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     
     code_files_list.sort(key=lambda f: file_priority(f["path"]))
     
-    # Limit to maximum 15 files for analysis (balance between thoroughness and speed)
-    MAX_FILES = 15
-    MAX_FILE_SIZE = 50 * 1024
-    
-    if len(code_files_list) > MAX_FILES:
-        logger.info(f"Limiting analysis from {len(code_files_list)} to {MAX_FILES} most important files")
+    # HONESTY: the analysis reads a SAMPLE of the repository, not all of it.
+    #
+    # This limit was hardcoded at 15 and reported nowhere. For any real
+    # repository that means the "overall score", "security score" and issue
+    # counts shown in the UI as an assessment of the repository were computed
+    # from well under 1% of it, with nothing telling the user so.
+    #
+    # The limit stays (a full-repository pass needs the incremental,
+    # blob-SHA-keyed design in Phase 4.1), but it is now configurable and the
+    # sample size travels with the result so the UI can disclose it.
+    MAX_FILES = settings.ANALYSIS_MAX_FILES
+    MAX_FILE_SIZE = settings.ANALYSIS_MAX_FILE_BYTES
+
+    files_eligible = len(code_files_list)
+    if files_eligible > MAX_FILES:
+        logger.info(f"Limiting analysis from {files_eligible} to {MAX_FILES} most important files")
         code_files_list = code_files_list[:MAX_FILES]
     
     logger.info(f"Found {len(files)} total files, analyzing {len(code_files_list)} important code files")
@@ -417,6 +459,9 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
         "medium_issues": analysis_result["medium_issues"],
         "low_issues": analysis_result["low_issues"],
         "files_analyzed": analysis_result["files_analyzed"],
+        # Sample-size disclosure: files_eligible is how many code files the
+        # repository actually has, files_analyzed is how many were read.
+        "files_eligible": files_eligible,
         "completed_at": datetime.utcnow().isoformat()
     })
     

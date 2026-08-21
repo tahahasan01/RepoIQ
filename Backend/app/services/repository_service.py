@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
 from app.db.supabase import get_service_db
 from app.services.github_service import create_github_service
@@ -211,7 +211,6 @@ class RepositoryService:
         - Parallel fetch of repos + analyses
         - Only fetch analyses for repos being returned (not all user repos)
         """
-        import asyncio
         import time
         
         try:

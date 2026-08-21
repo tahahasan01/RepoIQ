@@ -2,7 +2,7 @@
 Token-Optimized Object Notation (TOON) Service
 Reduces token usage by 60-80% through compact serialization.
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import json
 from app.core.logging import get_logger
 

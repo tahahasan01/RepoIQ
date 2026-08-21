@@ -2,7 +2,6 @@
 Background tasks for checking and sending alerts.
 """
 from typing import List, Dict, Any
-from datetime import datetime
 from app.services.alert_service import AlertService
 from app.core.logging import get_logger
 

@@ -7,7 +7,6 @@ from app.core.security import verify_token
 from app.core.config import get_settings
 from app.services.auth_service import AuthService
 from app.core.logging import get_logger
-from app.services.encryption_service import decrypt_token, get_encryption_service
 from app.services.session_revocation import is_token_revoked
 
 security = HTTPBearer()

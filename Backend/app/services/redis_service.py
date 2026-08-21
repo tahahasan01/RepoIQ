@@ -2,12 +2,11 @@
 Centralized Redis caching service with connection pooling and utilities.
 """
 from typing import Optional, Any, Callable, Dict
-from datetime import timedelta
 import json
-import pickle
+
 from functools import wraps
 from redis import Redis, ConnectionPool
-from redis.exceptions import RedisError, ConnectionError as RedisConnectionError
+from redis.exceptions import RedisError
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
@@ -49,22 +48,36 @@ class RedisService:
             self.available = False
     
     def _serialize(self, value: Any) -> bytes:
-        """Serialize value for storage."""
-        try:
-            # Try JSON first (human-readable, better for debugging)
-            return json.dumps(value).encode('utf-8')
-        except (TypeError, ValueError):
-            # Fall back to pickle for complex objects
-            return pickle.dumps(value)
-    
+        """
+        Serialize value for storage. JSON only.
+
+        SECURITY: this used to fall back to pickle for values JSON could not
+        encode, and _deserialize correspondingly fell back to pickle.loads() on
+        anything that failed to parse as JSON. pickle.loads() on data from a
+        shared datastore is arbitrary code execution in the API process: anyone
+        who can write to Redis - a misconfigured instance, a compromised
+        neighbour, or the unauthenticated cache-invalidation endpoint that
+        existed before Phase 0 - owns the application.
+
+        Everything this cache holds (repository rows, analysis results, issue
+        lists, file contents) is JSON-serialisable. A value that is not is a bug
+        at the call site, and failing loudly there is correct.
+        """
+        return json.dumps(value, default=str).encode('utf-8')
+
     def _deserialize(self, data: bytes) -> Any:
-        """Deserialize value from storage."""
+        """
+        Deserialize value from storage. JSON only - never pickle.
+
+        A value that will not parse is treated as a cache miss rather than an
+        error: it is either a leftover pickle payload from before this change or
+        genuine corruption, and in both cases re-fetching from source is right.
+        """
         try:
-            # Try JSON first
             return json.loads(data.decode('utf-8'))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            # Fall back to pickle
-            return pickle.loads(data)
+            logger.warning("Discarding non-JSON cache entry (legacy pickle or corrupt)")
+            return None
     
     def get(self, key: str) -> Optional[Any]:
         """

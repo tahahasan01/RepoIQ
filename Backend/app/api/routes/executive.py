@@ -113,7 +113,7 @@ async def compare_teams(
 @router.get("/organizations/{org_id}/teams/leaderboard", response_model=List[Dict[str, Any]])
 async def get_team_leaderboard(
     org_id: str,
-    metric: str = Query("overall_score", regex="^(overall_score|velocity|total_issues|critical_issues)$"),
+    metric: str = Query("overall_score", pattern="^(overall_score|velocity|total_issues|critical_issues)$"),
     current_user: dict = Depends(get_current_user)
 ) -> List[Dict[str, Any]]:
     """Get team leaderboard ranked by metric."""

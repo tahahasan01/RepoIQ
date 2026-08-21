@@ -5,7 +5,6 @@ from app.core.config import get_settings
 from app.services.redis_service import get_redis_service
 import base64
 import httpx
-import asyncio
 import time
 from functools import wraps
 
@@ -327,6 +326,34 @@ class GitHubService:
             logger.warning(f"File {file_path} is not UTF-8 encoded")
             return ""
     
+    @retry_with_backoff(max_retries=2, base_delay=0.5)
+    def get_default_branch_sha(self, full_name: str, branch: str = "main") -> Optional[str]:
+        """
+        Head commit SHA for a branch.
+
+        Used to key the analysis cache. Without it every analysis of a repository
+        shared one cache entry regardless of what had changed, so re-running after
+        a push returned the previous commit's findings.
+        """
+        cache_key = f"github:head:{full_name}:{branch}"
+        cached = self.redis.get(cache_key)
+        if cached:
+            return cached
+
+        try:
+            repo = self.client.get_repo(full_name)
+            try:
+                sha = repo.get_branch(branch).commit.sha
+            except GithubException:
+                sha = repo.get_branch(repo.default_branch).commit.sha
+
+            # Short TTL: this is a freshness signal, so a stale one defeats the point.
+            self.redis.set(cache_key, sha, ttl=60)
+            return sha
+        except GithubException as e:
+            logger.warning(f"Could not resolve head SHA for {full_name}@{branch}: {e}")
+            return None
+
     def get_repository_structure(self, full_name: str, branch: str = "main") -> Dict[str, Any]:
         try:
             repo = self.client.get_repo(full_name)

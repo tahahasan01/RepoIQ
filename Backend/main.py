@@ -179,7 +179,7 @@ async def health_check():
     try:
         supabase = Database.get_client()
         # Simple query to verify connection
-        result = supabase.table("repositories").select("id").limit(1).execute()
+        supabase.table("repositories").select("id").limit(1).execute()
         health_status["dependencies"]["database"] = {"status": "healthy"}
     except Exception as e:
         logger.error(f"Health check: database unhealthy: {e}")

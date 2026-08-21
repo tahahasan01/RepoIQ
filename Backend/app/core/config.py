@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Optional
 from functools import lru_cache
 
@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     
     MAX_UPLOAD_SIZE: int = 5242880
     UPLOAD_DIR: str = "uploads"
+
+    # Analysis sampling.
+    # The analysis reads a SAMPLE of a repository, not all of it. Scores and
+    # issue counts are computed from at most ANALYSIS_MAX_FILES files, chosen by
+    # the priority heuristic in analysis_tasks. Raising this increases coverage,
+    # analysis time and OpenAI spend roughly linearly. The result carries
+    # files_analyzed and files_eligible so the UI can disclose the sample size.
+    ANALYSIS_MAX_FILES: int = 15
+    ANALYSIS_MAX_FILE_BYTES: int = 50 * 1024
     
     RATE_LIMIT_PER_MINUTE: int = 60
     
@@ -84,9 +93,11 @@ class Settings(BaseSettings):
     def api_prefix(self) -> str:
         return self.API_V1_PREFIX
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore",
+    )
 
 
 @lru_cache()

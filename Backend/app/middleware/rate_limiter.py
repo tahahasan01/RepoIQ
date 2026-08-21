@@ -5,8 +5,6 @@ Supports per-user, per-endpoint, and global rate limits with Redis backend.
 SECURITY: Includes in-memory fallback when Redis is unavailable to maintain protection.
 """
 from typing import Optional, Dict, Callable
-from datetime import datetime, timedelta
-from collections import defaultdict
 import hashlib
 import threading
 from starlette.middleware.base import BaseHTTPMiddleware

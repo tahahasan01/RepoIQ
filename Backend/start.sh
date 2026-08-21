@@ -14,7 +14,7 @@ echo "Starting Celery worker..."
 celery -A app.core.celery_app worker --loglevel=info --detach
 
 echo "Starting FastAPI server..."
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn main:app --host 0.0.0.0 --port 8000
 
 echo "Backend started successfully!"
 echo "API Documentation: http://localhost:8000/docs"

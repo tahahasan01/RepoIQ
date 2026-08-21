@@ -7,6 +7,7 @@ import { ThemeProvider } from "@/hooks/useTheme";
 import { RoleProvider } from "@/hooks/useRole";
 import { useEffect, Suspense, lazy } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { persistQueryCache, clearAllQueryCaches } from "@/lib/queryPersister";
 import { usePrefetchOnLogin } from "@/hooks/usePrefetchOnLogin";
 
@@ -134,19 +135,19 @@ const AppInner = () => {
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/terms" element={<Terms />} />
           <Route path="/security" element={<Security />} />
-          <Route path="/repos" element={<Repositories />} />
-          <Route path="/dashboard/:id" element={<Dashboard />} />
-          <Route path="/analyzing/:id" element={<AnalyzeLoading />} />
-          <Route path="/dashboard/:id/issues" element={<Issues />} />
-          <Route path="/dashboard/:id/files" element={<Files />} />
-          <Route path="/dashboard/:id/docs" element={<Documentation />} />
-          <Route path="/dashboard/:id/settings" element={<Settings />} />
-          <Route path="/settings" element={<UserSettings />} />
-          <Route path="/organizations" element={<Organizations />} />
-          <Route path="/organizations/:id" element={<OrganizationDetail />} />
-          <Route path="/teams" element={<Teams />} />
-          <Route path="/teams/:id" element={<TeamDetail />} />
-          <Route path="/executive/:orgId" element={<ExecutiveDashboard />} />
+          <Route path="/repos" element={<ProtectedRoute><Repositories /></ProtectedRoute>} />
+          <Route path="/dashboard/:id" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path="/analyzing/:id" element={<ProtectedRoute><AnalyzeLoading /></ProtectedRoute>} />
+          <Route path="/dashboard/:id/issues" element={<ProtectedRoute><Issues /></ProtectedRoute>} />
+          <Route path="/dashboard/:id/files" element={<ProtectedRoute><Files /></ProtectedRoute>} />
+          <Route path="/dashboard/:id/docs" element={<ProtectedRoute><Documentation /></ProtectedRoute>} />
+          <Route path="/dashboard/:id/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><UserSettings /></ProtectedRoute>} />
+          <Route path="/organizations" element={<ProtectedRoute><Organizations /></ProtectedRoute>} />
+          <Route path="/organizations/:id" element={<ProtectedRoute><OrganizationDetail /></ProtectedRoute>} />
+          <Route path="/teams" element={<ProtectedRoute><Teams /></ProtectedRoute>} />
+          <Route path="/teams/:id" element={<ProtectedRoute><TeamDetail /></ProtectedRoute>} />
+          <Route path="/executive/:orgId" element={<ProtectedRoute><ExecutiveDashboard /></ProtectedRoute>} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>

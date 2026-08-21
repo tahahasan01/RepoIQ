@@ -8,12 +8,11 @@ Allows users to:
 - View webhook delivery history
 """
 from fastapi import APIRouter, HTTPException, status, Depends
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, ConfigDict, HttpUrl
 from typing import List, Optional
 from app.services.webhook_service import get_webhook_service, WebhookEvents
 from app.api.dependencies import get_current_user
 from app.core.logging import get_logger
-from app.api.errors import safe_detail
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
@@ -25,14 +24,15 @@ class WebhookCreateRequest(BaseModel):
     events: List[str] = ["*"]  # Default to all events
     secret: Optional[str] = None
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "url": "https://your-server.com/webhook",
                 "events": ["analysis.completed", "analysis.failed"],
                 "secret": "optional-your-secret"
             }
         }
+    )
 
 
 class WebhookResponse(BaseModel):
