@@ -151,36 +151,37 @@ async def get_optional_user(
     return None
 
 
-def get_github_token(current_user: dict = Depends(get_current_user)) -> str:
+async def get_github_token(current_user: dict = Depends(get_current_user)) -> str:
     """
-    Get and decrypt the GitHub access token for the current user.
-    
-    The token is stored encrypted in the database for security.
-    This function decrypts it before returning for API use.
+    A usable GitHub token for the current user.
+
+    Delegates to resolve_github_token_for_user(), which is the single place a
+    token is produced. This used to read `github_access_token` off the user row
+    directly, which is the OAuth-App field: in GitHub App mode that column is
+    NULL by design - access comes from a one-hour installation token minted from
+    the app's private key - so every repository route 403'd with "GitHub account
+    not connected" before making a single call. The dashboard came up empty
+    after a completely successful login.
+
+    Keeping one resolver means the request path and the Celery worker path
+    cannot disagree about how a token is obtained.
     """
-    github_token = current_user.get("github_access_token")
-    
-    if not github_token:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="GitHub account not connected. Please connect your GitHub account first."
-        )
-    
-    # SECURITY: Decrypt the token before use.
-    # Shared with the worker path via app.services.github_token so the two cannot
-    # drift apart in how they handle legacy plaintext rows.
-    from app.services.github_token import decrypt_stored_token, GitHubTokenUnavailable
+    from app.services.github_token import (
+        resolve_github_token_for_user,
+        GitHubTokenUnavailable,
+    )
 
     try:
-        return decrypt_stored_token(github_token)
-    except (ValueError, GitHubTokenUnavailable) as e:
-        logger.error(f"Failed to decrypt GitHub token: {type(e).__name__}")
+        return await resolve_github_token_for_user(current_user["id"])
+    except GitHubTokenUnavailable as e:
+        # 403 with the actual reason: "not connected" and "app not installed"
+        # need different actions from the user.
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="GitHub authentication expired or corrupted. Please reconnect your GitHub account."
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e) or "GitHub account not connected. Please connect it first.",
         )
     except Exception as e:
-        logger.error(f"Unexpected error decrypting GitHub token: {type(e).__name__}")
+        logger.error(f"Unexpected error resolving GitHub token: {type(e).__name__}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process GitHub authentication. Please try again."

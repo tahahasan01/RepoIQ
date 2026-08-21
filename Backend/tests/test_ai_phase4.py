@@ -125,12 +125,28 @@ class TestFailedBatchesDoNotSkewScores:
         # indistinguishable from a genuine "mediocre code" finding.
         assert '{"issues": [], "security_score": 50' not in source
 
-    def test_only_successful_batches_count_toward_the_average(self):
+    def test_a_failed_batch_contributes_no_findings(self):
+        """
+        The original defect: a failed batch returned zero issues with neutral 50
+        scores, which were averaged in - dragging the repository toward
+        "mediocre" and looking identical in the UI to a genuine finding.
+
+        Scoring is now computed from findings rather than from averaged
+        per-batch scores, so a batch that fails simply contributes nothing.
+        What still has to hold is that its result is skipped rather than treated
+        as an empty-but-successful batch.
+        """
         from app.agents.orchestrator import AgentOrchestrator
 
         source = inspect.getsource(AgentOrchestrator.analyze_repository)
-        assert "batch_count_actual += 1" in source
+        assert 'if batch_result and isinstance(batch_result, dict) and "issues" in batch_result:' in source
         assert "elif batch_result is not None:" in source
+
+    def test_scores_come_from_findings_not_batch_averages(self):
+        from app.services.scoring import score_findings
+
+        # No findings from any batch -> a clean result, not a neutral 50.
+        assert score_findings([])["overall"] == 100
 
 
 # ---------------------------------------------------------------------------

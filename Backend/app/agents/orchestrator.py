@@ -37,10 +37,6 @@ class AgentOrchestrator:
         logger.info(f"Starting fast batch analysis for {len(files)} files")
         
         all_issues = []
-        total_security_score = 0
-        total_quality_score = 0
-        total_architecture_score = 0
-        batch_count_actual = 0
         
         # Process ALL files in just 1-2 batches to minimize AI calls!
         batch_size = 8  # Analyze 8 files per AI call (sweet spot for quality vs speed)
@@ -87,11 +83,13 @@ class AgentOrchestrator:
                 # of 50, which quietly pulled the repository's score toward
                 # mediocre and looked identical to a real finding.
                 if batch_result and isinstance(batch_result, dict) and "issues" in batch_result:
+                    # Only the FINDINGS are kept. The model's self-reported
+                    # security/quality/architecture scores are deliberately
+                    # ignored: scoring is computed from findings so it is
+                    # deterministic and explainable, and so the same finding is
+                    # not penalised twice (once by the model lowering its own
+                    # score, once by the deduction that followed).
                     all_issues.extend(batch_result["issues"])
-                    total_security_score += batch_result.get("security_score", 50)
-                    total_quality_score += batch_result.get("quality_score", 50)
-                    total_architecture_score += batch_result.get("architecture_score", 50)
-                    batch_count_actual += 1
                 elif batch_result is not None:
                     logger.warning(f"Batch produced no usable result: {batch_result!r}")
         
@@ -141,61 +139,31 @@ class AgentOrchestrator:
         all_issues.extend(static_issues)
         logger.info(f"Static analysis found {len(static_issues)} issues")
         
-        # Calculate issue counts
-        critical_count = len([i for i in all_issues if i.get("severity") == "critical"])
-        high_count = len([i for i in all_issues if i.get("severity") == "high"])
-        medium_count = len([i for i in all_issues if i.get("severity") == "medium"])
-        low_count = len([i for i in all_issues if i.get("severity") == "low"])
-        
-        # Calculate realistic scores based on actual issues found
-        # Perfect 100 only if truly no issues AND small codebase
-        if batch_count_actual > 0:
-            avg_security = total_security_score / batch_count_actual
-            avg_quality = total_quality_score / batch_count_actual
-            avg_architecture = total_architecture_score / batch_count_actual
-        else:
-            # Fallback scores if no batches completed
-            avg_security = 75
-            avg_quality = 70
-            avg_architecture = 75
-        
-        # Adjust scores based on actual issues found (more realistic)
-        if critical_count > 0:
-            avg_security = min(avg_security, 60 - (critical_count * 10))
-        if high_count > 0:
-            avg_security = min(avg_security, 75 - (high_count * 5))
-            avg_quality = min(avg_quality, 75 - (high_count * 5))
-        if medium_count > 5:
-            avg_quality = min(avg_quality, 70 - (medium_count * 2))
-        
-        # Ensure scores are realistic (never perfect unless truly exceptional)
-        avg_security = max(30, min(avg_security, 95))
-        avg_quality = max(30, min(avg_quality, 95))
-        avg_architecture = max(30, min(avg_architecture, 95))
-        
-        # Overall score is weighted average
-        overall = (avg_security * 0.4 + avg_quality * 0.35 + avg_architecture * 0.25)
-        
-        logger.info(f"📊 Final scores: Overall={int(overall)}, Security={int(avg_security)}, Quality={int(avg_quality)}, Arch={int(avg_architecture)}")
-        logger.info(f"📊 Issues breakdown: {critical_count} critical, {high_count} high, {medium_count} medium, {low_count} low")
-        
-        # Calculate documentation score from documentation issues
-        doc_issues = [i for i in all_issues if i.get("agent_type") == "documentation" or "document" in i.get("category", "").lower()]
-        doc_score = max(50, 100 - (len(doc_issues) * 5))  # Penalty for each doc issue
-        
-        logger.info(f"📊 Documentation: {len(doc_issues)} issues found, score={doc_score}")
-        
+        # SCORING: one deterministic function, shared with the incremental path.
+        #
+        # This block used to average the scores the MODEL reported for itself,
+        # deduct again for the same findings, and clamp to 30-95 - while
+        # recalculate_totals() computed something different from finding counts
+        # and clamped to 20-100. The same repository therefore scored
+        # differently depending on whether the incremental cache was warm.
+        # See app/services/scoring.py.
+        from app.services.scoring import summarise
+
+        summary = summarise(all_issues)
+
+        logger.info(
+            f"📊 Scores: overall={summary['overall_score']} "
+            f"security={summary['security_score']} quality={summary['quality_score']} "
+            f"architecture={summary['architecture_score']} docs={summary['documentation_score']}"
+        )
+        logger.info(
+            f"📊 Findings: {summary['critical_issues']} critical, "
+            f"{summary['high_issues']} high, {summary['medium_issues']} medium, "
+            f"{summary['low_issues']} low"
+        )
+
         return {
-            "overall_score": int(overall),
-            "security_score": int(avg_security),
-            "quality_score": int(avg_quality),
-            "architecture_score": int(avg_architecture),
-            "documentation_score": doc_score,
-            "total_issues": len(all_issues),
-            "critical_issues": critical_count,
-            "high_issues": high_count,
-            "medium_issues": medium_count,
-            "low_issues": low_count,
+            **summary,
             "issues": all_issues,
             "agent_results": {},
             "files_analyzed": len(files)
@@ -229,54 +197,20 @@ class AgentOrchestrator:
     @staticmethod
     def recalculate_totals(result: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Recompute counts and scores after findings are merged in.
+        Recompute scores and counts after reused findings are merged in.
 
-        Incremental analysis reuses findings for unchanged files, so the totals
-        the model returned describe only the changed subset. Without this the
-        issue counts and scores would understate the repository by exactly the
-        proportion of it that did not change - which, once incremental caching is
-        working well, is nearly all of it.
+        Incremental analysis reuses findings for unchanged files, so what the
+        model returned describes only the changed subset. Without this the
+        totals would understate the repository by exactly the proportion that
+        did not change - which, once caching works well, is nearly all of it.
+
+        Delegates to the same scoring function the full path uses, so a warm
+        cache and a cold one cannot produce different numbers for identical
+        findings.
         """
-        issues = result.get("issues", [])
+        from app.services.scoring import summarise
 
-        counts = {
-            severity: sum(1 for i in issues if i.get("severity") == severity)
-            for severity in ("critical", "high", "medium", "low")
-        }
-
-        result["total_issues"] = len(issues)
-        result["critical_issues"] = counts["critical"]
-        result["high_issues"] = counts["high"]
-        result["medium_issues"] = counts["medium"]
-        result["low_issues"] = counts["low"]
-
-        # Same deduction model the per-batch scores use, applied to the merged
-        # finding set so a reused finding weighs exactly as much as a fresh one.
-        penalty = (
-            counts["critical"] * 12
-            + counts["high"] * 6
-            + counts["medium"] * 2
-            + counts["low"] * 1
-        )
-
-        security_penalty = sum(
-            12 if i.get("severity") == "critical" else
-            6 if i.get("severity") == "high" else
-            2 if i.get("severity") == "medium" else 1
-            for i in issues
-            if i.get("agent_type") == "security"
-        )
-
-        result["security_score"] = max(20, min(100, 100 - security_penalty))
-        result["quality_score"] = max(20, min(100, 100 - penalty))
-        result["architecture_score"] = max(
-            20, min(100, result.get("architecture_score", 100))
-        )
-        result["overall_score"] = int(
-            result["security_score"] * 0.4
-            + result["quality_score"] * 0.35
-            + result["architecture_score"] * 0.25
-        )
+        result.update(summarise(result.get("issues", [])))
         return result
 
     async def _analyze_file_batch(
@@ -479,37 +413,30 @@ Accuracy over volume. An empty issues array is an acceptable answer."""
         return results
     
     def _calculate_overall_scores(self, agent_results: Dict[str, Any]) -> Dict[str, int]:
-        scores = {}
-        
-        if agent_results["security"] and "score" in agent_results["security"]:
-            scores["security"] = agent_results["security"]["score"]
-        else:
-            scores["security"] = 100
-        
-        if agent_results["quality"] and "score" in agent_results["quality"]:
-            scores["quality"] = agent_results["quality"]["score"]
-        else:
-            scores["quality"] = 100
-        
-        if agent_results["architecture"] and "score" in agent_results["architecture"]:
-            scores["architecture"] = agent_results["architecture"]["score"]
-        else:
-            scores["architecture"] = 100
-        
-        if agent_results["documentation"] and "score" in agent_results["documentation"]:
-            scores["documentation"] = agent_results["documentation"]["score"]
-        else:
-            scores["documentation"] = 100
-        
-        scores["overall"] = int(
-            (scores["security"] * 0.35) +
-            (scores["quality"] * 0.30) +
-            (scores["architecture"] * 0.25) +
-            (scores["documentation"] * 0.10)
-        )
-        
-        return scores
-    
+        """
+        Scores for the per-file agent path.
+
+        Was a third weighting formula that disagreed with the other two. Now
+        routes through the same scoring module, so however a result is produced
+        the number means the same thing.
+        """
+        from app.services.scoring import score_findings
+
+        findings = []
+        for agent_type, agent_result in (agent_results or {}).items():
+            if agent_result and isinstance(agent_result, dict):
+                for issue in agent_result.get("issues", []):
+                    findings.append({**issue, "agent_type": issue.get("agent_type", agent_type)})
+
+        scores = score_findings(findings)
+        return {
+            "security": scores["security"],
+            "quality": scores["quality"],
+            "architecture": scores["architecture"],
+            "documentation": scores["documentation"],
+            "overall": scores["overall"],
+        }
+
     async def generate_improvement_roadmap(self, issues: List[Dict[str, Any]]) -> Dict[str, Any]:
         critical_issues = [i for i in issues if i.get("severity") == "critical"]
         high_issues = [i for i in issues if i.get("severity") == "high"]
