@@ -1017,16 +1017,203 @@ class ApiClient {
     return this.request<any[]>(`/executive/teams/${teamId}/trends?days=${days}`);
   }
 
-  // Alert endpoints
-  async getOrganizationAlerts(orgId: string, days: number = 7) {
-    return this.request<any[]>(`/alerts/organizations/${orgId}?days=${days}`);
+  // ---------------------------------------------------------------------------
+  // Alerts, notification settings, team invitations and webhooks.
+  // Shapes are documented in Backend/app/api/routes/{alerts,users,teams,webhooks}.py.
+  // ---------------------------------------------------------------------------
+
+  async getOrganizationAlerts(orgId: string, days: number = 7, includeAcknowledged: boolean = true) {
+    const params = new URLSearchParams({
+      days: String(days),
+      include_acknowledged: String(includeAcknowledged),
+    });
+    return this.request<Alert[]>(`/alerts/organizations/${orgId}?${params}`);
   }
 
   async checkAlerts(orgId: string) {
-    return this.request<any>(`/alerts/organizations/${orgId}/check`, {
+    return this.request<AlertCheckResult>(`/alerts/organizations/${orgId}/check`, {
       method: 'POST',
     });
   }
+
+  async acknowledgeAlert(alertId: string) {
+    return this.request<Alert>(`/alerts/${alertId}/acknowledge`, { method: 'POST' });
+  }
+
+  async getNotificationSettings() {
+    return this.request<NotificationSettings>('/users/me/settings');
+  }
+
+  async updateNotificationSettings(changes: NotificationSettingsUpdate) {
+    const body = JSON.stringify(changes);
+    // Requests are de-duplicated by key, and the default key is the endpoint:
+    // a second change sent while the first is in flight would be handed the
+    // first one's response and never reach the server. Keying by body keeps
+    // distinct changes distinct.
+    return this.request<NotificationSettings>(
+      '/users/me/settings',
+      { method: 'PUT', body },
+      `PUT /users/me/settings ${body}`
+    );
+  }
+
+  async getMyInvitations() {
+    return this.request<TeamInvitation[]>('/teams/invitations');
+  }
+
+  async acceptInvitation(invitationId: string) {
+    return this.request<{
+      invitation: TeamInvitation;
+      membership: { team_id: string; user_id: string; role: TeamRole };
+    }>(`/teams/invitations/${invitationId}/accept`, { method: 'POST' });
+  }
+
+  async declineInvitation(invitationId: string) {
+    return this.request<{ invitation: TeamInvitation }>(
+      `/teams/invitations/${invitationId}/decline`,
+      { method: 'POST' }
+    );
+  }
+
+  async getTeamInvitations(teamId: string) {
+    return this.request<TeamInvitation[]>(`/teams/${teamId}/invitations`);
+  }
+
+  async revokeInvitation(teamId: string, invitationId: string) {
+    return this.request<{ invitation: TeamInvitation }>(
+      `/teams/${teamId}/invitations/${invitationId}`,
+      { method: 'DELETE' }
+    );
+  }
+
+  // The webhook collection routes are declared as "/" under the /webhooks
+  // prefix, so they are addressed with the trailing slash (no redirect hop).
+  async listWebhooks() {
+    return this.request<{ webhooks: Webhook[] }>('/webhooks/');
+  }
+
+  async createWebhook(data: { url: string; events: string[]; secret: string }) {
+    // Own de-duplication key: the default (the endpoint) is shared with the
+    // list GET, and a create sent while a list is in flight would be handed
+    // the list's response instead of being sent.
+    return this.request<Webhook & { message: string }>(
+      '/webhooks/',
+      { method: 'POST', body: JSON.stringify(data) },
+      `POST /webhooks/ ${data.url}`
+    );
+  }
+
+  async deleteWebhook(webhookId: string) {
+    return this.request<{ message: string }>(`/webhooks/${webhookId}`, { method: 'DELETE' });
+  }
+
+  async testWebhook(webhookId: string) {
+    return this.request<{ message: string }>(`/webhooks/${webhookId}/test`, { method: 'POST' });
+  }
+
+  async getWebhookDeliveries(webhookId: string, limit: number = 20, offset: number = 0) {
+    return this.request<WebhookDeliveryPage>(
+      `/webhooks/${webhookId}/deliveries?limit=${limit}&offset=${offset}`
+    );
+  }
+}
+
+export type AlertSeverity = 'critical' | 'high' | 'medium';
+export type AlertType = 'critical_issues' | 'security_vulnerability' | 'quality_threshold';
+
+export interface Alert {
+  id: string;
+  organization_id: string;
+  repository_id: string;
+  alert_type: AlertType;
+  severity: AlertSeverity;
+  message: string;
+  details: {
+    repository_name?: string;
+    repository_full_name?: string;
+    analysis_id?: string;
+    analysis_completed_at?: string;
+    [key: string]: unknown;
+  };
+  acknowledged: boolean;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  created_at: string;
+}
+
+export interface AlertCheckResult {
+  success: boolean;
+  organization_id: string;
+  alerts_found: number;
+  alerts_created: number;
+  alerts: Alert[];
+}
+
+export interface NotificationSettings {
+  email_notifications: boolean;
+  security_alerts: boolean;
+  weekly_digest: boolean;
+  /** 0-100. */
+  alert_score_threshold: number;
+  auto_analyze_new_repos: boolean;
+  /** null until the user first saves. */
+  updated_at: string | null;
+}
+
+export type NotificationSettingsUpdate = Partial<Omit<NotificationSettings, 'updated_at'>>;
+
+export type TeamRole = 'member' | 'lead' | 'manager';
+
+export interface InvitationPerson {
+  id: string;
+  full_name: string | null;
+  avatar_url: string | null;
+  github_username: string | null;
+}
+
+export interface TeamInvitation {
+  id: string;
+  team_id: string;
+  invited_user_id: string;
+  invited_by: string | null;
+  role: TeamRole;
+  status: 'pending' | 'accepted' | 'declined' | 'revoked';
+  created_at: string;
+  responded_at: string | null;
+  team: { id: string; name: string; organization_id: string } | null;
+  organization: { id: string; name: string } | null;
+  invitee: InvitationPerson | null;
+  inviter: InvitationPerson | null;
+}
+
+export interface Webhook {
+  id: string;
+  url: string;
+  events: string[];
+  active: boolean;
+  created_at: string;
+}
+
+export type WebhookDeliveryStatus = 'success' | 'retrying' | 'failed' | 'blocked';
+
+export interface WebhookDelivery {
+  id: string;
+  delivery_id: string | null;
+  event_type: string;
+  status: WebhookDeliveryStatus;
+  /** 0 when no HTTP response was received. */
+  response_code: number;
+  attempt: number;
+  error: string | null;
+  delivered_at: string;
+}
+
+export interface WebhookDeliveryPage {
+  webhook_id: string;
+  deliveries: WebhookDelivery[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
 }
 
 export const apiClient = new ApiClient(API_BASE_URL);
