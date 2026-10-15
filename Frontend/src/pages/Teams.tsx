@@ -475,15 +475,12 @@ export default function Teams() {
                         {team.description}
                       </p>
                     )}
-                    <Link
-                      to={`/teams/${team.id}`}
-                      onMouseEnter={() => prefetchTeam.prefetch(team.id)}
-                    >
-                      <Button variant="outline" className="w-full">
+                    <Button asChild variant="outline" className="w-full">
+                      <Link to={`/teams/${team.id}`} onMouseEnter={() => prefetchTeam.prefetch(team.id)}>
                         View team
                         <ArrowRight className="h-4 w-4 ml-2" aria-hidden="true" />
-                      </Button>
-                    </Link>
+                      </Link>
+                    </Button>
                   </CardContent>
                 </Card>
               );

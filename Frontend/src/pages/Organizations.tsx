@@ -408,15 +408,12 @@ export default function Organizations() {
                         })()}
                       </span>
                     </div>
-                    <Link
-                      to={`/organizations/${org.id}`}
-                      onMouseEnter={() => prefetchOrg.prefetch(org.id)}
-                    >
-                      <Button variant="outline" className="w-full">
+                    <Button asChild variant="outline" className="w-full">
+                      <Link to={`/organizations/${org.id}`} onMouseEnter={() => prefetchOrg.prefetch(org.id)}>
                         View details
                         <ArrowRight className="h-4 w-4 ml-2" aria-hidden="true" />
-                      </Button>
-                    </Link>
+                      </Link>
+                    </Button>
                   </div>
                 </CardContent>
               </Card>

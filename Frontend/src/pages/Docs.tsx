@@ -93,7 +93,7 @@ const sections: DocSection[] = [
     blocks: [
       {
         kind: "p",
-        text: "On the Repositories page, click Analyze Now on a repository. RepoIQ fetches the source from GitHub, reviews it with Claude, and runs static checks alongside. Progress updates live while it runs, and you can cancel it.",
+        text: "On the Repositories page, click Analyze on a repository (Analyze again re-runs it). RepoIQ fetches the source from GitHub, reviews it with Claude, and runs static checks alongside. Progress updates live while it runs, and you can cancel it.",
       },
       {
         kind: "list",
