@@ -748,7 +748,9 @@ class ApiClient {
   }
 
   // User management endpoints
-  async updateProfile(data: { full_name?: string; email?: string }) {
+  // PUT /users/me accepts only these fields. Email is not editable; it used to
+  // be sent anyway and silently dropped by the backend.
+  async updateProfile(data: { full_name?: string; bio?: string; avatar_url?: string }) {
     return this.request<any>('/users/me', {
       method: 'PUT',
       body: JSON.stringify(data),
