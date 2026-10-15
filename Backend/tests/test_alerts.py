@@ -313,3 +313,19 @@ class TestSchedule:
 
         assert summary == {"organizations": 2, "alerts_created": 1, "failed": 1}
         assert len(_alerts(db, org["id"])) == 1
+
+
+@requires_db
+class TestAlertVisibilityFollowsTeams:
+    """Alerts name a repository and its scores; other teams must not see them."""
+
+    def test_a_member_of_another_team_sees_and_acknowledges_nothing(self, db, user, org):  # noqa: F811
+        carol = db.table("users").insert({"email": "carol@example.com"}).execute().data[0]
+        other = db.table("teams").insert({"organization_id": org["id"], "name": "Other"}).execute().data[0]
+        db.table("team_members").insert({"team_id": other["id"], "user_id": carol["id"]}).execute()
+        _analysis(db, org["repo"], critical_issues=1)
+        alert = _check(org["id"])["alerts"][0]
+
+        assert asyncio.run(_service().get_organization_alerts(org["id"], carol["id"])) == []
+        assert asyncio.run(_service().acknowledge_alert(alert["id"], carol["id"])) is None
+        assert [a["id"] for a in asyncio.run(_service().get_organization_alerts(org["id"], user["id"]))] == [alert["id"]]

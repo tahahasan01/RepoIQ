@@ -104,6 +104,13 @@ async def check_alerts(
             detail=safe_detail(e, "Failed to check alerts", context="alerts.check"),
         )
 
+    # The check runs over the whole organization; the answer only describes
+    # repositories this caller may see (see AlertService.visible_repository_ids).
+    if org.get("owner_id") != current_user["id"]:
+        visible = set(await AlertService().visible_repository_ids(org_id, current_user["id"]))
+        alerts = [a for a in result.get("alerts", []) if a.get("repository_id") in visible]
+        result = {"alerts_created": len(alerts), "alerts": alerts}
+
     return {"success": True, "organization_id": org_id, **result}
 
 

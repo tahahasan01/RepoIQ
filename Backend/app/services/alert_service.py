@@ -258,6 +258,21 @@ class AlertService:
         row.pop("dedupe_key", None)
         return row
 
+    async def visible_repository_ids(self, organization_id: str, user_id: str) -> List[str]:
+        """
+        Repositories whose alerts this user may see: the organization's owner
+        sees all; anyone else sees those assigned to teams they are on.
+
+        SECURITY: alerts carry a repository's name, scores and finding counts.
+        Organization membership alone exposed every team's repositories - the
+        same boundary as OrganizationService.get_organization_repositories,
+        which this reuses.
+        """
+        from app.services.organization_service import OrganizationService
+
+        repos = await OrganizationService().get_organization_repositories(organization_id, user_id)
+        return [r["id"] for r in repos]
+
     async def get_organization_alerts(
         self,
         organization_id: str,
@@ -274,11 +289,16 @@ class AlertService:
         if not await OrganizationService().get_organization(organization_id, user_id):
             return None
 
+        visible = await self.visible_repository_ids(organization_id, user_id)
+        if not visible:
+            return []
+
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         query = (
             self.db.table("alerts")
             .select(ALERT_COLUMNS)
             .eq("organization_id", organization_id)
+            .in_("repository_id", visible)
             .gte("created_at", since)
         )
         if not include_acknowledged:
@@ -304,13 +324,15 @@ class AlertService:
             return None
 
         alert = (await run_blocking(
-            self.db.table("alerts").select("organization_id").eq("id", alert_id).single().execute
+            self.db.table("alerts").select("organization_id, repository_id").eq("id", alert_id).single().execute
         )).data
         if not alert or not alert.get("organization_id"):
             return None
 
         organization_id = alert["organization_id"]
         if not await OrganizationService().get_organization(organization_id, user_id):
+            return None
+        if alert.get("repository_id") not in await self.visible_repository_ids(organization_id, user_id):
             return None
 
         await run_blocking(
