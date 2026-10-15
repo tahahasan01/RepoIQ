@@ -137,6 +137,56 @@ function isNetworkError(error: any): boolean {
   );
 }
 
+export interface TeamAnalysisSummary {
+  id: string;
+  overall_score: number | null;
+  security_score: number | null;
+  quality_score: number | null;
+  architecture_score: number | null;
+  documentation_score: number | null;
+  total_issues: number;
+  critical_issues: number;
+  high_issues: number;
+  files_analyzed: number | null;
+  files_eligible: number | null;
+  completed_at: string | null;
+}
+
+export interface TeamSummary {
+  team: { id: string; name: string; organization_id: string; manager_id?: string | null; description?: string | null };
+  period_days: number;
+  metrics: {
+    total_repositories: number;
+    overall_score: number;
+    total_issues: number;
+    critical_issues: number;
+    team_size: number;
+    velocity: number;
+  };
+  trends: { date: string; average_score: number; average_issues: number }[];
+  repositories: {
+    id: string;
+    name: string;
+    full_name: string;
+    language: string | null;
+    is_private: boolean | null;
+    owner_id: string;
+    latest_analysis: TeamAnalysisSummary | null;
+  }[];
+  members: {
+    user_id: string;
+    role: string;
+    joined_at: string | null;
+    user: { id: string; full_name: string | null; avatar_url: string | null; github_username: string | null } | null;
+    total_commits: number;
+    total_lines_added: number;
+    total_lines_removed: number;
+    total_issues_introduced: number;
+    issues_per_100_commits: number | null;
+    repositories: number;
+  }[];
+}
+
 class ApiClient {
   private baseUrl: string;
   private refreshing: boolean = false;
@@ -840,6 +890,17 @@ class ApiClient {
     return this.request<any>(`/teams/${teamId}/repositories/${repoId}`, {
       method: 'POST',
     });
+  }
+
+  async unassignRepositoryFromTeam(teamId: string, repoId: string) {
+    return this.request<void>(`/teams/${teamId}/repositories/${repoId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  /** Team page data: metrics, trends, repositories with latest scores, member totals. */
+  async getTeamSummary(teamId: string, periodDays = 30) {
+    return this.request<TeamSummary>(`/teams/${teamId}/summary?period_days=${periodDays}`);
   }
 
   async getTeamRepositories(teamId: string) {
