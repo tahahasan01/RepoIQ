@@ -2,12 +2,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { NotificationSettings } from "@/lib/api";
+import type { Alert, NotificationSettings } from "@/lib/api";
 
 const api = vi.hoisted(() => ({
   updateNotificationSettings: vi.fn(),
   acceptInvitation: vi.fn(),
   declineInvitation: vi.fn(),
+  acknowledgeAlert: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({ default: api }));
 vi.mock("@/stores/repositoryStore", () => ({ useRepositoryStore: { getState: () => ({}), setState: () => {} } }));
@@ -15,6 +16,7 @@ vi.mock("@/stores/repositoryStore", () => ({ useRepositoryStore: { getState: () 
 import { queryKeys } from "@/hooks/useApiQueries";
 import {
   rollbackSettings,
+  useAcknowledgeAlert,
   useRespondToInvitation,
   useUpdateNotificationSettings,
 } from "@/hooks/useNotificationQueries";
@@ -152,5 +154,37 @@ describe("useRespondToInvitation", () => {
     const roots = invalidate.mock.calls.map(([filters]) => (filters?.queryKey as unknown[])?.[0]);
     expect(roots).not.toContain("teams");
     expect(roots).not.toContain("organizations");
+  });
+});
+
+describe("useAcknowledgeAlert", () => {
+  const alert: Alert = {
+    id: "alert-1",
+    organization_id: "org-1",
+    repository_id: "repo-1",
+    alert_type: "critical_issues",
+    severity: "critical",
+    message: "3 critical issues in the latest analysis of api",
+    details: { repository_name: "api" },
+    acknowledged: false,
+    acknowledged_at: null,
+    acknowledged_by: null,
+    created_at: "2026-10-15T09:00:00Z",
+  };
+
+  it("marks the alert acknowledged in the full list and drops it from the open list", async () => {
+    const { queryClient, wrapper } = setup();
+    queryClient.setQueryData(queryKeys.organizationAlerts("org-1", true), [alert]);
+    queryClient.setQueryData(queryKeys.organizationAlerts("org-1", false), [alert]);
+    const acknowledged = { ...alert, acknowledged: true, acknowledged_at: "2026-10-15T10:00:00Z", acknowledged_by: "me" };
+    api.acknowledgeAlert.mockResolvedValue(acknowledged);
+
+    const { result } = renderHook(() => useAcknowledgeAlert("org-1"), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync("alert-1");
+    });
+
+    expect(queryClient.getQueryData(queryKeys.organizationAlerts("org-1", true))).toEqual([acknowledged]);
+    expect(queryClient.getQueryData(queryKeys.organizationAlerts("org-1", false))).toEqual([]);
   });
 });

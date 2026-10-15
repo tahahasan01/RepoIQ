@@ -1,7 +1,8 @@
 /**
- * Input rules for notification settings and webhooks, kept apart from the
- * components so they can be tested on their own.
+ * Input rules and copy for notification settings, webhooks, invitations and
+ * alerts, kept apart from the components so they can be tested on their own.
  */
+import type { AlertCheckResult, TeamInvitation } from '@/lib/api';
 
 export type ParseResult<T> = { ok: true; value: T; error?: never } | { ok: false; error: string; value?: never };
 
@@ -56,4 +57,38 @@ export function generateWebhookSecret(byteLength = 32): string {
   const bytes = new Uint8Array(byteLength);
   crypto.getRandomValues(bytes);
   return 'whsec_' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function personName(person: TeamInvitation["inviter"]): string | null {
+  return person?.full_name || (person?.github_username ? `@${person.github_username}` : null);
+}
+
+/** "Sam invited you to join Platform (Acme) as a lead." */
+export function describeInvitation(invitation: TeamInvitation): string {
+  const team = invitation.team?.name ?? "a team";
+  const org = invitation.organization?.name ? ` (${invitation.organization.name})` : "";
+  const role = invitation.role === "member" ? "a member" : `a ${invitation.role}`;
+  const inviter = personName(invitation.inviter);
+  return `${inviter ?? "Someone"} invited you to join ${team}${org} as ${role}.`;
+}
+
+/** The toast after "Check now", from POST /alerts/organizations/{id}/check. */
+export function checkResultMessage(result: AlertCheckResult): { title: string; description: string } {
+  if (result.alerts_created > 0) {
+    const n = result.alerts_created;
+    return {
+      title: `${n} new alert${n === 1 ? "" : "s"}`,
+      description: "They're at the top of the list.",
+    };
+  }
+  if (result.alerts_found > 0) {
+    return {
+      title: "No new alerts",
+      description: "Every problem the check found already has an alert below.",
+    };
+  }
+  return {
+    title: "No problems found",
+    description: "The latest analysis of each repository raised nothing to alert on.",
+  };
 }

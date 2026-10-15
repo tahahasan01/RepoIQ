@@ -4,20 +4,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useToast } from "@/hooks/use-toast";
 import { useMyInvitations, useRespondToInvitation } from "@/hooks/useNotificationQueries";
 import type { TeamInvitation } from "@/lib/api";
+import { describeInvitation } from "@/lib/notifications";
 import { formatRelativeTime } from "@/lib/timeUtils";
-
-function personName(person: TeamInvitation["inviter"]): string | null {
-  return person?.full_name || (person?.github_username ? `@${person.github_username}` : null);
-}
-
-/** "Sam invited you to join Platform (Acme) as a lead." */
-export function describeInvitation(invitation: TeamInvitation): string {
-  const team = invitation.team?.name ?? "a team";
-  const org = invitation.organization?.name ? ` (${invitation.organization.name})` : "";
-  const role = invitation.role === "member" ? "a member" : `a ${invitation.role}`;
-  const inviter = personName(invitation.inviter);
-  return `${inviter ?? "Someone"} invited you to join ${team}${org} as ${role}.`;
-}
 
 /** Accept/decline with the toasts both the bell and the Teams page use. */
 function useInvitationResponse() {

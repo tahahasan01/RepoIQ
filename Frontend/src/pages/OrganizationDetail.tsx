@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Building2,
   Users,
@@ -49,12 +49,21 @@ import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
 import { useOrganization, useOrganizationTeams, useOrganizationRepositories, queryKeys } from "@/hooks/useApiQueries";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { OrganizationAlerts } from "@/components/alerts/OrganizationAlerts";
+import { useOrganizationAlerts } from "@/hooks/useNotificationQueries";
+
+const TABS = ["overview", "alerts", "teams", "repositories", "settings"] as const;
 
 export default function OrganizationDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  // ?tab=alerts (linked from the executive dashboard) opens that tab.
+  const [searchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const initialTab = TABS.find((t) => t === requestedTab) ?? "overview";
+  const { data: openAlerts = [] } = useOrganizationAlerts(id, false);
   
   // Use React Query for instant loading with cached data
   const { data: organization, isLoading: orgLoading, error: orgError } = useOrganization(id || "", {
@@ -276,10 +285,18 @@ export default function OrganizationDetail() {
           </Link>
         </div>
 
-        <Tabs defaultValue="overview" className="space-y-6">
+        <Tabs defaultValue={initialTab} className="space-y-6">
           <TabsList className="bg-muted/50 p-1">
             <TabsTrigger value="overview" className="data-[state=active]:bg-background">
               Overview
+            </TabsTrigger>
+            <TabsTrigger value="alerts" className="data-[state=active]:bg-background">
+              Alerts
+              {openAlerts.length > 0 && (
+                <Badge variant="destructive" className="ml-2 h-5 px-1.5" aria-label={`${openAlerts.length} open`}>
+                  {openAlerts.length}
+                </Badge>
+              )}
             </TabsTrigger>
             <TabsTrigger value="teams" className="data-[state=active]:bg-background">
               Teams ({teams.length})
@@ -431,6 +448,11 @@ export default function OrganizationDetail() {
                 </CardContent>
               </Card>
             )}
+          </TabsContent>
+
+          {/* Alerts Tab */}
+          <TabsContent value="alerts" className="space-y-4">
+            <OrganizationAlerts orgId={id!} />
           </TabsContent>
 
           {/* Teams Tab */}
