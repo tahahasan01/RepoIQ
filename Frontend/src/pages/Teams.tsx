@@ -30,6 +30,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import apiClient from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
+import { MAIN_CONTENT_ID } from "@/components/layout/AppHeader";
 import { InvitationsBanner } from "@/components/teams/InvitationList";
 import { useTeams, useOrganizations, usePrefetchTeam, queryKeys } from "@/hooks/useApiQueries";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -41,7 +42,7 @@ export default function Teams() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const prefetchTeam = usePrefetchTeam();
-  
+
   // Use React Query for instant loading with cached data
   const { data: organizations = [], isLoading: orgsLoading } = useOrganizations({
     placeholderData: (previousData) => previousData,
@@ -54,12 +55,14 @@ export default function Teams() {
     refetchOnMount: true, // Always refetch on mount to get latest data
     enabled: true, // Always enabled - useTeams handles undefined internally
   });
-  
+
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newTeamName, setNewTeamName] = useState("");
   const [newTeamOrgId, setNewTeamOrgId] = useState(orgId || "");
   const [newTeamDescription, setNewTeamDescription] = useState("");
-  
+
+  const noOrganizations = !orgsLoading && organizations.length === 0;
+
   // Show loading only if we have no cached data
   const loading = (orgsLoading && organizations.length === 0) || (teamsLoading && teams.length === 0);
 
@@ -73,7 +76,7 @@ export default function Teams() {
     },
     onSuccess: (newTeam) => {
       console.log('[Teams] ✅ Created team:', newTeam);
-      
+
       // Optimistically add new team to cache
       queryClient.setQueryData(queryKeys.teams(), (old: any[] = []) => {
         if (old.some((team: any) => team.id === newTeam.id)) {
@@ -83,7 +86,7 @@ export default function Teams() {
         console.log('[Teams] ➕ Adding new team to cache:', newTeam.name);
         return [...old, newTeam];
       });
-      
+
       if (orgId) {
         queryClient.setQueryData(queryKeys.teams(orgId), (old: any[] = []) => {
           if (old.some((team: any) => team.id === newTeam.id)) {
@@ -92,7 +95,7 @@ export default function Teams() {
           return [...old, newTeam];
         });
       }
-      
+
       setCreateDialogOpen(false);
       setNewTeamName("");
       setNewTeamDescription("");
@@ -101,7 +104,7 @@ export default function Teams() {
         title: "Success",
         description: "Team created successfully",
       });
-      
+
       // Force refetch to ensure we have latest data from backend
       setTimeout(() => {
         queryClient.invalidateQueries({ queryKey: queryKeys.teams() });
@@ -123,7 +126,7 @@ export default function Teams() {
     mutationFn: async (teamId: string) => {
       console.log('[Teams] 🗑️ Deleting team:', teamId);
       // Add timeout to prevent hanging
-      const timeoutPromise = new Promise((_, reject) => 
+      const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Delete request timed out')), 10000)
       );
       const deletePromise = apiClient.deleteTeam(teamId);
@@ -133,13 +136,13 @@ export default function Teams() {
       // Cancel outgoing refetches
       await queryClient.cancelQueries({ queryKey: queryKeys.teams() });
       await queryClient.cancelQueries({ queryKey: queryKeys.teams(orgId || undefined) });
-      
+
       // Snapshot previous values
       const previousTeamsAll = queryClient.getQueryData<any[]>(queryKeys.teams());
       const previousTeamsOrg = queryClient.getQueryData<any[]>(queryKeys.teams(orgId || undefined));
-      
+
       console.log('[Teams] 📸 Snapshot before delete. All teams:', previousTeamsAll?.length, 'Org teams:', previousTeamsOrg?.length);
-      
+
       // Optimistically remove team from cache
       queryClient.setQueryData(queryKeys.teams(), (old: any[] = []) => {
         const filtered = old.filter((team: any) => team.id !== teamId);
@@ -151,15 +154,15 @@ export default function Teams() {
         console.log('[Teams] ➖ Removed team from org teams cache. Before:', old.length, 'After:', filtered.length);
         return filtered;
       });
-      
+
       return { previousTeamsAll, previousTeamsOrg };
     },
     onError: (error: any, teamId, context) => {
       console.error('[Teams] ❌ Delete failed:', error, 'teamId:', teamId);
-      
+
       const isTimeout = error?.message?.includes('timeout');
       const is404 = error?.message?.includes('404') || error?.status === 404;
-      
+
       // Rollback on error (unless timeout or 404)
       if (!isTimeout && !is404) {
         if (context?.previousTeamsAll) {
@@ -170,19 +173,19 @@ export default function Teams() {
           queryClient.setQueryData(queryKeys.teams(orgId || undefined), context.previousTeamsOrg);
         }
       }
-      
+
       // If 404 or timeout, the team might already be deleted - remove it from cache anyway
       if (is404 || isTimeout) {
         console.log('[Teams] ⚠️', isTimeout ? 'Timeout' : '404', '- removing from cache anyway');
-        queryClient.setQueryData(queryKeys.teams(), (old: any[] = []) => 
+        queryClient.setQueryData(queryKeys.teams(), (old: any[] = []) =>
           old.filter((team: any) => team.id !== teamId)
         );
-        queryClient.setQueryData(queryKeys.teams(orgId || undefined), (old: any[] = []) => 
+        queryClient.setQueryData(queryKeys.teams(orgId || undefined), (old: any[] = []) =>
           old.filter((team: any) => team.id !== teamId)
         );
         toast({
           title: isTimeout ? "Timeout" : "Success",
-          description: isTimeout 
+          description: isTimeout
             ? "Delete request timed out. Team may have been deleted. Refreshing..."
             : "Team removed (may have already been deleted)",
         });
@@ -246,10 +249,10 @@ export default function Teams() {
 
     // Check for duplicate team name in the same organization
     const orgTeams = teams.filter((team: any) => team.organization_id === newTeamOrgId);
-    const duplicateTeam = orgTeams.find((team: any) => 
+    const duplicateTeam = orgTeams.find((team: any) =>
       team.name.toLowerCase().trim() === newTeamName.toLowerCase().trim()
     );
-    
+
     if (duplicateTeam) {
       toast({
         title: "Duplicate Team Name",
@@ -280,27 +283,36 @@ export default function Teams() {
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
-      <div className="container mx-auto px-4 py-8 max-w-7xl pt-24">
+      <main id={MAIN_CONTENT_ID} tabIndex={-1} className="container mx-auto px-4 py-8 max-w-7xl pt-24 focus:outline-none">
         <InvitationsBanner />
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
           <div>
             <h1 className="text-3xl font-bold">Teams</h1>
             <p className="text-muted-foreground mt-2">
-              Create teams of developers and assign repositories to them. Compare team performance, track code quality trends, and identify which teams need support.
+              Assign repositories to teams and compare their code health.{" "}
+              {teams.length > 0 && (
+                <Link to="/docs#organisations" className="text-link underline-offset-4 hover:underline">
+                  How organizations and teams work
+                </Link>
+              )}
             </p>
           </div>
           <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+            {/* Without an organization there is nothing to create a team in;
+                the empty state below points there instead. */}
+            {!noOrganizations && (
             <DialogTrigger asChild>
               <Button>
-                <Plus className="h-4 w-4 mr-2" />
-                Create Team
+                <Plus className="h-4 w-4 mr-2" aria-hidden="true" />
+                Create team
               </Button>
             </DialogTrigger>
+            )}
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Create Team</DialogTitle>
+                <DialogTitle>Create team</DialogTitle>
                 <DialogDescription>
-                  Create a new team in an organization
+                  A team belongs to one organization.
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-4">
@@ -316,7 +328,7 @@ export default function Teams() {
                       <p className="text-sm text-muted-foreground">
                         You need to create an organization first.{" "}
                         <Link to="/organizations" className="text-primary hover:underline" onClick={() => setCreateDialogOpen(false)}>
-                          Create Organization
+                          Create an organization
                         </Link>
                       </p>
                     </div>
@@ -336,7 +348,7 @@ export default function Teams() {
                   )}
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="name">Team Name</Label>
+                  <Label htmlFor="name">Team name</Label>
                   <Input
                     id="name"
                     value={newTeamName}
@@ -345,7 +357,7 @@ export default function Teams() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="description">Description (Optional)</Label>
+                  <Label htmlFor="description">Description (optional)</Label>
                   <Textarea
                     id="description"
                     value={newTeamDescription}
@@ -373,17 +385,28 @@ export default function Teams() {
           </Dialog>
         </div>
 
-        {teams.length === 0 ? (
+        {teams.length === 0 && noOrganizations ? (
           <Card>
-            <CardContent className="flex flex-col items-center justify-center py-16">
-              <Users className="h-16 w-16 text-muted-foreground mb-4" />
-              <h3 className="text-xl font-semibold mb-2">No teams yet</h3>
-              <p className="text-muted-foreground mb-4">
-                Create your first team to get started
+            <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+              <Building2 className="h-12 w-12 text-muted-foreground mb-4" aria-hidden="true" />
+              <h2 className="text-xl font-semibold mb-2">Create an organization first</h2>
+              <p className="text-muted-foreground mb-4 max-w-md">
+                Teams belong to an organization. Create one, then come back to add teams to it.
               </p>
+              <Button asChild>
+                <Link to="/organizations">Go to organizations</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        ) : teams.length === 0 ? (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+              <Users className="h-12 w-12 text-muted-foreground mb-4" aria-hidden="true" />
+              <h2 className="text-xl font-semibold mb-2">No teams yet</h2>
+              <p className="text-muted-foreground mb-4">Create a team to assign repositories to it.</p>
               <Button onClick={() => setCreateDialogOpen(true)}>
-                <Plus className="h-4 w-4 mr-2" />
-                Create Team
+                <Plus className="h-4 w-4 mr-2" aria-hidden="true" />
+                Create team
               </Button>
             </CardContent>
           </Card>
@@ -411,26 +434,26 @@ export default function Teams() {
                       </div>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
-                          <Button 
-                            variant="ghost" 
-                            size="icon" 
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             className="text-muted-foreground hover:text-destructive"
                             disabled={deleteTeamMutation.isPending && deleteTeamMutation.variables === team.id}
+                            aria-label={`Delete ${team.name}`}
+                            title="Delete team"
                           >
                             {deleteTeamMutation.isPending && deleteTeamMutation.variables === team.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                             ) : (
-                              <Trash2 className="h-4 w-4" />
+                              <Trash2 className="h-4 w-4" aria-hidden="true" />
                             )}
                           </Button>
                         </AlertDialogTrigger>
                         <AlertDialogContent>
                           <AlertDialogHeader>
-                            <AlertDialogTitle>Delete Team</AlertDialogTitle>
+                            <AlertDialogTitle>Delete {team.name}?</AlertDialogTitle>
                             <AlertDialogDescription>
-                              Are you sure you want to delete <strong>"{team.name}"</strong>? 
-                              This will remove all team members and repository assignments. 
-                              This action cannot be undone.
+                              This removes the team's members and repository assignments. It can't be undone.
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
@@ -439,7 +462,7 @@ export default function Teams() {
                               onClick={() => handleDeleteTeam(team.id)}
                               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                             >
-                              Delete Team
+                              Delete team
                             </AlertDialogAction>
                           </AlertDialogFooter>
                         </AlertDialogContent>
@@ -452,13 +475,13 @@ export default function Teams() {
                         {team.description}
                       </p>
                     )}
-                    <Link 
+                    <Link
                       to={`/teams/${team.id}`}
                       onMouseEnter={() => prefetchTeam.prefetch(team.id)}
                     >
                       <Button variant="outline" className="w-full">
-                        View Team
-                        <ArrowRight className="h-4 w-4 ml-2" />
+                        View team
+                        <ArrowRight className="h-4 w-4 ml-2" aria-hidden="true" />
                       </Button>
                     </Link>
                   </CardContent>
@@ -468,12 +491,14 @@ export default function Teams() {
           </div>
         )}
 
-        {/* Concept Explanation Card - Moved below teams list */}
+        {/* The long explanation is for people who have none yet; after
+            that, the header links to the docs. */}
+        {teams.length === 0 && (
         <Card className="mt-8 bg-muted/50">
           <CardHeader>
             <div className="flex items-center gap-2">
               <Info className="h-5 w-5 text-primary" />
-              <CardTitle className="text-lg">What are Teams?</CardTitle>
+              <CardTitle className="text-lg">What are teams?</CardTitle>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -488,13 +513,14 @@ export default function Teams() {
               <li>Monitor team performance trends over time</li>
             </ul>
             <p className="text-sm text-muted-foreground mt-3">
-              <strong>Example:</strong> Assign your React app to "Frontend Team" and your API to "Backend Team". 
-              Then you can see at a glance: "Frontend Team has 3 critical issues, Backend Team has 12" - 
+              <strong>Example:</strong> Assign your React app to "Frontend Team" and your API to "Backend Team".
+              Then you can see at a glance: "Frontend Team has 3 critical issues, Backend Team has 12" -
               helping you prioritize where to focus your attention.
             </p>
           </CardContent>
         </Card>
-      </div>
+        )}
+      </main>
     </div>
   );
 }
