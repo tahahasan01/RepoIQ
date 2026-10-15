@@ -1,0 +1,93 @@
+"""
+The team page's data: team-scoped summaries of assigned repositories.
+
+Repository reads are owner-only everywhere else, so a team member saw that a
+teammate's repository was on the team and nothing about it.
+"""
+import asyncio
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from tests.test_query_builder import db, requires_db, user  # noqa: F401  (fixtures)
+
+
+@pytest.fixture
+def team_setup(db, user):  # noqa: F811
+    """Alice owns the org and a repository on its team; Bob is a team member."""
+    bob = db.table("users").insert({"email": "bob@example.com", "full_name": "Bob"}).execute().data[0]
+    org = db.table("organizations").insert({"name": "Acme", "owner_id": user["id"]}).execute().data[0]
+    team = db.table("teams").insert({"organization_id": org["id"], "name": "Core"}).execute().data[0]
+    db.table("team_members").insert({"team_id": team["id"], "user_id": bob["id"], "role": "member"}).execute()
+    repo = db.table("repositories").insert({
+        "user_id": user["id"], "github_repo_id": 11, "name": "api", "full_name": "alice/api",
+    }).execute().data[0]
+    private = db.table("repositories").insert({
+        "user_id": user["id"], "github_repo_id": 12, "name": "diary", "full_name": "alice/diary",
+    }).execute().data[0]
+    db.table("repository_assignments").insert(
+        {"repository_id": repo["id"], "team_id": team["id"], "assigned_by": user["id"]}
+    ).execute()
+    db.table("analysis_results").insert({
+        "repository_id": repo["id"], "status": "completed", "overall_score": 81,
+        "total_issues": 4, "critical_issues": 1, "completed_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
+    start = datetime.now(timezone.utc) - timedelta(days=3)
+    for repo_id, commits in ((repo["id"], 5), (private["id"], 50)):
+        db.table("developer_contributions").insert({
+            "user_id": bob["id"], "repository_id": repo_id, "commits_count": commits,
+            "period_start": start.isoformat(), "period_end": (start + timedelta(days=7)).isoformat(),
+        }).execute()
+    return {"bob": bob, "team": team, "repo": repo, "private": private}
+
+
+@requires_db
+class TestSummary:
+
+    def test_a_member_sees_the_teams_repositories_and_scores(self, db, user, team_setup):  # noqa: F811
+        from app.services.team_insights_service import TeamInsightsService
+
+        summary = asyncio.run(TeamInsightsService().get_summary(team_setup["team"]["id"], team_setup["bob"]["id"]))
+
+        repos = {r["full_name"]: r for r in summary["repositories"]}
+        assert list(repos) == ["alice/api"]                      # not the unassigned one
+        assert repos["alice/api"]["latest_analysis"]["overall_score"] == 81
+        assert summary["metrics"]["total_repositories"] == 1
+
+    def test_member_figures_count_only_team_repositories(self, db, user, team_setup):  # noqa: F811
+        from app.services.team_insights_service import TeamInsightsService
+
+        summary = asyncio.run(TeamInsightsService().get_summary(team_setup["team"]["id"], user["id"]))
+
+        bob = next(m for m in summary["members"] if m["user_id"] == team_setup["bob"]["id"])
+        assert bob["total_commits"] == 5  # the 50 in an unassigned repository are not the team's
+
+    def test_outsiders_get_nothing(self, db, user, team_setup):  # noqa: F811
+        from app.services.team_insights_service import TeamInsightsService
+
+        outsider = db.table("users").insert({"email": "eve@example.com"}).execute().data[0]
+        assert asyncio.run(TeamInsightsService().get_summary(team_setup["team"]["id"], outsider["id"])) is None
+
+
+@requires_db
+class TestUnassign:
+
+    def test_owner_can_unassign(self, db, user, team_setup):  # noqa: F811
+        from app.services.team_insights_service import TeamInsightsService
+
+        ok = asyncio.run(TeamInsightsService().unassign_repository(
+            team_setup["team"]["id"], team_setup["repo"]["id"], user["id"]
+        ))
+        assert ok
+        assert not db.table("repository_assignments").select("id") \
+            .eq("team_id", team_setup["team"]["id"]).execute().data
+
+    def test_a_plain_member_cannot_unassign_someone_elses_repository(self, db, user, team_setup):  # noqa: F811
+        from app.services.team_insights_service import TeamInsightsService
+
+        ok = asyncio.run(TeamInsightsService().unassign_repository(
+            team_setup["team"]["id"], team_setup["repo"]["id"], team_setup["bob"]["id"]
+        ))
+        assert not ok
+        assert db.table("repository_assignments").select("id") \
+            .eq("team_id", team_setup["team"]["id"]).execute().data

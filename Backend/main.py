@@ -11,7 +11,7 @@ from loguru import logger
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.api.dependencies import require_admin
-from app.api.routes import auth, users, github, analysis, chat, webhooks, organizations, teams, developers, executive, alerts
+from app.api.routes import auth, users, github, analysis, chat, webhooks, organizations, teams, team_insights, developers, executive, alerts
 from starlette.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -406,6 +406,7 @@ app.include_router(chat.router, prefix=settings.api_prefix)
 app.include_router(webhooks.router, prefix=settings.api_prefix)
 app.include_router(organizations.router, prefix=settings.api_prefix)
 app.include_router(teams.router, prefix=settings.api_prefix)
+app.include_router(team_insights.router, prefix=settings.api_prefix)
 app.include_router(developers.router, prefix=settings.api_prefix)
 app.include_router(executive.router, prefix=settings.api_prefix)
 app.include_router(alerts.router, prefix=settings.api_prefix)
