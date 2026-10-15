@@ -261,3 +261,23 @@ class TestProductionInfrastructureUrls:
 
     def test_real_hosts_pass(self):
         _prod()
+
+
+class TestMiddlewareOrder:
+
+    def test_cors_wraps_the_rate_limiter(self):
+        """429s and preflights must carry CORS headers, so CORS sits outside the limiter."""
+        from fastapi.middleware.cors import CORSMiddleware
+        from app.middleware.rate_limiter import RateLimitMiddleware
+        from main import app
+
+        order = [m.cls for m in app.user_middleware]  # index 0 is the outermost layer
+        assert order.index(CORSMiddleware) < order.index(RateLimitMiddleware)
+
+    def test_auth_me_is_not_in_the_credential_bucket(self):
+        from app.middleware.rate_limiter import RateLimitMiddleware
+        from main import app
+
+        limits = next(m for m in app.user_middleware if m.cls is RateLimitMiddleware).kwargs["endpoint_limits"]
+        assert not any("/api/v1/auth/me".startswith(prefix) for prefix in limits)
+        assert "/api/v1/auth/refresh" in limits

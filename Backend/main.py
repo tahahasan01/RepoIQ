@@ -111,22 +111,6 @@ app = FastAPI(
     **_docs,
 )
 
-# Configure CORS - MUST be first middleware for preflight to work
-# SECURITY: Use specific methods and headers instead of wildcards
-cors_origins = settings.BACKEND_CORS_ORIGINS
-cors_methods = settings.allowed_methods_list if hasattr(settings, 'allowed_methods_list') else ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
-cors_headers = settings.allowed_headers_list if hasattr(settings, 'allowed_headers_list') else ["Authorization", "Content-Type", "X-Requested-With", "Accept", "Origin"]
-
-logger.info(f"CORS configured - Origins: {', '.join(cors_origins)}")
-logger.info(f"CORS configured - Methods: {', '.join(cors_methods)}")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
-    allow_methods=cors_methods,  # SECURITY: Specific methods instead of "*"
-    allow_headers=cors_headers,  # SECURITY: Specific headers instead of "*"
-    expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
-)
 
 # Add production middleware (order matters: rate limit -> optimize -> compress)
 #
@@ -144,7 +128,13 @@ app.add_middleware(
         "/api/v1/analysis/repositories": (50, 0.5),  # 50 requests, refill 1 per 2s (more lenient for polling)
         "/api/v1/analysis": (30, 0.3),  # 30 requests, refill 1 per 3.3s
         "/api/v1/github/sync": (5, 0.05),  # 5 requests, refill 1 per 20s (keep strict for sync)
-        "/api/v1/auth": (20, 0.2),  # credential endpoints: 20 burst, 1 per 5s
+        # Credential endpoints only: 20 burst, 1 per 5s. This used to be all of
+        # /api/v1/auth, which includes /auth/me - called on every page load - so
+        # ordinary navigation was throttled to one page every five seconds.
+        "/api/v1/auth/github": (20, 0.2),
+        "/api/v1/auth/refresh": (20, 0.2),
+        "/api/v1/auth/login": (20, 0.2),
+        "/api/v1/auth/signup": (20, 0.2),
     }
 )
 logger.info(f"Rate limiting enabled (trusted proxies: {settings.TRUSTED_PROXY_COUNT})")
@@ -187,6 +177,27 @@ app.mount(
 # analysis cannot be reconstructed. It also costs real money in log ingest.
 # Successful fast requests now log at DEBUG; slow ones and errors get a line.
 app.add_middleware(RequestContextMiddleware)
+
+# CORS wraps everything except the security headers. Starlette makes the LAST
+# middleware added the OUTERMOST: CORS used to be added first, so it was the
+# innermost layer and the rate limiter ran outside it - its 429s carried no
+# CORS headers (the browser reported them as network/CORS failures) and
+# preflight OPTIONS requests were rate-limited before CORS could answer them.
+# SECURITY: Use specific methods and headers instead of wildcards
+cors_origins = settings.BACKEND_CORS_ORIGINS
+cors_methods = settings.allowed_methods_list if hasattr(settings, 'allowed_methods_list') else ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
+cors_headers = settings.allowed_headers_list if hasattr(settings, 'allowed_headers_list') else ["Authorization", "Content-Type", "X-Requested-With", "Accept", "Origin"]
+
+logger.info(f"CORS configured - Origins: {', '.join(cors_origins)}")
+logger.info(f"CORS configured - Methods: {', '.join(cors_methods)}")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=cors_methods,  # SECURITY: Specific methods instead of "*"
+    allow_headers=cors_headers,  # SECURITY: Specific headers instead of "*"
+    expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+)
 
 # Outermost, so rate-limit 429s, CORS preflights and request-context responses
 # carry the headers too. See app/middleware/security_headers.py.

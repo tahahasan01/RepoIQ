@@ -83,7 +83,7 @@ export function ScoreTrendChart({
               <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
             </linearGradient>
           </defs>
-          <XAxis dataKey="date" axisLine={false} tickLine={false} tick={AXIS_TICK} />
+          <XAxis dataKey="date" axisLine={false} tickLine={false} tick={AXIS_TICK} interval="preserveStartEnd" minTickGap={24} />
           <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={AXIS_TICK} />
           <Tooltip
             formatter={(value: number) => [value, seriesLabel]}
