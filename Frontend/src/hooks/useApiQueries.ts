@@ -51,7 +51,9 @@ export const queryKeys = {
   
   // Architecture
   architecture: (repoId: string) => 
-    ['architecture', repoId] as const,
+    // v2: structured layers + Mermaid. A new key so a persisted ASCII-era
+    // entry is never read back into the new shape.
+    ['architecture-v2', repoId] as const,
   
   // Roadmap
   roadmap: (repoId: string) => 
@@ -507,7 +509,7 @@ const REPOSITORY_SCOPED_QUERY_ROOTS = [
   'analysis',
   'issues',
   'batchAnalysis',
-  'architecture',
+  'architecture-v2',
   'roadmap',
   'chatHistory',
   'autofixRuns',

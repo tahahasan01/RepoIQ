@@ -859,9 +859,10 @@ class RepositoryService:
             logger.error(f"Get roadmap failed: {str(e)}")
             return None
 
-    async def get_architecture_diagram(
-        self, repo: Dict[str, Any], file_paths: List[str], user_id: Optional[str] = None
-    ) -> str:
+    async def get_architecture(
+        self, repo: Dict[str, Any], file_paths: List[str], user_id: Optional[str] = None,
+        refresh: bool = False,
+    ) -> Dict[str, Any]:
         """
         The architecture diagram for this repository's file tree, generated
         once per distinct tree and then served from Redis.
@@ -873,13 +874,15 @@ class RepositoryService:
         a push that changes the tree gets a new diagram, and an unchanged tree
         is never paid for twice.
 
-        The agent answers a model failure with a canned fallback diagram rather
-        than raising. That is cached only briefly, so a transient provider
+        The agent answers a model failure with an overview drawn from the file
+        layout rather than raising. That is cached only briefly, so a transient provider
         outage does not pin the placeholder for a week.
         """
         digest = hashlib.sha256("\n".join(sorted(file_paths)).encode("utf-8")).hexdigest()[:32]
-        cache_key = f"architecture:diagram:{repo['id']}:{digest}"
-        cached = self._cached_diagram(cache_key)
+        # v2: structured layers (was ASCII text under architecture:diagram:).
+        # `refresh` (Regenerate) skips the cached copy but still takes the lock.
+        cache_key = f"architecture:v2:{repo['id']}:{digest}"
+        cached = None if refresh else self._cached_diagram(cache_key)
         if cached:
             return cached
 
@@ -906,7 +909,7 @@ class RepositoryService:
         try:
             # A holder may have cached its result between our last read and the
             # lock coming free.
-            cached = self._cached_diagram(cache_key)
+            cached = None if refresh else self._cached_diagram(cache_key)
             if cached:
                 return cached
             return await self._generate_architecture_diagram(repo, file_paths, cache_key, user_id)
@@ -914,23 +917,21 @@ class RepositoryService:
             if token is not None:
                 self.redis.release_lock(lock_key, token)
 
-    def _cached_diagram(self, cache_key: str) -> Optional[str]:
+    def _cached_diagram(self, cache_key: str) -> Optional[Dict[str, Any]]:
         cached = self.redis.get(cache_key)
-        return cached if isinstance(cached, str) and cached else None
+        return cached if isinstance(cached, dict) and cached.get("layers") else None
 
     async def _generate_architecture_diagram(
         self, repo: Dict[str, Any], file_paths: List[str], cache_key: str, user_id: Optional[str]
-    ) -> str:
+    ) -> Dict[str, Any]:
         from app.agents.documentation_agent import DocumentationAgent
 
         repo_name = repo.get("name") or "Repository"
-        diagram = await DocumentationAgent().generate_architecture_diagram(
+        architecture = await DocumentationAgent().generate_architecture(
             files=file_paths, repo_name=repo_name, user_id=user_id
         )
-        if diagram:
-            # Only the agent's fallback starts with its own "# <name>
-            # Architecture" heading; the model is asked for the bare diagram.
-            is_fallback = diagram.startswith(f"# {repo_name} Architecture\n")
+        if architecture and architecture.get("layers"):
+            is_fallback = architecture.get("source") != "ai"
             ttl = ARCHITECTURE_FALLBACK_TTL_SECONDS if is_fallback else ARCHITECTURE_CACHE_TTL_SECONDS
-            self.redis.set(cache_key, diagram, ttl=ttl)
-        return diagram
+            self.redis.set(cache_key, architecture, ttl=ttl)
+        return architecture

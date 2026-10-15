@@ -534,6 +534,7 @@ async def get_improvement_roadmap(
 @router.get("/repositories/{repo_id}/architecture")
 async def get_architecture_diagram(
     repo_id: str,
+    refresh: bool = Query(False, description="Regenerate instead of serving the cached overview"),
     current_user: dict = Depends(get_current_user),
     github_token: str = Depends(get_github_token)
 ):
@@ -570,12 +571,19 @@ async def get_architecture_diagram(
         if not file_paths:
             file_paths = [str(f) for f in files]
         
-        diagram = await repo_service.get_architecture_diagram(repo, file_paths, user_id=current_user["id"])
+        from app.services.architecture import to_mermaid
+
+        architecture = await repo_service.get_architecture(
+            repo, file_paths, user_id=current_user["id"], refresh=refresh
+        )
 
         return {
             "repository_id": repo_id,
             "repository_name": repo.get("name"),
-            "diagram": diagram,
+            "architecture": architecture,
+            # Built here from validated data, never by the model, so it always
+            # parses. It is also what "Copy" gives you; GitHub renders it.
+            "mermaid": to_mermaid(architecture),
             "file_count": len(file_paths)
         }
         

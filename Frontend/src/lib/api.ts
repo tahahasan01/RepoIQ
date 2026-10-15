@@ -777,8 +777,13 @@ class ApiClient {
     return this.request<ImprovementRoadmap>(`/analysis/repositories/${repoId}/roadmap`);
   }
 
-  async getArchitectureDiagram(repoId: string) {
-    return this.request<ArchitectureDiagram>(`/analysis/repositories/${repoId}/architecture`);
+  /** `refresh` regenerates instead of returning the server's cached overview. */
+  async getArchitectureDiagram(repoId: string, refresh = false) {
+    return this.request<ArchitectureDiagram>(
+      `/analysis/repositories/${repoId}/architecture${refresh ? '?refresh=true' : ''}`,
+      {},
+      refresh ? `architecture_refresh_${repoId}` : undefined
+    );
   }
 
   async refresh(refreshToken: string) {

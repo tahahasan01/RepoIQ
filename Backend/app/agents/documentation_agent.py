@@ -190,173 +190,68 @@ Return the improved version."""
         
         return await self._call_llm(messages)
     
-    async def generate_architecture_diagram(
+    async def generate_architecture(
         self, files: List[str], repo_name: str = "Repository", user_id: Optional[str] = None
-    ) -> str:
-        """Generate an ASCII architecture diagram based on the actual file structure."""
-        
-        # Categorize files by type
-        categories = {
-            "frontend": [],
-            "backend": [],
-            "api": [],
-            "database": [],
-            "services": [],
-            "components": [],
-            "pages": [],
-            "hooks": [],
-            "utils": [],
-            "config": [],
-            "tests": [],
-            "models": [],
-            "agents": [],
-            "tasks": [],
-        }
-        
-        for file_path in files:
-            path_lower = file_path.lower()
-            if any(x in path_lower for x in ["frontend", "src/components", "src/pages", "src/hooks"]):
-                if "component" in path_lower:
-                    categories["components"].append(file_path)
-                elif "page" in path_lower:
-                    categories["pages"].append(file_path)
-                elif "hook" in path_lower:
-                    categories["hooks"].append(file_path)
-                else:
-                    categories["frontend"].append(file_path)
-            elif any(x in path_lower for x in ["backend", "server", "api"]):
-                if "route" in path_lower or "endpoint" in path_lower:
-                    categories["api"].append(file_path)
-                elif "service" in path_lower:
-                    categories["services"].append(file_path)
-                elif "model" in path_lower or "schema" in path_lower:
-                    categories["models"].append(file_path)
-                elif "agent" in path_lower:
-                    categories["agents"].append(file_path)
-                elif "task" in path_lower:
-                    categories["tasks"].append(file_path)
-                else:
-                    categories["backend"].append(file_path)
-            elif any(x in path_lower for x in ["database", "db", "migration", "sql"]):
-                categories["database"].append(file_path)
-            elif any(x in path_lower for x in ["test", "spec", "__test__"]):
-                categories["tests"].append(file_path)
-            elif any(x in path_lower for x in ["config", ".env", "settings"]):
-                categories["config"].append(file_path)
-            elif any(x in path_lower for x in ["util", "helper", "lib"]):
-                categories["utils"].append(file_path)
-        
-        # Build file structure summary
-        file_summary = f"Project: {repo_name}\nTotal Files: {len(files)}\n\n"
-        for category, file_list in categories.items():
-            if file_list:
-                file_summary += f"{category.upper()}: {len(file_list)} files\n"
-                for f in file_list[:5]:  # Show first 5 files per category
-                    file_summary += f"  - {f}\n"
-                if len(file_list) > 5:
-                    file_summary += f"  ... and {len(file_list) - 5} more\n"
-        
-        system_prompt = """You are a software architecture expert. Generate a clear ASCII architecture diagram based on the file structure provided.
+    ) -> Dict[str, Any]:
+        """
+        A structured architecture overview (layers, components, connections)
+        from the repository's file paths. See app/services/architecture.py for
+        why this is data rendered as Mermaid rather than model-drawn ASCII art.
+        """
+        import json
+        from app.services.architecture import (
+            ARCHITECTURE_SCHEMA, fallback_architecture, validate_architecture,
+        )
 
-IMPORTANT: 
-- Create a diagram that represents the ACTUAL project structure from the files
-- Use simple ASCII box characters (-, |, +, >, <)
-- Show data flow with arrows (→, ←, ↓, ↑)
-- Include main layers: Frontend, API/Backend, Database, External Services
-- Show key components discovered from the file structure
-- Keep it clean and readable (max 60 chars wide)
+        # The model sees the directory tree (with file counts) and a sample of
+        # paths: enough to see structure without sending thousands of lines.
+        dir_counts: Dict[str, int] = {}
+        for path in files:
+            parts = path.split("/")[:-1]
+            for depth in range(1, min(len(parts), 3) + 1):
+                key = "/".join(parts[:depth])
+                dir_counts[key] = dir_counts.get(key, 0) + 1
+        tree = "\n".join(f"{d}/ ({n} files)" for d, n in sorted(dir_counts.items())[:200])
+        top_level = "\n".join(sorted(p for p in files if "/" not in p)[:60])
 
-Example format:
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Frontend (React)                      │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │ Components  │  │   Pages     │  │   Hooks     │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘      │
-└────────────────────────────┬────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Backend (FastAPI)                     │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Routes    │  │  Services   │  │   Agents    │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘      │
-└────────────────────────────┬────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                      Database                            │
-└─────────────────────────────────────────────────────────┘
-```
-"""
-        
-        user_prompt = f"""Generate an ASCII architecture diagram for this project based on its file structure:
+        prompt = f"""Describe the architecture of the repository "{repo_name}" from its file layout.
 
-{file_summary}
+Directories (up to three levels deep, with file counts):
+{tree}
 
-Create a professional diagram showing:
-1. Main layers/tiers based on the actual files
-2. Key components in each layer
-3. Data flow between layers
-4. Any external integrations detected
+Top-level files:
+{top_level}
 
-Output ONLY the ASCII diagram, no explanations."""
-        
+Return:
+- summary: one or two sentences on what the system is made of.
+- layers: 2 to 6 layers in the order a request flows through them (for example
+  frontend, API, application logic, data, external services). Give each a short
+  lowercase id (letters, digits, underscore), a name, a one-sentence
+  description, and 1 to 6 components. Each component has a short name, a
+  one-sentence description, and paths: directories or files FROM THE LISTS
+  ABOVE that make it up.
+- connections: how layers call or depend on each other, as from/to layer ids
+  with a short label (e.g. "REST / JSON", "SQL", "queues tasks").
+
+Describe only what the file layout shows. Do not invent components, services or
+paths that are not in the lists."""
+
         messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {
+                "role": "system",
+                "content": "You are a software architect describing a codebase accurately and concisely.",
+            },
+            {"role": "user", "content": prompt},
         ]
-        
         try:
-            result = await self._call_llm(messages, user_id=user_id)
-            return result
+            raw = json.loads(await self._call_llm(messages, json_schema=ARCHITECTURE_SCHEMA, user_id=user_id))
+            architecture = validate_architecture(raw, files)
+            if architecture["layers"]:
+                architecture["source"] = "ai"
+                return architecture
+            logger.warning("Architecture answer had no usable layers; using the file layout")
         except Exception as e:
-            logger.error(f"Failed to generate architecture diagram: {e}")
-            # Return a basic fallback diagram
-            return self._generate_fallback_diagram(categories, repo_name)
-    
-    def _generate_fallback_diagram(self, categories: dict, repo_name: str) -> str:
-        """Generate a basic architecture diagram without LLM."""
-        lines = []
-        lines.append(f"# {repo_name} Architecture")
-        lines.append("")
-        lines.append("```")
-        lines.append("┌─────────────────────────────────────────────────────────┐")
-        
-        # Frontend layer
-        if any(categories.get(k) for k in ["frontend", "components", "pages", "hooks"]):
-            lines.append("│                    Frontend Layer                        │")
-            components = []
-            if categories.get("components"): components.append(f"Components ({len(categories['components'])})")
-            if categories.get("pages"): components.append(f"Pages ({len(categories['pages'])})")
-            if categories.get("hooks"): components.append(f"Hooks ({len(categories['hooks'])})")
-            if components:
-                lines.append(f"│  {' | '.join(components)[:55].ljust(55)} │")
-            lines.append("├────────────────────────────┬────────────────────────────┤")
-            lines.append("│                            ▼                            │")
-        
-        # Backend layer
-        if any(categories.get(k) for k in ["backend", "api", "services", "agents"]):
-            lines.append("│                    Backend Layer                         │")
-            components = []
-            if categories.get("api"): components.append(f"API ({len(categories['api'])})")
-            if categories.get("services"): components.append(f"Services ({len(categories['services'])})")
-            if categories.get("agents"): components.append(f"Agents ({len(categories['agents'])})")
-            if components:
-                lines.append(f"│  {' | '.join(components)[:55].ljust(55)} │")
-            lines.append("├────────────────────────────┬────────────────────────────┤")
-            lines.append("│                            ▼                            │")
-        
-        # Database layer
-        if categories.get("database") or categories.get("models"):
-            lines.append("│                    Data Layer                            │")
-            components = []
-            if categories.get("database"): components.append(f"Database ({len(categories['database'])})")
-            if categories.get("models"): components.append(f"Models ({len(categories['models'])})")
-            if components:
-                lines.append(f"│  {' | '.join(components)[:55].ljust(55)} │")
-        
-        lines.append("└─────────────────────────────────────────────────────────┘")
-        lines.append("```")
-        
-        return "\n".join(lines)
+            logger.error(f"Failed to generate architecture: {type(e).__name__}: {e}")
+        architecture = fallback_architecture(files)
+        architecture["source"] = "file_layout"
+        return architecture

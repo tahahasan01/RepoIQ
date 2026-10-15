@@ -272,12 +272,12 @@ class TestArchitectureDiagramIsCached:
         svc = repository_service.RepositoryService.__new__(repository_service.RepositoryService)
         svc.redis = Redis()
         svc.db = None
-        generate = AsyncMock(return_value="+--+\n|ui|\n+--+")
+        generate = AsyncMock(return_value=_ARCH)
         monkeypatch.setattr(
             "app.agents.documentation_agent.DocumentationAgent.__init__", lambda self, *a, **k: None
         )
         monkeypatch.setattr(
-            "app.agents.documentation_agent.DocumentationAgent.generate_architecture_diagram", generate
+            "app.agents.documentation_agent.DocumentationAgent.generate_architecture", generate
         )
         return svc, generate, store
 
@@ -287,19 +287,19 @@ class TestArchitectureDiagramIsCached:
         svc, generate, store = service
         repo = {"id": "r1", "name": "api"}
 
-        first = await svc.get_architecture_diagram(repo, ["b.py", "a.py"])
-        second = await svc.get_architecture_diagram(repo, ["a.py", "b.py"])  # same tree, any order
+        first = await svc.get_architecture(repo, ["b.py", "a.py"])
+        second = await svc.get_architecture(repo, ["a.py", "b.py"])  # same tree, any order
 
-        assert first == second == "+--+\n|ui|\n+--+"
+        assert first == second == _ARCH
         assert generate.await_count == 1
         assert [ttl for _, ttl in store.values()] == [ARCHITECTURE_CACHE_TTL_SECONDS]
 
     async def test_a_changed_tree_or_another_repository_regenerates(self, service):
         svc, generate, _ = service
 
-        await svc.get_architecture_diagram({"id": "r1", "name": "api"}, ["a.py"])
-        await svc.get_architecture_diagram({"id": "r1", "name": "api"}, ["a.py", "new.py"])
-        await svc.get_architecture_diagram({"id": "r2", "name": "api"}, ["a.py"])
+        await svc.get_architecture({"id": "r1", "name": "api"}, ["a.py"])
+        await svc.get_architecture({"id": "r1", "name": "api"}, ["a.py", "new.py"])
+        await svc.get_architecture({"id": "r2", "name": "api"}, ["a.py"])
 
         assert generate.await_count == 3
 
@@ -307,9 +307,9 @@ class TestArchitectureDiagramIsCached:
         from app.services.repository_service import ARCHITECTURE_FALLBACK_TTL_SECONDS
 
         svc, generate, store = service
-        generate.return_value = "# api Architecture\n\n```\n...\n```"
+        generate.return_value = {**_ARCH, "source": "file_layout"}
 
-        await svc.get_architecture_diagram({"id": "r1", "name": "api"}, ["a.py"])
+        await svc.get_architecture({"id": "r1", "name": "api"}, ["a.py"])
 
         assert [ttl for _, ttl in store.values()] == [ARCHITECTURE_FALLBACK_TTL_SECONDS]
 
@@ -320,14 +320,14 @@ class TestArchitectureDiagramIsCached:
 
         async def slow(**_):
             await asyncio.sleep(0.1)
-            return "+--+\n|ui|\n+--+"
+            return _ARCH
 
         generate.side_effect = slow
         repo = {"id": "r1", "name": "api"}
 
-        results = await asyncio.gather(*(svc.get_architecture_diagram(repo, ["a.py"]) for _ in range(3)))
+        results = await asyncio.gather(*(svc.get_architecture(repo, ["a.py"]) for _ in range(3)))
 
-        assert results == ["+--+\n|ui|\n+--+"] * 3
+        assert results == [_ARCH] * 3
         assert generate.await_count == 1
         assert svc.redis.locks == {}  # released
 
@@ -339,9 +339,9 @@ class TestArchitectureDiagramIsCached:
         svc, generate, store = service
         svc.redis.locks[_diagram_key("r1", ["a.py"]) + ":lock"] = "dead-holder"
 
-        diagram = await svc.get_architecture_diagram({"id": "r1", "name": "api"}, ["a.py"])
+        diagram = await svc.get_architecture({"id": "r1", "name": "api"}, ["a.py"])
 
-        assert diagram == "+--+\n|ui|\n+--+"
+        assert diagram == _ARCH
         assert generate.await_count == 1
         assert len(store) == 1
         # Not ours to release: someone else holds it.
@@ -364,10 +364,10 @@ class TestArchitectureDiagramIsCached:
 
         started = time.monotonic()
         diagram, _ = await asyncio.gather(
-            svc.get_architecture_diagram({"id": "r1", "name": "api"}, ["a.py"]), expire()
+            svc.get_architecture({"id": "r1", "name": "api"}, ["a.py"]), expire()
         )
 
-        assert diagram == "+--+\n|ui|\n+--+"
+        assert diagram == _ARCH
         assert generate.await_count == 1
         assert time.monotonic() - started < 5
 
@@ -380,21 +380,26 @@ class TestArchitectureDiagramIsCached:
 
         async def finish():
             await asyncio.sleep(0.05)
-            store[key] = ("from the holder", 60)
+            store[key] = (_HOLDER, 60)
 
         diagram, _ = await asyncio.gather(
-            svc.get_architecture_diagram({"id": "r1", "name": "api"}, ["a.py"]), finish()
+            svc.get_architecture({"id": "r1", "name": "api"}, ["a.py"]), finish()
         )
 
-        assert diagram == "from the holder"
+        assert diagram == _HOLDER
         assert generate.await_count == 0
+
+
+_ARCH = {"summary": "s", "layers": [{"id": "ui", "name": "UI", "description": "", "components": []}],
+         "connections": [], "source": "ai"}
+_HOLDER = {**_ARCH, "summary": "from the holder"}
 
 
 def _diagram_key(repo_id, paths):
     import hashlib
 
     digest = hashlib.sha256("\n".join(sorted(paths)).encode("utf-8")).hexdigest()[:32]
-    return f"architecture:diagram:{repo_id}:{digest}"
+    return f"architecture:v2:{repo_id}:{digest}"
 
 
 class TestRedisLock:

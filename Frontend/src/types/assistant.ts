@@ -102,10 +102,31 @@ export interface ImprovementRoadmap {
   created_at?: string;
 }
 
+export interface ArchitectureComponent {
+  name: string;
+  description: string;
+  /** Directories or files in the repository that make up the component. */
+  paths: string[];
+}
+
+export interface ArchitectureLayer {
+  id: string;
+  name: string;
+  description: string;
+  components: ArchitectureComponent[];
+}
+
 export interface ArchitectureDiagram {
   repository_id: string;
   repository_name: string;
-  /** An ASCII/box-drawing diagram, sometimes wrapped in a markdown code fence. */
-  diagram: string;
+  architecture: {
+    summary: string;
+    layers: ArchitectureLayer[];
+    connections: { from: string; to: string; label: string }[];
+    /** "ai", or "file_layout" when the model was unavailable. */
+    source?: string;
+  };
+  /** Mermaid flowchart built by the server from `architecture`; always valid. */
+  mermaid: string;
   file_count: number;
 }
