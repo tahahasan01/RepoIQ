@@ -27,7 +27,7 @@ import {
   useTopRiskAreas,
   useTeamLeaderboard,
 } from "@/hooks/useApiQueries";
-import { SCORE_COLORS, scoreColor, scoreLabel } from "@/lib/scoreColor";
+import { scoreColor, scoreLabel } from "@/lib/scoreColor";
 import { PageHeader } from "@/components/organizations/PageHeader";
 import { ErrorState, LoadingCard, LoadingState } from "@/components/organizations/PageStates";
 
@@ -49,10 +49,11 @@ function getRiskBadgeVariant(level: string | undefined): "destructive" | "defaul
 
 /** Business risk runs the other way to a score: higher is worse. */
 function riskColor(risk: number) {
-  if (risk >= 70) return SCORE_COLORS.critical;
-  if (risk >= 50) return SCORE_COLORS.weak;
-  if (risk >= 30) return SCORE_COLORS.fair;
-  return SCORE_COLORS.strong;
+  // Risk runs the other way from a score: higher is worse.
+  if (risk >= 70) return "hsl(var(--sev-critical))";
+  if (risk >= 50) return "hsl(var(--sev-high))";
+  if (risk >= 30) return "hsl(var(--sev-medium))";
+  return "hsl(var(--score-good))";
 }
 
 function securityLevelClass(level: string | undefined) {

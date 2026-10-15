@@ -1,3 +1,4 @@
+import { PageHeader as SharedPageHeader } from "@/components/shared/PageHeader";
 import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -65,16 +66,15 @@ export function PageHeader({
   description?: ReactNode;
   actions?: ReactNode;
 }) {
+  // One implementation: this keeps the organisation pages' prop names and
+  // delegates to the app-wide header.
   return (
-    <header className="mb-8 space-y-3">
-      <PageBreadcrumb items={breadcrumb} />
-      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-3xl font-bold tracking-tight truncate">{title}</h1>
-          {description && <div className="mt-1 text-sm text-muted-foreground">{description}</div>}
-        </div>
-        {actions && <div className="flex flex-wrap items-center gap-2 shrink-0">{actions}</div>}
-      </div>
-    </header>
+    <SharedPageHeader
+      className="mb-8"
+      title={title}
+      description={description}
+      actions={actions}
+      breadcrumbs={breadcrumb.map((crumb) => ({ label: crumb.label, href: crumb.to }))}
+    />
   );
 }

@@ -57,8 +57,17 @@ export function PageHeader({ title, description, actions, breadcrumbs, as = "h1"
       )}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <Heading className="text-2xl font-semibold tracking-tight text-foreground">{title}</Heading>
-          {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
+          {/* Page titles are 30px bold, as on every top-level app page; an h2
+              header inside a workspace (whose layout owns the h1) is 24px. */}
+          <Heading
+            className={cn(
+              "tracking-tight text-foreground",
+              as === "h1" ? "text-3xl font-bold" : "text-2xl font-semibold"
+            )}
+          >
+            {title}
+          </Heading>
+          {description && <div className="mt-1 text-sm text-muted-foreground">{description}</div>}
         </div>
         {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
       </div>
