@@ -145,10 +145,14 @@ class RepositoryResponse(BaseModel):
     description: Optional[str]
     language: Optional[str]
     stars: int
+    forks: int = 0
+    is_private: bool = False
     default_branch: str
     last_analyzed: Optional[datetime]
     last_synced: datetime
     created_at: datetime
+    # Last activity on GitHub (null until the first sync that records it).
+    github_updated_at: Optional[datetime] = None
 
 
 class AnalysisStatus(str, Enum):

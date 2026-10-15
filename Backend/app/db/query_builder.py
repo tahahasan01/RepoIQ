@@ -106,7 +106,7 @@ class QueryBuilder:
         self._columns = "*"
         self._embeds: List[Tuple[str, str]] = []
         self._filters: List[Tuple[str, str, Any]] = []
-        self._order: List[Tuple[str, bool]] = []
+        self._order: List[Tuple[str, bool, Optional[List[str]]]] = []
         self._limit: Optional[int] = None
         self._offset: Optional[int] = None
         self._single = False
@@ -205,7 +205,16 @@ class QueryBuilder:
     # -- shaping ------------------------------------------------------------
 
     def order(self, column: str, desc: bool = False, **_) -> "QueryBuilder":
-        self._order.append((column, desc))
+        self._order.append((column, desc, None))
+        return self
+
+    def order_by_rank(self, column: str, ranking: List[str]) -> "QueryBuilder":
+        """
+        Order by the position of the column's value in `ranking`; values not in
+        it sort last. For enumerations whose meaningful order is not
+        alphabetical, e.g. severity, where "low" < "medium" alphabetically.
+        """
+        self._order.append((column, False, list(ranking)))
         return self
 
     def limit(self, count: int) -> "QueryBuilder":
@@ -341,12 +350,17 @@ class QueryBuilder:
                 cols=self._select_list(), t=table, joins=self._joins(), where=where
             )
             if self._order:
-                items = [
-                    sql.SQL("{}.{} {}").format(
-                        table, _ident(c), sql.SQL("DESC" if d else "ASC")
-                    )
-                    for c, d in self._order
-                ]
+                items = []
+                for c, d, ranking in self._order:
+                    if ranking is not None:
+                        items.append(sql.SQL("array_position(%s::text[], {}.{}::text) ASC NULLS LAST").format(
+                            table, _ident(c)
+                        ))
+                        params.append(ranking)
+                    else:
+                        items.append(sql.SQL("{}.{} {}").format(
+                            table, _ident(c), sql.SQL("DESC" if d else "ASC")
+                        ))
                 query = query + sql.SQL(" ORDER BY ") + sql.SQL(", ").join(items)
             if self._limit is not None:
                 query = query + sql.SQL(" LIMIT {}").format(sql.Literal(self._limit))

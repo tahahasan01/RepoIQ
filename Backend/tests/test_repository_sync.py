@@ -186,3 +186,32 @@ class TestSearch:
 
         assert [r["name"] for r in self._list(user["id"], search="a_b")] == ["a_b"]
         assert self._list(user["id"], search="%") == []
+
+
+@requires_db
+class TestIssueOrder:
+
+    def test_most_severe_findings_survive_the_page_limit(self, db, user):  # noqa: F811
+        """Alphabetical order ranked "low" above "medium"; a page cut the medium ones."""
+        import asyncio
+        from app.services.repository_service import RepositoryService
+
+        repo = db.table("repositories").insert({
+            "user_id": user["id"], "github_repo_id": 7, "name": "r", "full_name": "u/r",
+        }).execute().data[0]
+        analysis = db.table("analysis_results").insert(
+            {"repository_id": repo["id"], "status": "completed"}
+        ).execute().data[0]
+        severities = ["low"] * 3 + ["medium"] * 2 + ["info", "critical", "high"]
+        db.table("issues").insert([
+            {"analysis_id": analysis["id"], "agent_type": "quality", "severity": s, "category": "c",
+             "file_path": "a.py", "line_number": i, "description": "d"}
+            for i, s in enumerate(severities)
+        ]).execute()
+
+        service = RepositoryService()
+        service.redis = MagicMock()
+        service.redis.get.return_value = None
+        page = asyncio.run(service.get_issues(analysis["id"], page=1, per_page=4))
+
+        assert [i["severity"] for i in page] == ["critical", "high", "medium", "medium"]

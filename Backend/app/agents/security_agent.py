@@ -83,24 +83,6 @@ Identify all security issues and return them in JSON format."""
             "files_analyzed": 1
         }
     
-    def _detect_language(self, file_path: str) -> str:
-        ext_map = {
-            ".py": "python",
-            ".js": "javascript",
-            ".ts": "typescript",
-            ".java": "java",
-            ".go": "go",
-            ".rb": "ruby",
-            ".php": "php",
-            ".cs": "csharp",
-            ".cpp": "cpp",
-            ".c": "c",
-        }
-        
-        for ext, lang in ext_map.items():
-            if file_path.endswith(ext):
-                return lang
-        return "unknown"
     
     # Which languages each rule is meaningful for. The `language` argument was
     # already being computed and passed in - and then ignored, so every Python

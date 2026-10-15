@@ -97,6 +97,11 @@ class BaseAgent(ABC):
     async def analyze(self, code: str, file_path: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         pass
 
+    def _detect_language(self, file_path: str) -> str:
+        from app.core.languages import detect_language
+
+        return detect_language(file_path)
+
     @abstractmethod
     def get_agent_type(self) -> str:
         pass

@@ -138,7 +138,9 @@ Evaluate the architecture and identify improvement areas."""
                     "agent_type": "architecture"
                 })
         
-        js_files = [f for f in all_files if f.endswith(('.js', '.ts', '.jsx', '.tsx'))]
+        from app.core.languages import is_javascript_family
+
+        js_files = [f for f in all_files if is_javascript_family(f)]
         if js_files:
             has_package_json = any("package.json" in f for f in all_files)
             if not has_package_json:

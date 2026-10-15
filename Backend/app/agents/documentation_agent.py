@@ -64,20 +64,6 @@ Identify missing or inadequate documentation."""
             "files_analyzed": 1
         }
     
-    def _detect_language(self, file_path: str) -> str:
-        ext_map = {
-            ".py": "python",
-            ".js": "javascript",
-            ".ts": "typescript",
-            ".java": "java",
-            ".go": "go",
-            ".rb": "ruby",
-        }
-        
-        for ext, lang in ext_map.items():
-            if file_path.endswith(ext):
-                return lang
-        return "unknown"
     
     async def generate_documentation(self, code: str, file_path: str, doc_type: str = "comprehensive") -> str:
         language = self._detect_language(file_path)
@@ -204,7 +190,9 @@ Return the improved version."""
         
         return await self._call_llm(messages)
     
-    async def generate_architecture_diagram(self, files: List[str], repo_name: str = "Repository") -> str:
+    async def generate_architecture_diagram(
+        self, files: List[str], repo_name: str = "Repository", user_id: Optional[str] = None
+    ) -> str:
         """Generate an ASCII architecture diagram based on the actual file structure."""
         
         # Categorize files by type
@@ -320,7 +308,7 @@ Output ONLY the ASCII diagram, no explanations."""
         ]
         
         try:
-            result = await self._call_llm(messages)
+            result = await self._call_llm(messages, user_id=user_id)
             return result
         except Exception as e:
             logger.error(f"Failed to generate architecture diagram: {e}")

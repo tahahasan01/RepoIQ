@@ -17,6 +17,9 @@ export interface Repository {
   description?: string;
   isPrivate?: boolean;
   private?: boolean;
+  is_private?: boolean;
+  /** Last activity on GitHub; null until a sync records it. */
+  github_updated_at?: string | null;
   score?: number | null;
   lastScan?: string | null;
 }

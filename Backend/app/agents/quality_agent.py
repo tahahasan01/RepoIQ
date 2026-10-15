@@ -74,21 +74,6 @@ Identify all code quality issues and return them in JSON format."""
             "metrics": self._calculate_metrics(code, language)
         }
     
-    def _detect_language(self, file_path: str) -> str:
-        ext_map = {
-            ".py": "python",
-            ".js": "javascript",
-            ".ts": "typescript",
-            ".java": "java",
-            ".go": "go",
-            ".rb": "ruby",
-            ".php": "php",
-        }
-        
-        for ext, lang in ext_map.items():
-            if file_path.endswith(ext):
-                return lang
-        return "unknown"
     
     def _run_static_analysis(self, code: str, file_path: str, language: str) -> List[Dict[str, Any]]:
         issues = []

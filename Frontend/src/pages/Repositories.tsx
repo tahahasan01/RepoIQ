@@ -321,10 +321,8 @@ export default function Repositories() {
         // App is not installed...") is the actionable message. This used to be
         // reported as "Authentication error. Please log in again."
         errorDetail = `${err.message} You can reconnect GitHub in Settings.`;
-      } else if ((err as any).isCorsError || errorMessage.includes('CORS')) {
-        errorDetail = 'CORS Error. Please restart the backend server.';
-      } else if ((err as any).isNetworkError || errorMessage.includes('Network Error')) {
-        errorDetail = 'Network Error. Please check if the backend is running.';
+      } else if ((err as any).isNetworkError) {
+        errorDetail = errorMessage;
       } else if (errorMessage.includes('404')) {
         errorDetail = 'Repository not found. Please sync your repositories.';
       } else if (errorMessage.includes('500')) {
@@ -551,17 +549,21 @@ export default function Repositories() {
             >
               {/* Header */}
               <div className="flex items-start justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-3 h-3 rounded-full ${
-                      languageColors[repo.language] || "bg-gray-500"
-                    }`}
-                  />
-                  <span className="text-sm text-muted-foreground">
-                    {repo.language}
-                  </span>
+                <div className="flex items-center gap-2 min-h-5">
+                  {repo.language && (
+                    <>
+                      <div
+                        className={`w-3 h-3 rounded-full ${
+                          languageColors[repo.language] || "bg-gray-500"
+                        }`}
+                      />
+                      <span className="text-sm text-muted-foreground">
+                        {repo.language}
+                      </span>
+                    </>
+                  )}
                 </div>
-                {repo.isPrivate && (
+                {(repo.is_private || repo.isPrivate) && (
                   <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">
                     Private
                   </span>
@@ -586,10 +588,16 @@ export default function Repositories() {
                   <GitFork className="h-4 w-4" />
                   {repo.forks || repo.forks_count || 0}
                 </div>
-                <div className="flex items-center gap-1">
-                  <Calendar className="h-4 w-4" />
-                  {repo.updatedAt || (repo.updated_at ? new Date(repo.updated_at).toLocaleDateString() : 'N/A')}
-                </div>
+                {repo.github_updated_at && (
+                  <div
+                    className="flex items-center gap-1"
+                    title={`Last updated on GitHub ${new Date(repo.github_updated_at).toLocaleString()}`}
+                  >
+                    <Calendar className="h-4 w-4" aria-hidden />
+                    <span className="sr-only">Updated</span>
+                    {new Date(repo.github_updated_at).toLocaleDateString()}
+                  </div>
+                )}
               </div>
 
               {/* Score or Scan status */}

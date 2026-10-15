@@ -249,16 +249,7 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
     } catch (err: any) {
       console.error('[AnalysisStore] Failed to start analysis', err);
       
-      // Preserve original error message, especially for CORS errors
-      const errorMessage = err?.message || 'Failed to start analysis';
-      
-      // If it's a CORS error, preserve the detailed message
-      if ((err as any).isCorsError) {
-        get().setError(repoId, errorMessage);
-      } else {
-        // For other errors, use the original message or a generic one
-        get().setError(repoId, errorMessage);
-      }
+      get().setError(repoId, err?.message || 'Failed to start analysis');
       
       // Re-throw to allow caller to handle it
       throw err;

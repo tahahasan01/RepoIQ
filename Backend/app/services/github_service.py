@@ -749,13 +749,9 @@ class GitHubService:
         }
     
     def _is_code_file(self, file_path: str) -> bool:
-        code_extensions = [
-            ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rb", ".php",
-            ".c", ".cpp", ".cs", ".swift", ".kt", ".rs", ".scala", ".r",
-            ".sql", ".sh", ".bash", ".yaml", ".yml", ".json", ".xml", ".html", ".css"
-        ]
-        
-        return any(file_path.endswith(ext) for ext in code_extensions)
+        from app.core.languages import is_analysable
+
+        return is_analysable(file_path)
 
 
 def create_github_service(access_token: str) -> GitHubService:

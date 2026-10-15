@@ -54,6 +54,9 @@ const resolveApiBaseUrl = (): string => {
 
 const API_BASE_URL = resolveApiBaseUrl();
 
+/** Shown when a request got no response at all. */
+export const NETWORK_ERROR_MESSAGE = "Can't reach RepoIQ right now. Check your connection and try again.";
+
 // Token refresh configuration
 const TOKEN_REFRESH_THRESHOLD_MS = 5 * 60 * 1000; // Refresh if < 5 min remaining
 const TOKEN_CHECK_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
@@ -106,26 +109,6 @@ function getTokenRemainingMs(token: string): number {
   const expMs = getTokenExpirationMs(token);
   if (!expMs) return 0;
   return Math.max(0, expMs - Date.now());
-}
-
-/**
- * Check if an error is a CORS error
- */
-function isCorsError(error: any): boolean {
-  if (!error) return false;
-  
-  const errorMessage = error.message || String(error);
-  const errorString = errorMessage.toLowerCase();
-  
-  // Check for CORS-related error messages
-  return (
-    errorString.includes('cors') ||
-    errorString.includes('access-control-allow-origin') ||
-    errorString.includes('blocked by cors policy') ||
-    (errorString.includes('failed to fetch') && 
-     errorString.includes('networkerror') || 
-     error.name === 'TypeError')
-  );
 }
 
 /**
@@ -517,24 +500,13 @@ class ApiClient {
       
       log.debug('Exception:', error);
       
-      // Detect and enhance CORS errors
-      if (isCorsError(error)) {
-        const corsError = new Error(
-          'CORS Error: Backend is not allowing requests from this origin. ' +
-          'Please check backend CORS configuration to include: ' + window.location.origin
-        );
-        (corsError as any).isCorsError = true;
-        (corsError as any).originalError = error;
-        log.error('CORS Error detected:', corsError.message);
-        throw corsError;
-      }
-      
-      // Detect and enhance network errors
-      if (isNetworkError(error)) {
-        const networkError = new Error(
-          'Network Error: Unable to reach the backend server. ' +
-          'Please ensure the backend is running on ' + this.baseUrl
-        );
+      // No response at all. A browser reports a refused connection, a
+      // dropped network and a CORS rejection identically ("Failed to fetch"),
+      // so the message cannot name a cause - it used to guess "CORS" and tell
+      // users to restart a server they do not run.
+      if (isNetworkError(error) || error instanceof TypeError) {
+        log.debug(`No response from ${this.baseUrl}: server down, offline, or CORS (origin ${window.location.origin})`);
+        const networkError = new Error(NETWORK_ERROR_MESSAGE);
         (networkError as any).isNetworkError = true;
         (networkError as any).originalError = error;
         log.error('Network Error detected:', networkError.message);

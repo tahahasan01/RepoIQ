@@ -119,7 +119,6 @@ class RepositoryService:
                     # ordered by. updated_at is when RepoIQ wrote the row, and a
                     # sync writes every row at once.
                     "github_updated_at": repo.get("updated_at"),
-                    "github_updated_at": repo.get("updated_at"),
                 }
                 for repo in repos
             ]
@@ -769,9 +768,11 @@ class RepositoryService:
             if agent_type:
                 query = query.eq("agent_type", agent_type)
             
-            # Order by severity (critical first) using database ordering
-            # This leverages the idx_issues_analysis_severity index
-            query = query.order("severity", desc=False)  # critical comes first alphabetically
+            # Most severe first, ranked in SQL so the page limit drops the
+            # least severe findings. Alphabetical order put "low" before
+            # "medium", so with more than a page of findings medium ones were
+            # cut. The id is a tiebreaker that keeps pages stable.
+            query = query.order_by_rank("severity", ["critical", "high", "medium", "low", "info"]).order("id")
             
             # Apply pagination
             offset = (page - 1) * per_page
@@ -782,9 +783,6 @@ class RepositoryService:
             issues = result.data or []
             logger.info(f"[get_issues] Found {len(issues)} issues for analysis {analysis_id} (page {page})")
             
-            # Sort by severity in Python for correct order
-            severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
-            issues.sort(key=lambda x: severity_order.get(x.get('severity', 'low'), 4))
             
             # Cache full first page for 60 minutes (immutable data)
             if page == 1 and per_page >= 100 and not severity and not agent_type and issues:
@@ -853,7 +851,9 @@ class RepositoryService:
             logger.error(f"Get roadmap failed: {str(e)}")
             return None
 
-    async def get_architecture_diagram(self, repo: Dict[str, Any], file_paths: List[str]) -> str:
+    async def get_architecture_diagram(
+        self, repo: Dict[str, Any], file_paths: List[str], user_id: Optional[str] = None
+    ) -> str:
         """
         The architecture diagram for this repository's file tree, generated
         once per distinct tree and then served from Redis.
@@ -879,7 +879,7 @@ class RepositoryService:
 
         repo_name = repo.get("name") or "Repository"
         diagram = await DocumentationAgent().generate_architecture_diagram(
-            files=file_paths, repo_name=repo_name
+            files=file_paths, repo_name=repo_name, user_id=user_id
         )
         if diagram:
             # Only the agent's fallback starts with its own "# <name>

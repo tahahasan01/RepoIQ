@@ -368,28 +368,32 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         )}
       >
         {/* Top bar */}
-        <header className="sticky top-0 z-30 glass-panel border-b h-16 flex items-center justify-between px-6">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-semibold">{repoName}</h1>
-              <span className="flex items-center gap-1 text-sm text-muted-foreground px-2 py-1 bg-muted rounded-md">
+        {/* The left side gives way (repo name truncates) and the button labels
+            shorten below 2xl: at 1280px the full header was ~75px wider than
+            the content column, so the whole page scrolled sideways. */}
+        <header className="sticky top-0 z-30 glass-panel border-b h-16 flex items-center justify-between gap-4 px-6">
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <h1 className="text-lg font-semibold truncate" title={repoName}>{repoName}</h1>
+              <span className="flex shrink-0 items-center gap-1 text-sm text-muted-foreground px-2 py-1 bg-muted rounded-md">
                 <GitBranch className="h-3 w-3" />
                 {branch}
               </span>
             </div>
-            <span className="hidden md:flex items-center gap-1 text-sm text-muted-foreground whitespace-nowrap">
+            <span className="hidden xl:flex items-center gap-1 text-sm text-muted-foreground whitespace-nowrap">
               <Clock className="h-3 w-3" />
               Last scan: {formatRelativeTime(lastScan === "Never" ? null : lastScan)}
             </span>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-2 xl:gap-3">
             {/* Scan history dropdown */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-2">
-                  <History className="h-4 w-4" />
-                  History ({scanHistory.length})
+                <Button variant="outline" size="sm" className="gap-2" aria-label={`Scan history (${scanHistory.length})`}>
+                  <History className="h-4 w-4" aria-hidden="true" />
+                  <span className="hidden 2xl:inline">History</span>
+                  <span>({scanHistory.length})</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-64">
@@ -463,9 +467,11 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 onPointerEnter={() => void loadChatbot()}
                 onFocus={() => void loadChatbot()}
                 aria-haspopup="dialog"
+                aria-label="Ask about this repo"
               >
                 <MessageSquare className="h-4 w-4" aria-hidden="true" />
-                Ask about this repo
+                <span className="2xl:hidden">Ask</span>
+                <span className="hidden 2xl:inline">Ask about this repo</span>
               </Button>
             )}
 

@@ -83,9 +83,6 @@ export function chatErrorMessage(error: unknown): string {
   if (error && typeof error === "object" && (error as { isNetworkError?: boolean }).isNetworkError) {
     return CHAT_NETWORK_MESSAGE;
   }
-  if (error && typeof error === "object" && (error as { isCorsError?: boolean }).isCorsError) {
-    return CHAT_NETWORK_MESSAGE;
-  }
   return CHAT_GENERIC_MESSAGE;
 }
 

@@ -105,25 +105,6 @@ Return ONLY valid JSON."""
             "files_analyzed": 1
         }
     
-    def _detect_language(self, file_path: str) -> str:
-        ext_map = {
-            ".py": "python",
-            ".js": "javascript",
-            ".jsx": "javascript",
-            ".ts": "typescript",
-            ".tsx": "typescript",
-            ".java": "java",
-            ".go": "go",
-            ".rb": "ruby",
-            ".php": "php",
-            ".cs": "csharp",
-            ".rs": "rust",
-        }
-        
-        for ext, lang in ext_map.items():
-            if file_path.endswith(ext):
-                return lang
-        return "unknown"
     
     # ------------------------------------------------------------------
     # Static rules

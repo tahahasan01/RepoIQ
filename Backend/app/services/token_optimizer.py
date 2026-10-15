@@ -4,6 +4,8 @@ Uses smart summarization, caching, and efficient prompting.
 """
 from typing import Dict, Any, List, Optional
 import json
+
+from app.core.languages import is_javascript_family
 import hashlib
 from datetime import datetime, timedelta
 from redis import Redis
@@ -113,7 +115,7 @@ class TokenOptimizer:
         # Apply language-specific optimization
         if file_path.endswith('.py'):
             return self.summarize_code(content, max_tokens)
-        elif file_path.endswith(('.js', '.ts', '.jsx', '.tsx')):
+        elif is_javascript_family(file_path):
             return self.summarize_code(content, max_tokens)
         elif file_path.endswith('.json'):
             # Truncate JSON intelligently

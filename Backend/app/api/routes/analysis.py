@@ -563,7 +563,7 @@ async def get_architecture_diagram(
         if not file_paths:
             file_paths = [str(f) for f in files]
         
-        diagram = await repo_service.get_architecture_diagram(repo, file_paths)
+        diagram = await repo_service.get_architecture_diagram(repo, file_paths, user_id=current_user["id"])
 
         return {
             "repository_id": repo_id,

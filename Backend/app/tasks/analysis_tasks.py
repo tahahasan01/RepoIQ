@@ -40,6 +40,15 @@ def _check_cancelled(analysis_id: str):
         raise AnalysisCancelled(analysis_id)
 
 
+class NothingToAnalyse(Exception):
+    """
+    The repository has no source RepoIQ can read. Reported as a failure the
+    user can act on: completing instead scored such a repository 100 in every
+    category, from zero files.
+    """
+    user_facing = True
+
+
 class AnalysisCancelled(Exception):
     """Raised when an analysis is cancelled by the user."""
     def __init__(self, analysis_id: str):
@@ -334,6 +343,10 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     logger.info(f"📊 File breakdown: {len(files)} total, {len(code_files_list)} code files selected")
     if len(code_files_list) == 0:
         logger.warning("⚠️ No code files found to analyze!")
+        raise NothingToAnalyse(
+            "This repository has no source files RepoIQ can analyse "
+            "(documentation, lock files and tests are skipped)."
+        )
     
     # Fetch content for ALL code files IN PARALLEL (much faster!)
     async def fetch_file_content(file, idx, total):
@@ -382,6 +395,11 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     code_files = [r for r in results if r is not None and not isinstance(r, Exception)]
 
     logger.info(f"Successfully loaded {len(code_files)} code files (parallel fetch)")
+    if not code_files:
+        raise NothingToAnalyse(
+            f"None of the {len(code_files_list)} source files could be read from GitHub "
+            "(each was too large or failed to download). Try again later."
+        )
 
     # INCREMENTAL: skip files whose content has been analysed before.
     #
