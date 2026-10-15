@@ -62,6 +62,8 @@ TENANT_OWNED_TABLES: Set[str] = {
     "code_ownership",
     "issue_blame",
     "audit_logs",
+    # Scoped by organization_id. Read by members through the alert routes.
+    "alerts",
 }
 
 # Columns that constitute an acceptable tenant constraint.

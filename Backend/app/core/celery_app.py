@@ -16,7 +16,12 @@ celery_app = Celery(
     "coderabbit",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.tasks.analysis_tasks"]
+    # Every module that defines a task. alert_tasks was missing, so the alert
+    # checks were never registered with a worker even had anything scheduled them.
+    include=[
+        "app.tasks.analysis_tasks",
+        "app.tasks.alert_tasks",
+    ],
 )
 
 celery_app.conf.update(
@@ -53,3 +58,29 @@ celery_app.conf.update(
     # is written.
     result_expires=3600,
 )
+
+
+def build_beat_schedule() -> dict:
+    """
+    Periodic tasks, run by `celery -A app.core.celery_app beat` (a separate
+    process from the worker; exactly one per deployment, or every task fires
+    once per beat process).
+
+    No schedule existed before, so the alert checks never ran on their own.
+    `expires` drops a run nobody picked up within one interval: after a worker
+    outage the backlog collapses to the next run instead of N back-to-back
+    checks of the same data.
+    """
+    interval = settings.ALERT_CHECK_INTERVAL_SECONDS
+    if interval <= 0:
+        return {}
+    return {
+        "check-all-organizations-alerts": {
+            "task": "check_all_organizations_alerts",
+            "schedule": float(interval),
+            "options": {"expires": interval},
+        },
+    }
+
+
+celery_app.conf.beat_schedule = build_beat_schedule()
