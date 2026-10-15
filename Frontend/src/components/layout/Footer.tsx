@@ -1,5 +1,7 @@
 import { Link } from "react-router-dom";
-import { Zap, Github, Twitter, Linkedin } from "lucide-react";
+import { Zap, Github } from "lucide-react";
+
+const GITHUB_REPO_URL = "https://github.com/tahahasan01/RepoIQ";
 
 const footerLinks = {
   Product: [
@@ -10,8 +12,6 @@ const footerLinks = {
   ],
   Company: [
     { label: "About", href: "/about" },
-    { label: "Blog", href: "/blog" },
-    { label: "Careers", href: "/careers" },
     { label: "Contact", href: "/contact" },
   ],
   Legal: [
@@ -37,32 +37,17 @@ export function Footer() {
               </span>
             </Link>
             <p className="text-sm text-muted-foreground max-w-xs mb-4">
-              AI-powered GitHub code intelligence for modern development teams.
+              AI code review for GitHub repositories, with fixes you approve before anything is pushed.
             </p>
             <div className="flex items-center gap-3">
               <a
-                href="https://github.com"
+                href={GITHUB_REPO_URL}
                 target="_blank"
                 rel="noopener noreferrer"
+                aria-label="RepoIQ on GitHub"
                 className="p-2 rounded-lg hover:bg-muted transition-colors"
               >
                 <Github className="h-5 w-5 text-muted-foreground" />
-              </a>
-              <a
-                href="https://twitter.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="p-2 rounded-lg hover:bg-muted transition-colors"
-              >
-                <Twitter className="h-5 w-5 text-muted-foreground" />
-              </a>
-              <a
-                href="https://linkedin.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="p-2 rounded-lg hover:bg-muted transition-colors"
-              >
-                <Linkedin className="h-5 w-5 text-muted-foreground" />
               </a>
             </div>
           </div>
@@ -92,7 +77,15 @@ export function Footer() {
             © {new Date().getFullYear()} RepoIQ. All rights reserved.
           </p>
           <p className="text-sm text-muted-foreground">
-            Built with ❤️ for developers
+            Built by{" "}
+            <a
+              href="https://github.com/tahahasan01"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-foreground transition-colors"
+            >
+              Taha Hasan
+            </a>
           </p>
         </div>
       </div>
