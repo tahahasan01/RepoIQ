@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import { Minus, Plus } from "lucide-react";
 import { diffStats, parseUnifiedDiff, type DiffLine } from "@/lib/diff";
-import { cn } from "@/lib/utils";
 
 const ROW_STYLE: Record<DiffLine["kind"], string> = {
   add: "bg-emerald-500/10 text-emerald-900 dark:text-emerald-200",

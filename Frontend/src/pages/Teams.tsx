@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useSearchParams, useNavigate } from "react-router-dom";
-import { Plus, Users, Building2, ArrowRight, Loader2, UserPlus, Info, Trash2 } from "lucide-react";
+import { Plus, Users, Building2, ArrowRight, Loader2, Info, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -43,7 +43,7 @@ export default function Teams() {
   const prefetchTeam = usePrefetchTeam();
   
   // Use React Query for instant loading with cached data
-  const { data: organizations = [], isLoading: orgsLoading, refetch: refetchOrgs } = useOrganizations({
+  const { data: organizations = [], isLoading: orgsLoading } = useOrganizations({
     placeholderData: (previousData) => previousData,
     refetchOnMount: true, // Always refetch on mount to get latest data
   });

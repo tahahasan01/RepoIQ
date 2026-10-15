@@ -7,7 +7,8 @@ on:
     branches: [main, develop]
 
 env:
-  NODE_VERSION: '18'
+  # Same major as Frontend/nixpacks.toml; Node 18 is end-of-life.
+  NODE_VERSION: '22'
   PYTHON_VERSION: '3.11'
 
 jobs:
@@ -203,11 +204,11 @@ jobs:
         working-directory: Frontend
         run: npm install
 
-      # ADVISORY until the existing violations are burned down; promote to
-      # blocking in the same commit that fixes them.
-      - name: Run ESLint (advisory)
+      # BLOCKING. Errors are the bug-shaped rules (hook rules and missing hook
+      # dependencies, unused code, empty catches). `any` is a warning while the
+      # untyped API layer is burned down - see eslint.config.js.
+      - name: Run ESLint (blocking)
         working-directory: Frontend
-        continue-on-error: true
         run: npm run lint
 
   # ============================================

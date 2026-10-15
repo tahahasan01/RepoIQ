@@ -1,7 +1,6 @@
 import { motion } from "framer-motion";
 import { useEffect } from "react";
 import { Link } from "react-router-dom";
-import { useAuth } from "@/hooks/useAuth";
 import { useRepositoryStore } from "@/stores/repositoryStore";
 import { useUIStore } from "@/stores/uiStore";
 import { useAnalysisStore } from "@/stores/analysisStore";
@@ -21,7 +20,6 @@ import {
   History,
   X,
   Loader2,
-  Check,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -64,8 +62,6 @@ const languageColors: Record<string, string> = {
 // Cache management is now handled by the repository store
 
 export default function Repositories() {
-  const auth = useAuth();
-  
   // Repository store
   const {
     repositories: repos,
@@ -151,7 +147,7 @@ export default function Repositories() {
         setAnalyzingRepo(repoId, true);
       }
     });
-  }, []); // Only on mount
+  }, [setAnalyzingRepo]); // Only on mount: zustand actions never change identity
 
   // Load repositories when the page or the search changes. A search runs on
   // the server across every repository, starting from page 1.
@@ -273,12 +269,6 @@ export default function Repositories() {
       setSearchQuery(""); // Clear search when changing pages
       setSearchInput(""); // Clear input too
     }
-  };
-  
-  const handlePageChange = (page: number) => {
-    setCurrentPage(page);
-    setSearchQuery(""); // Clear search when changing pages
-    setSearchInput(""); // Clear input too
   };
   
   const handleAnalyze = async (repoId: string | number) => {

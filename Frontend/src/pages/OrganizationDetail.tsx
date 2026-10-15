@@ -9,9 +9,7 @@ import {
   Loader2,
   Plus,
   BarChart3,
-  TrendingUp,
   AlertTriangle,
-  CheckCircle2,
   ExternalLink,
   Edit2,
   Trash2,
@@ -24,15 +22,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -469,7 +458,14 @@ export default function OrganizationDetail() {
                 </Button>
               </Link>
             </div>
-            {teams.length === 0 ? (
+            {/* Loading first: the empty state below reads as a real answer. */}
+            {teamsLoading && teams.length === 0 ? (
+              <Card>
+                <CardContent className="py-16 flex justify-center" aria-label="Loading teams">
+                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                </CardContent>
+              </Card>
+            ) : teams.length === 0 ? (
               <Card>
                 <CardContent className="py-16 text-center">
                   <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-muted flex items-center justify-center">
@@ -525,7 +521,14 @@ export default function OrganizationDetail() {
                 <p className="text-muted-foreground">Repositories assigned to this organization</p>
               </div>
             </div>
-            {repositories.length === 0 ? (
+            {/* Loading first: the empty state below reads as a real answer. */}
+            {reposLoading && repositories.length === 0 ? (
+              <Card>
+                <CardContent className="py-16 flex justify-center" aria-label="Loading repositories">
+                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                </CardContent>
+              </Card>
+            ) : repositories.length === 0 ? (
               <Card>
                 <CardContent className="py-16 text-center">
                   <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-muted flex items-center justify-center">

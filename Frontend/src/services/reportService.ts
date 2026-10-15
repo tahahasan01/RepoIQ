@@ -67,14 +67,6 @@ function getSeverityBadge(severity: string): string {
   return `<span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; color: white; background-color: ${color}; text-transform: uppercase;">${escapeHtml(severity || 'unknown')}</span>`;
 }
 
-// Helper function to get score color
-function getScoreColor(score: number): string {
-  if (score >= 80) return '#16a34a';
-  if (score >= 60) return '#ca8a04';
-  if (score >= 40) return '#ea580c';
-  return '#dc2626';
-}
-
 // Generate comprehensive PDF report - Print-Ready Format
 export function generateFullAnalysisReport(report: AnalysisReport): void {
   const timestamp = new Date().toLocaleString();

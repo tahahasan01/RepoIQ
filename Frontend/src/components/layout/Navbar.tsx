@@ -1,24 +1,17 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Github, Menu, X, Zap, FolderGit2 } from "lucide-react";
+import { Github, Menu, X, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
 import NotificationBell from "@/components/NotificationBell";
-import { useState, Fragment, useEffect } from "react";
+import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import apiClient from "@/lib/api";
-
-const navLinks = [
-  { href: "/", label: "Home" },
-  { href: "/pricing", label: "Pricing" },
-  { href: "/docs", label: "Docs" },
-];
 
 export function Navbar() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { isAuthenticated, user, logout } = useAuth();
+  const { isAuthenticated, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const hash = location.hash || "";
   const isHomeActive = location.pathname === "/" && (hash === "" || hash === "#" || hash === "#home");

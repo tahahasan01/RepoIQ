@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
 import NotificationBell from "@/components/NotificationBell";
-import { useState, useEffect, lazy, Suspense } from "react";
+import { useState, useEffect, useCallback, lazy, Suspense } from "react";
 import apiClient from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -101,8 +101,10 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [mobileNavOpen]);
 
-  // Function to load repo and history (will be reused for real-time updates)
-  const loadRepoAndHistory = async () => {
+  // Function to load repo and history (will be reused for real-time updates).
+  // Memoised on repoId so the effect below can depend on it; it reads nothing
+  // else from render scope (state setters are stable).
+  const loadRepoAndHistory = useCallback(async () => {
       try {
         if (!repoId || repoId === 'undefined') {
           // No repo selected yet
@@ -116,8 +118,10 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
       console.log('[DashboardLayout] 🔄 Loading repo and history:', repoId);
         const repo = await apiClient.getRepository(repoId as string);
-        setRepoName(repo?.name || repo?.full_name || "Repository");
-        setBranch(repo?.default_branch || "main");
+        const loadedName = repo?.name || repo?.full_name || "Repository";
+        const loadedBranch = repo?.default_branch || "main";
+        setRepoName(loadedName);
+        setBranch(loadedBranch);
 
         const history = await apiClient.getAnalysisHistory(repoId as string);
         
@@ -145,8 +149,10 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         const scanItems = historyArray.map((item: any) => ({
           id: item.id || String(Date.now()),
           timestamp: new Date(item.completed_at || item.created_at || item.started_at || Date.now()).getTime(),
-          repoName: repoName,
-          branch: branch,
+          // Not the repoName/branch state: this closure holds the values from
+          // before the setters above, i.e. the previously viewed repository.
+          repoName: loadedName,
+          branch: loadedBranch,
           issues: item.issues || [],
           stats: {
             total: item.total_issues ?? item.total ?? 0,
@@ -200,7 +206,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       } catch (err) {
         console.error("Failed loading repo/history", err);
       }
-    };
+    }, [repoId]);
 
   useEffect(() => {
     let mounted = true;
@@ -231,7 +237,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       mounted = false;
       window.removeEventListener('analysisCompleted', handleAnalysisCompleted);
     };
-  }, [repoId]);
+  }, [repoId, loadRepoAndHistory]);
 
   // Get notification store actions
   const { startBackgroundAnalysis, addNotification, backgroundAnalyses } = useNotificationStore();

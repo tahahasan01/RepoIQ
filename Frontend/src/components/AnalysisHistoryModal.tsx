@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import apiClient from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -35,13 +35,7 @@ export default function AnalysisHistoryModal({
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    if (isOpen && repoId) {
-      loadHistory();
-    }
-  }, [isOpen, repoId]);
-
-  const loadHistory = async (forceRefresh = false) => {
+  const loadHistory = useCallback(async (forceRefresh = false) => {
     try {
       setLoading(true);
       setError(null);
@@ -67,13 +61,19 @@ export default function AnalysisHistoryModal({
       if (runs.length === 0) {
         setError("No analysis history found for this repository.");
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error('[AnalysisHistoryModal] Failed to load history:', err);
-      setError(err?.message || "Failed to load analysis history");
+      setError(err instanceof Error && err.message ? err.message : "Failed to load analysis history");
     } finally {
       setLoading(false);
     }
-  };
+  }, [repoId]);
+
+  useEffect(() => {
+    if (isOpen && repoId) {
+      loadHistory();
+    }
+  }, [isOpen, repoId, loadHistory]);
 
   const handleViewAnalysis = (analysisId: string) => {
     console.log('[AnalysisHistoryModal] Viewing analysis:', analysisId);

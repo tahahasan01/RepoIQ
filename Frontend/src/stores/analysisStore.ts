@@ -193,9 +193,9 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
 
       get().setResult(repoId, result);
       get().setLoading(repoId, false);
-    } catch (err: any) {
+    } catch (err) {
       console.error('[AnalysisStore] Failed to load analysis', err);
-      get().setError(repoId, err?.message || 'Failed to load analysis');
+      get().setError(repoId, (err as Error | undefined)?.message || 'Failed to load analysis');
       get().setLoading(repoId, false);
     }
   },
@@ -246,10 +246,10 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
       get().clearCache(repoId);
       
       return { analysis_id: analysisId };
-    } catch (err: any) {
+    } catch (err) {
       console.error('[AnalysisStore] Failed to start analysis', err);
       
-      get().setError(repoId, err?.message || 'Failed to start analysis');
+      get().setError(repoId, (err as Error | undefined)?.message || 'Failed to start analysis');
       
       // Re-throw to allow caller to handle it
       throw err;

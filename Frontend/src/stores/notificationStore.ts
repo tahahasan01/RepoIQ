@@ -60,16 +60,10 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       unreadCount: state.unreadCount + 1,
     }));
     
-    // Play notification sound (optional)
-    try {
-      // Only play if page is not focused
-      if (document.hidden) {
-        const audio = new Audio('/notification.mp3');
-        audio.volume = 0.3;
-        audio.play().catch(() => {}); // Ignore if blocked
-      }
-    } catch {}
-    
+    // (A notification sound used to be played here from /notification.mp3,
+    // a file that was never shipped: every notification in a background tab
+    // requested it and got a 404. Add the asset before bringing it back.)
+
     return newNotification.id;
   },
   

@@ -6,8 +6,6 @@ import {
   Shield,
   Code2,
   GitBranch,
-  FileText,
-  Settings,
   Book,
   ChevronRight,
   ExternalLink,

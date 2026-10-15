@@ -4,14 +4,14 @@
  * @param delay Delay in milliseconds
  * @returns Throttled function
  */
-export function throttle<T extends (...args: any[]) => any>(
+export function throttle<T extends (...args: never[]) => unknown>(
   func: T,
   delay: number
 ): (...args: Parameters<T>) => void {
   let lastCall = 0;
   let timeoutId: NodeJS.Timeout | null = null;
 
-  return function (this: any, ...args: Parameters<T>) {
+  return function (this: unknown, ...args: Parameters<T>) {
     const now = Date.now();
     const timeSinceLastCall = now - lastCall;
 
@@ -38,13 +38,13 @@ export function throttle<T extends (...args: any[]) => any>(
  * @param delay Delay in milliseconds
  * @returns Debounced function
  */
-export function debounce<T extends (...args: any[]) => any>(
+export function debounce<T extends (...args: never[]) => unknown>(
   func: T,
   delay: number
 ): (...args: Parameters<T>) => void {
   let timeoutId: NodeJS.Timeout | null = null;
 
-  return function (this: any, ...args: Parameters<T>) {
+  return function (this: unknown, ...args: Parameters<T>) {
     if (timeoutId) {
       clearTimeout(timeoutId);
     }
@@ -60,7 +60,11 @@ export function debounce<T extends (...args: any[]) => any>(
  * Useful for search inputs, scroll events, etc.
  */
 export class RequestThrottler {
-  private pendingRequests = new Map<string, Promise<any>>();
+  private pendingRequests = new Map<string, Promise<unknown>>();
+  // Pending delayed-request timers, keyed `_timeout_${key}`. These used to be
+  // stored in pendingRequests through an `as any` cast, mixing timer ids into a
+  // map of promises.
+  private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private lastRequestTime = new Map<string, number>();
   private minDelay: number;
 
@@ -81,10 +85,10 @@ export class RequestThrottler {
 
     // Cancel any existing timeout for this key
     const timeoutKey = `_timeout_${key}`;
-    const existingTimeout = (this.pendingRequests as any).get(timeoutKey);
+    const existingTimeout = this.timeouts.get(timeoutKey);
     if (existingTimeout) {
       clearTimeout(existingTimeout);
-      (this.pendingRequests as any).delete(timeoutKey);
+      this.timeouts.delete(timeoutKey);
     }
 
     // If enough time has passed, execute immediately
@@ -123,7 +127,7 @@ export class RequestThrottler {
         this.lastRequestTime.set(key, Date.now());
         const requestPromise = requestFn();
         this.pendingRequests.set(key, requestPromise);
-        (this.pendingRequests as any).delete(timeoutKey);
+        this.timeouts.delete(timeoutKey);
         
         try {
           const result = await requestPromise;
@@ -142,7 +146,7 @@ export class RequestThrottler {
       }, this.minDelay - timeSinceLastRequest);
       
       // Store timeout for potential cancellation
-      (this.pendingRequests as any).set(timeoutKey, timeoutId);
+      this.timeouts.set(timeoutKey, timeoutId);
     });
     
     promiseRef = promise;
@@ -162,10 +166,10 @@ export class RequestThrottler {
   ): Promise<T> {
     // Clear any existing timeout
     const timeoutKey = `_timeout_${key}`;
-    const existingTimeout = (this.pendingRequests as any).get(timeoutKey);
+    const existingTimeout = this.timeouts.get(timeoutKey);
     if (existingTimeout) {
       clearTimeout(existingTimeout);
-      (this.pendingRequests as any).delete(timeoutKey);
+      this.timeouts.delete(timeoutKey);
     }
 
     return new Promise<T>((resolve, reject) => {
@@ -173,7 +177,7 @@ export class RequestThrottler {
         this.lastRequestTime.set(key, Date.now());
         const promise = requestFn();
         this.pendingRequests.set(key, promise);
-        (this.pendingRequests as any).delete(timeoutKey);
+        this.timeouts.delete(timeoutKey);
         
         try {
           const result = await promise;
@@ -186,7 +190,7 @@ export class RequestThrottler {
       }, delay);
 
       // Store timeout ID for cancellation
-      (this.pendingRequests as any).set(timeoutKey, timeoutId);
+      this.timeouts.set(timeoutKey, timeoutId);
     });
   }
 
@@ -194,10 +198,10 @@ export class RequestThrottler {
    * Cancel a pending request
    */
   cancel(key: string): void {
-    const timeoutId = (this.pendingRequests as any).get(`_timeout_${key}`);
+    const timeoutId = this.timeouts.get(`_timeout_${key}`);
     if (timeoutId) {
       clearTimeout(timeoutId);
-      (this.pendingRequests as any).delete(`_timeout_${key}`);
+      this.timeouts.delete(`_timeout_${key}`);
     }
     this.pendingRequests.delete(key);
   }
@@ -206,12 +210,8 @@ export class RequestThrottler {
    * Clear all pending requests
    */
   clear(): void {
-    this.pendingRequests.forEach((_, key) => {
-      const timeoutId = (this.pendingRequests as any).get(`_timeout_${key}`);
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-    });
+    this.timeouts.forEach((timeoutId) => clearTimeout(timeoutId));
+    this.timeouts.clear();
     this.pendingRequests.clear();
     this.lastRequestTime.clear();
   }

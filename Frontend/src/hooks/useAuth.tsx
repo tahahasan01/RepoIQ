@@ -48,7 +48,11 @@ export function useAuth() {
       localStorage.setItem("user", JSON.stringify(u));
       if (token) localStorage.setItem("token", token);
       if (refreshToken) localStorage.setItem("refresh_token", refreshToken);
-    } catch {}
+    } catch (err) {
+      // Storage blocked or full: the session still works for this page load,
+      // but will not survive a reload - worth seeing in the console.
+      console.warn("[useAuth] Could not persist the session:", err);
+    }
   }
 
   /**

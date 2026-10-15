@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { Plus, Building2, Users, FolderGit2, ArrowRight, Loader2, Info, Trash2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -29,7 +29,7 @@ import { Label } from "@/components/ui/label";
 import apiClient from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
-import { useOrganizations, useOrganizationTeams, useOrganizationRepositories, usePrefetchOrganization, queryKeys } from "@/hooks/useApiQueries";
+import { useOrganizations, usePrefetchOrganization, queryKeys } from "@/hooks/useApiQueries";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 export default function Organizations() {

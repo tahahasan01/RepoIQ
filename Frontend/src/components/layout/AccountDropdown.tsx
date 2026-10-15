@@ -3,7 +3,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useCurrentUser } from "@/hooks/useApiQueries";
-import { Settings, LogOut, Building2, Users, BarChart3 } from "lucide-react";
+import { Settings, LogOut, Building2, Users } from "lucide-react";
 
 export default function AccountDropdown() {
   const [open, setOpen] = useState(false);
