@@ -4,6 +4,7 @@ import { Github, Menu, X, Zap, FolderGit2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
+import NotificationBell from "@/components/NotificationBell";
 import { useState, Fragment, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import apiClient from "@/lib/api";
@@ -190,6 +191,7 @@ export function Navbar() {
               </>
             ) : isAuthenticated ? (
               <>
+                <NotificationBell />
                 <Button variant="outline" onClick={handleLogout}>Logout</Button>
                 <AccountDropdown />
               </>

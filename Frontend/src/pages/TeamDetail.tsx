@@ -52,6 +52,7 @@ import { Navbar } from "@/components/layout/Navbar";
 import { useCurrentUser, useRepositories, useTeam, queryKeys } from "@/hooks/useApiQueries";
 import { teamSummaryKey, useTeamSummary } from "@/hooks/useTeamSummary";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { TeamInvitationsCard } from "@/components/teams/TeamInvitationsCard";
 
 // The backend's team_members.role CHECK allows exactly these. The picker used
 // to offer "admin", which the database rejected on every attempt.
@@ -320,15 +321,23 @@ export default function TeamDetail() {
   const invite = useMutation({
     mutationFn: ({ identifier, role }: { identifier: string; role: string }) =>
       apiClient.addTeamMember(id!, identifier, role),
-    onSuccess: () => {
+    onSuccess: (_result, { identifier }) => {
       refreshTeam();
+      queryClient.invalidateQueries({ queryKey: queryKeys.teamInvitations(id!) });
       setInviteOpen(false);
       setInviteIdentifier("");
       setInviteRole("member");
-      toast({ title: "Invitation sent", description: "They'll join the team once they accept." });
+      toast({ title: `Invitation sent to ${identifier}`, description: "They'll join the team once they accept." });
     },
-    onError: (error: any) =>
-      toast({ title: "Couldn't send invitation", description: error.message, variant: "destructive" }),
+    // 400 (unknown user, inviting yourself) and 409 (already a member or
+    // already invited) carry a sentence written for the user; show it as is.
+    // The dialog stays open so the entry can be corrected.
+    onError: (error: unknown) =>
+      toast({
+        title: "Couldn't send the invitation",
+        description: error instanceof Error ? error.message : "Something went wrong. Try again.",
+        variant: "destructive",
+      }),
   });
 
   const unassign = useMutation({
@@ -560,6 +569,7 @@ export default function TeamDetail() {
 
           {/* Members */}
           <TabsContent value="members" className="space-y-4">
+            <TeamInvitationsCard teamId={id!} />
             {members.length === 0 ? (
               <Card>
                 <CardContent className="py-16 text-center">

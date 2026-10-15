@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bell, CheckCircle, XCircle, Info, Zap, X } from "lucide-react";
+import { Bell, CheckCircle, XCircle, Info, Zap, X, Mail } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNotificationStore, Notification } from "@/stores/notificationStore";
 import { formatRelativeTime } from "@/lib/timeUtils";
-import { Button } from "@/components/ui/button";
+import { useMyInvitations } from "@/hooks/useNotificationQueries";
+import { InvitationList } from "@/components/teams/InvitationList";
 
 export default function NotificationBell() {
   const [isOpen, setIsOpen] = useState(false);
@@ -20,6 +21,11 @@ export default function NotificationBell() {
     removeNotification,
     clearAll 
   } = useNotificationStore();
+
+  // Pending team invitations come from the server, not the local store, and
+  // stay counted until they are accepted or declined.
+  const { data: invitations = [] } = useMyInvitations();
+  const badgeCount = unreadCount + invitations.length;
   
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -65,13 +71,22 @@ export default function NotificationBell() {
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="relative p-2 rounded-lg hover:bg-accent transition-colors"
+        aria-label={
+          badgeCount > 0
+            ? `Notifications: ${badgeCount} need${badgeCount === 1 ? "s" : ""} your attention`
+            : "Notifications"
+        }
+        aria-expanded={isOpen}
       >
         <Bell className="h-5 w-5" />
         
         {/* Badge for unread count */}
-        {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center font-medium">
-            {unreadCount > 9 ? '9+' : unreadCount}
+        {badgeCount > 0 && (
+          <span
+            aria-hidden="true"
+            className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center font-medium"
+          >
+            {badgeCount > 9 ? '9+' : badgeCount}
           </span>
         )}
         
@@ -111,6 +126,19 @@ export default function NotificationBell() {
               )}
             </div>
             
+            {/* Team invitations */}
+            {invitations.length > 0 && (
+              <div className="border-b border-border bg-primary/5">
+                <div className="px-3 pt-3 text-xs text-muted-foreground flex items-center gap-1">
+                  <Mail className="h-3 w-3" />
+                  Team invitations ({invitations.length})
+                </div>
+                <div className="max-h-64 overflow-y-auto">
+                  <InvitationList invitations={invitations} compact />
+                </div>
+              </div>
+            )}
+
             {/* Active Analyses */}
             {activeAnalyses.length > 0 && (
               <div className="p-3 bg-primary/5 border-b border-border">
@@ -137,7 +165,7 @@ export default function NotificationBell() {
             
             {/* Notifications List */}
             <div className="max-h-80 overflow-y-auto">
-              {notifications.length === 0 ? (
+              {notifications.length === 0 && invitations.length > 0 ? null : notifications.length === 0 ? (
                 <div className="p-8 text-center text-muted-foreground">
                   <Bell className="h-8 w-8 mx-auto mb-2 opacity-50" />
                   <p className="text-sm">No notifications yet</p>
