@@ -24,13 +24,18 @@ class BusinessMetricsService:
             if not org:
                 return {}
             
+            # The Executive Dashboard shows these; it read them as 0 because they
+            # were never returned. Definition in get_organization_headcount.
+            headcount = await org_service.get_organization_headcount(org)
+
             # Get all repositories in organization
             repos = await org_service.get_organization_repositories(organization_id, user_id)
             repo_ids = [r["id"] for r in repos]
-            
+
             if not repo_ids:
                 return {
                     "organization_id": organization_id,
+                    **headcount,
                     "total_repositories": 0,
                     "overall_health_score": 0,
                     "total_issues": 0,
@@ -82,6 +87,7 @@ class BusinessMetricsService:
             
             return {
                 "organization_id": organization_id,
+                **headcount,
                 "total_repositories": total_repos,
                 "overall_health_score": round(overall_health_score, 2),
                 "total_issues": total_issues,

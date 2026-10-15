@@ -81,6 +81,33 @@ class OrganizationService:
         colleagues.discard(user_id)
         return colleagues
 
+    async def get_organization_headcount(self, org: Dict[str, Any]) -> Dict[str, int]:
+        """
+        {"total_teams", "total_members"} for an organization row the caller has
+        already been authorised to see (from get_organization).
+
+        total_members counts distinct PEOPLE in the organization: everyone on
+        any of its teams, plus the owner. The owner is counted because they are
+        a member in every sense get_organization uses - they see and manage the
+        organization without being on a team - and an organization whose owner
+        has no team yet would otherwise report zero members. Someone on several
+        teams counts once. Pending invitations are not members and are not
+        counted.
+        """
+        teams = (await run_blocking(
+            self.db.table("teams").select("id").eq("organization_id", org["id"]).execute
+        )).data or []
+        team_ids = [t["id"] for t in teams]
+
+        people = {org["owner_id"]} if org.get("owner_id") else set()
+        if team_ids:
+            members = (await run_blocking(
+                self.db.table("team_members").select("user_id").in_("team_id", team_ids).execute
+            )).data or []
+            people.update(m["user_id"] for m in members)
+
+        return {"total_teams": len(team_ids), "total_members": len(people)}
+
     async def list_user_organizations(self, user_id: str) -> List[Dict[str, Any]]:
         """List all organizations a user belongs to (as owner or member)."""
         try:
