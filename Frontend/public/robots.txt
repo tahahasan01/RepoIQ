@@ -1,14 +1,15 @@
-User-agent: Googlebot
-Allow: /
-
-User-agent: Bingbot
-Allow: /
-
-User-agent: Twitterbot
-Allow: /
-
-User-agent: facebookexternalhit
-Allow: /
-
+# Marketing pages are public; everything behind GitHub sign-in is not worth
+# crawling (it only renders a login redirect) and must not be indexed.
 User-agent: *
 Allow: /
+Disallow: /repos
+Disallow: /dashboard/
+Disallow: /analyzing/
+Disallow: /settings
+Disallow: /organizations
+Disallow: /teams
+Disallow: /executive/
+Disallow: /auth/
+
+# Add once the production domain is final (must be an absolute URL):
+# Sitemap: https://repoiq.app/sitemap.xml

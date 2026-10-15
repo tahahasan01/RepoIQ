@@ -112,13 +112,17 @@ const AppInner = () => {
         // authExpired fires the token is usually already gone, so we cannot
         // derive the user's key - and leaving their data behind is the bug.
         clearAllQueryCaches();
-        if (window.location.pathname !== "/login") {
-          // Come back to this page after signing in again. Ignored if it is
-          // not a safe internal path (or is an auth page).
-          rememberPostLoginRedirect(window.location.pathname + window.location.search);
-          window.location.href = "/login";
-        }
-      } catch {}
+      } catch (err) {
+        console.error("[App] Failed to clear cached data after session expiry:", err);
+      }
+      // Outside the try: a failure above used to be swallowed together with
+      // the redirect, leaving the user on a page whose API calls all fail.
+      if (window.location.pathname !== "/login") {
+        // Come back to this page after signing in again. Ignored if it is
+        // not a safe internal path (or is an auth page).
+        rememberPostLoginRedirect(window.location.pathname + window.location.search);
+        window.location.href = "/login";
+      }
     };
     window.addEventListener("authExpired", handler as EventListener);
     return () => window.removeEventListener("authExpired", handler as EventListener);
@@ -183,7 +187,9 @@ const App = () => {
           const payload = JSON.parse(atob(token.split('.')[1]));
           return payload?.sub || payload?.user_id || payload?.id;
         }
-      } catch {}
+      } catch {
+        // Malformed or opaque token: persist under the anonymous bucket.
+      }
       return undefined;
     };
     

@@ -1,8 +1,6 @@
-import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import {
   TrendingUp,
-  TrendingDown,
   AlertTriangle,
   Shield,
   FileCode,
@@ -32,15 +30,10 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
   RadialBarChart,
   RadialBar,
 } from "recharts";
-import apiClient from "@/lib/api";
 import { useOrganizationAlerts } from "@/hooks/useNotificationQueries";
-import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
 import { 
   useOrganizationOverview, 
@@ -50,11 +43,8 @@ import {
   useTeamLeaderboard 
 } from "@/hooks/useApiQueries";
 
-const COLORS = ["#0ea5e9", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6"];
-
 export default function ExecutiveDashboard() {
   const { orgId } = useParams<{ orgId: string }>();
-  const { toast } = useToast();
   const { data: openAlerts = [] } = useOrganizationAlerts(orgId, false);
   
   // Use React Query for instant loading with cached data
@@ -98,21 +88,6 @@ export default function ExecutiveDashboard() {
       </div>
     );
   }
-
-  const getRiskColor = (level: string) => {
-    switch (level?.toLowerCase()) {
-      case "critical":
-        return "text-red-500 bg-red-500/10";
-      case "high":
-        return "text-orange-500 bg-orange-500/10";
-      case "medium":
-        return "text-yellow-500 bg-yellow-500/10";
-      case "low":
-        return "text-green-500 bg-green-500/10";
-      default:
-        return "text-blue-500 bg-blue-500/10";
-    }
-  };
 
   const getRiskBadgeVariant = (level: string): "destructive" | "default" | "secondary" | "outline" => {
     switch (level?.toLowerCase()) {
@@ -496,7 +471,14 @@ export default function ExecutiveDashboard() {
                 <p className="text-muted-foreground">Repositories and files that need immediate attention</p>
               </div>
             </div>
-            {riskAreas.length === 0 ? (
+            {/* Loading first: the empty state below reads as a real answer. */}
+            {riskAreasLoading && riskAreas.length === 0 ? (
+              <Card>
+                <CardContent className="py-16 flex justify-center" aria-label="Loading risk areas">
+                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                </CardContent>
+              </Card>
+            ) : riskAreas.length === 0 ? (
               <Card>
                 <CardContent className="py-16 text-center">
                   <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-green-500/10 flex items-center justify-center">
@@ -611,7 +593,14 @@ export default function ExecutiveDashboard() {
               <p className="text-muted-foreground">Compare team performance and identify top performers</p>
             </div>
 
-            {teamLeaderboard.length === 0 ? (
+            {/* Loading first: the empty state below reads as a real answer. */}
+            {leaderboardLoading && teamLeaderboard.length === 0 ? (
+              <Card>
+                <CardContent className="py-16 flex justify-center" aria-label="Loading team performance">
+                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                </CardContent>
+              </Card>
+            ) : teamLeaderboard.length === 0 ? (
               <Card>
                 <CardContent className="py-16 text-center">
                   <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-muted flex items-center justify-center">

@@ -150,7 +150,7 @@ export default function Security() {
           >
             <h2 className="text-3xl font-bold mb-8 text-center">Certifications & Compliance</h2>
             <div className="grid md:grid-cols-2 gap-6">
-              {certifications.map((cert, index) => (
+              {certifications.map((cert) => (
                 <div
                   key={cert.name}
                   className="flex items-center justify-between p-4 bg-muted rounded-lg"

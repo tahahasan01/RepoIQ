@@ -3,7 +3,6 @@ import { Footer } from "@/components/layout/Footer";
 import { motion } from "framer-motion";
 import { Calendar, Clock, ArrowRight } from "lucide-react";
 import { useEffect } from "react";
-import { Link } from "react-router-dom";
 
 const blogPosts = [
   {

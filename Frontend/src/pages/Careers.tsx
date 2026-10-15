@@ -1,7 +1,7 @@
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 import { motion } from "framer-motion";
-import { MapPin, Briefcase, Clock, ArrowRight } from "lucide-react";
+import { MapPin, Briefcase, ArrowRight } from "lucide-react";
 import { useEffect } from "react";
 
 const openings = [

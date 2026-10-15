@@ -40,7 +40,13 @@ export default defineConfig(({ mode }) => ({
     minify: 'terser',
     terserOptions: {
       compress: {
-        drop_console: mode === 'production', // Remove console logs in production
+        // Strip debug logging (the stores trace every cache hit) but keep
+        // console.warn/console.error: they are how failures surface in a
+        // user's devtools and in any error monitoring hooked onto console.
+        // drop_console: true removed those too, silently swallowing ~60
+        // warn/error call sites. pure_funcs only drops a call whose result
+        // is unused, which is always the case for console methods.
+        pure_funcs: mode === 'production' ? ['console.log', 'console.info', 'console.debug'] : [],
         drop_debugger: true,
       },
     },

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Public marketing routes from src/App.tsx. https://repoiq.app is a
+     placeholder: replace it with the real production domain before launch. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://repoiq.app/</loc></url>
+  <url><loc>https://repoiq.app/features</loc></url>
+  <url><loc>https://repoiq.app/pricing</loc></url>
+  <url><loc>https://repoiq.app/docs</loc></url>
+  <url><loc>https://repoiq.app/changelog</loc></url>
+  <url><loc>https://repoiq.app/about</loc></url>
+  <url><loc>https://repoiq.app/blog</loc></url>
+  <url><loc>https://repoiq.app/careers</loc></url>
+  <url><loc>https://repoiq.app/contact</loc></url>
+  <url><loc>https://repoiq.app/security</loc></url>
+  <url><loc>https://repoiq.app/privacy</loc></url>
+  <url><loc>https://repoiq.app/terms</loc></url>
+</urlset>

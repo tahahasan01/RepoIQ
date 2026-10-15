@@ -23,7 +23,6 @@ import {
   Filter,
   AlertTriangle,
   Sparkles,
-  ChevronRight,
   Copy,
   Check,
   X,
@@ -32,12 +31,56 @@ import {
 } from "lucide-react";
 import type { ScanIssue } from "@/types/scan";
 
-const severityOrder = ["critical", "high", "medium", "low"];
 const severityColors: Record<string, string> = {
   critical: "severity-critical",
   high: "severity-high",
   medium: "severity-medium",
   low: "severity-low",
+};
+
+// Issues caching functions. Module scope: they read nothing from the
+// component, and the load effect below can then depend on repoId alone.
+const ISSUES_CACHE_KEY = (repoId: string) => `repoiq_issues_${repoId}`;
+const ANALYSIS_CACHE_KEY = (repoId: string) => `repoiq_analysis_${repoId}`; // Dashboard's cache
+
+const getCachedIssues = (repoId: string) => {
+  try {
+    // First, try to get issues from Dashboard's analysis cache (most likely to exist)
+    const analysisRaw = sessionStorage.getItem(ANALYSIS_CACHE_KEY(repoId));
+    if (analysisRaw) {
+      const analysisParsed = JSON.parse(analysisRaw);
+      if (Date.now() - (analysisParsed.timestamp || 0) <= 30 * 60 * 1000) {
+        if (analysisParsed.data?.issues && Array.isArray(analysisParsed.data.issues)) {
+          console.log('[Issues] Found issues in Dashboard cache:', analysisParsed.data.issues.length);
+          return analysisParsed.data.issues;
+        }
+      }
+    }
+
+    // Fallback to Issues-specific cache
+    const issuesRaw = sessionStorage.getItem(ISSUES_CACHE_KEY(repoId));
+    if (!issuesRaw) return null;
+    const parsed = JSON.parse(issuesRaw);
+    // Cache for 30 minutes (same as Dashboard)
+    if (Date.now() - (parsed.timestamp || 0) > 30 * 60 * 1000) {
+      sessionStorage.removeItem(ISSUES_CACHE_KEY(repoId));
+      return null;
+    }
+    return parsed.issues;
+  } catch {
+    return null;
+  }
+};
+
+const setCachedIssues = (repoId: string, issues: unknown[]) => {
+  try {
+    sessionStorage.setItem(
+      ISSUES_CACHE_KEY(repoId),
+      JSON.stringify({ issues, timestamp: Date.now() })
+    );
+  } catch {
+    // Ignore storage errors
+  }
 };
 
 export default function Issues() {
@@ -70,50 +113,6 @@ export default function Issues() {
       }
     });
   }, []);
-
-  // Issues caching functions
-  const ISSUES_CACHE_KEY = (repoId: string) => `repoiq_issues_${repoId}`;
-  const ANALYSIS_CACHE_KEY = (repoId: string) => `repoiq_analysis_${repoId}`; // Dashboard's cache
-
-  const getCachedIssues = (repoId: string) => {
-    try {
-      // First, try to get issues from Dashboard's analysis cache (most likely to exist)
-      const analysisRaw = sessionStorage.getItem(ANALYSIS_CACHE_KEY(repoId));
-      if (analysisRaw) {
-        const analysisParsed = JSON.parse(analysisRaw);
-        if (Date.now() - (analysisParsed.timestamp || 0) <= 30 * 60 * 1000) {
-          if (analysisParsed.data?.issues && Array.isArray(analysisParsed.data.issues)) {
-            console.log('[Issues] Found issues in Dashboard cache:', analysisParsed.data.issues.length);
-            return analysisParsed.data.issues;
-          }
-        }
-      }
-
-      // Fallback to Issues-specific cache
-      const issuesRaw = sessionStorage.getItem(ISSUES_CACHE_KEY(repoId));
-      if (!issuesRaw) return null;
-      const parsed = JSON.parse(issuesRaw);
-      // Cache for 30 minutes (same as Dashboard)
-      if (Date.now() - (parsed.timestamp || 0) > 30 * 60 * 1000) {
-        sessionStorage.removeItem(ISSUES_CACHE_KEY(repoId));
-        return null;
-      }
-      return parsed.issues;
-    } catch {
-      return null;
-    }
-  };
-
-  const setCachedIssues = (repoId: string, issues: any[]) => {
-    try {
-      sessionStorage.setItem(
-        ISSUES_CACHE_KEY(repoId),
-        JSON.stringify({ issues, timestamp: Date.now() })
-      );
-    } catch {
-      // Ignore storage errors
-    }
-  };
 
   useEffect(() => {
     let mounted = true;
@@ -224,10 +223,10 @@ export default function Issues() {
         // If we had cached data and API returned empty, keep showing cached data
       } catch (err) {
         console.error("[Issues] ❌ API error:", err);
-        // Keep showing cached data if available
-        if (!issues.length) {
-          setIssues([]);
-        }
+        // Keep showing cached data if available. (This used to check
+        // `issues.length` here, but that was the value from the render that
+        // started the effect - always [] - so an error wiped the cached list
+        // that load() had just put on screen.)
       } finally {
         setIsLoading(false);
       }

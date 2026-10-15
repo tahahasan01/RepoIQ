@@ -2,9 +2,10 @@ import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
 import "./index.css";
 
-// Production-ready console handling
+// Production-ready console handling. Our own console.log/info/debug calls are
+// already stripped at build time (terser pure_funcs in vite.config.ts); this
+// also silences the debug chatter of third-party code.
 if (import.meta.env.PROD) {
-  // Suppress all console logs in production
   console.log = () => {};
   console.debug = () => {};
   console.info = () => {};
@@ -13,7 +14,7 @@ if (import.meta.env.PROD) {
   const originalWarn = console.warn;
   const originalError = console.error;
   
-  console.warn = (...args: any[]) => {
+  console.warn = (...args: unknown[]) => {
     // Filter out React Router future flag warnings
     const message = args[0]?.toString() || '';
     if (message.includes('React Router Future Flag Warning')) {
@@ -22,7 +23,7 @@ if (import.meta.env.PROD) {
     originalWarn.apply(console, args);
   };
   
-  console.error = (...args: any[]) => {
+  console.error = (...args: unknown[]) => {
     // Keep all errors for monitoring
     originalError.apply(console, args);
   };

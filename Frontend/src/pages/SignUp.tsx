@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { Loader2, Github, Quote } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { startGitHubFlow } from "@/lib/githubAuth";
@@ -17,7 +17,6 @@ export default function SignUp() {
   const [isLoading, setIsLoading] = useState(false);
   const [quoteIndex, setQuoteIndex] = useState(0);
   const { toast } = useToast();
-  const navigate = useNavigate();
 
   useEffect(() => {
     const id = setInterval(() => setQuoteIndex((i) => (i + 1) % codingQuotes.length), 4000);

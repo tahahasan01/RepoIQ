@@ -250,12 +250,12 @@ export const useRepositoryStore = create<RepositoryState>()(
             error: null,
             errorKind: null
           });
-        } catch (err: any) {
+        } catch (err) {
           if (requestId !== loadSequence) return;
           console.error('[RepositoryStore] Failed to load repos', err);
           set({
             isLoading: false, 
-            error: err?.message || 'Failed to load repositories',
+            error: (err as Error | undefined)?.message || 'Failed to load repositories',
             errorKind: getErrorKind(err),
             repositories: []
           });
@@ -316,11 +316,11 @@ export const useRepositoryStore = create<RepositoryState>()(
             isSyncing: false,
             lastSyncTime: Date.now()
           });
-        } catch (err: any) {
+        } catch (err) {
           console.error('[RepositoryStore] Failed to sync repos', err);
           set({
             isSyncing: false,
-            error: err?.message || 'Failed to sync repositories',
+            error: (err as Error | undefined)?.message || 'Failed to sync repositories',
             errorKind: getErrorKind(err)
           });
         }

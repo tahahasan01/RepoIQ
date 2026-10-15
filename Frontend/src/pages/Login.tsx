@@ -1,11 +1,9 @@
 import { motion } from "framer-motion";
 import { Github, Loader2, Quote, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { useState, useEffect } from "react";
-import { useRole } from "@/hooks/useRole";
 import { startGitHubFlow } from "@/lib/githubAuth";
-import { useAuth } from "@/hooks/useAuth";
 
 const codingQuotes = [
   { text: "First, solve the problem. Then, write the code.", author: "John Johnson" },
@@ -18,10 +16,7 @@ export default function Login() {
   const [isLoading, setIsLoading] = useState(false);
   const [quoteIndex, setQuoteIndex] = useState(0);
   const [searchParams, setSearchParams] = useSearchParams();
-  const navigate = useNavigate();
   const location = useLocation();
-  const { setRole } = useRole();
-  const auth = useAuth();
 
   const errorParam = searchParams.get("error");
   const [showError, setShowError] = useState(!!errorParam);
@@ -34,15 +29,16 @@ export default function Login() {
   }, []);
 
   useEffect(() => {
-    if (errorParam) {
-      setShowError(true);
-      // Clear error from URL after showing it
-      setTimeout(() => {
-        setSearchParams({});
-        setShowError(false);
-      }, 5000);
-    }
-  }, [errorParam]);
+    if (!errorParam) return;
+    setShowError(true);
+    // Clear error from URL after showing it. Cleared on unmount so it cannot
+    // fire after the user has already navigated away.
+    const timer = setTimeout(() => {
+      setSearchParams({});
+      setShowError(false);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [errorParam, setSearchParams]);
 
   const getErrorMessage = (error: string) => {
     switch (error) {

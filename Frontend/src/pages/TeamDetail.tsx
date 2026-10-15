@@ -292,8 +292,10 @@ export default function TeamDetail() {
   const [inviteIdentifier, setInviteIdentifier] = useState("");
   const [inviteRole, setInviteRole] = useState("member");
 
-  const members = summary?.members ?? [];
-  const repositories = summary?.repositories ?? [];
+  // Memoised: a fresh `[]` fallback on every render would recompute the memos
+  // below on every render while the summary is loading.
+  const members = useMemo(() => summary?.members ?? [], [summary?.members]);
+  const repositories = useMemo(() => summary?.repositories ?? [], [summary?.repositories]);
   const metrics = summary?.metrics;
   const assignedIds = useMemo(() => new Set(repositories.map((r) => r.id)), [repositories]);
   const contributors = useMemo(

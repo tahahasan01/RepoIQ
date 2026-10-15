@@ -67,12 +67,20 @@ function getSeverityBadge(severity: string): string {
   return `<span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; color: white; background-color: ${color}; text-transform: uppercase;">${escapeHtml(severity || 'unknown')}</span>`;
 }
 
-// Helper function to get score color
-function getScoreColor(score: number): string {
-  if (score >= 80) return '#16a34a';
-  if (score >= 60) return '#ca8a04';
-  if (score >= 40) return '#ea580c';
-  return '#dc2626';
+// Open the report in a new window and bring up the print dialog.
+//
+// The print call used to be an inline <script> inside the report HTML. The
+// about:blank window inherits this page's Content-Security-Policy, which allows
+// no inline scripts, so it is triggered from here instead.
+function openPrintWindow(html: string): void {
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) return;
+  printWindow.document.write(html);
+  printWindow.document.close();
+  setTimeout(() => {
+    printWindow.focus();
+    printWindow.print();
+  }, 500);
 }
 
 // Generate comprehensive PDF report - Print-Ready Format
@@ -738,24 +746,12 @@ export function generateFullAnalysisReport(report: AnalysisReport): void {
     </div>
   </div>
 
-  <script>
-    // Auto-trigger print dialog
-    window.onload = function() {
-      setTimeout(function() {
-        window.print();
-      }, 500);
-    };
-  </script>
 </body>
 </html>
   `.trim();
 
   // Open in new window for print/PDF
-  const printWindow = window.open("", "_blank");
-  if (printWindow) {
-    printWindow.document.write(html);
-    printWindow.document.close();
-  }
+  openPrintWindow(html);
 }
 
 // Generate Bug Report PDF - Print-Ready Format
@@ -1182,20 +1178,9 @@ export function generateBugReportPDF(reports: any[], repoName: string): void {
     </div>
   </div>
 
-  <script>
-    window.onload = function() {
-      setTimeout(function() {
-        window.print();
-      }, 500);
-    };
-  </script>
 </body>
 </html>
   `.trim();
 
-  const printWindow = window.open("", "_blank");
-  if (printWindow) {
-    printWindow.document.write(html);
-    printWindow.document.close();
-  }
+  openPrintWindow(html);
 }

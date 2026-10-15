@@ -301,14 +301,18 @@ class ApiClient {
         const payload = JSON.parse(atob(token.split('.')[1]));
         userId = payload?.sub || payload?.user_id || payload?.id;
       }
-    } catch {}
+    } catch {
+      // Malformed token: fall through and clear every bucket below anyway.
+    }
 
     try {
       localStorage.removeItem('token');
       localStorage.removeItem('refresh_token');
       localStorage.removeItem('user');
       localStorage.removeItem('access_token'); // Also clear access_token if stored separately
-    } catch {}
+    } catch {
+      // Storage unavailable: there is nothing persisted to remove.
+    }
     try {
       // Every per-session cache the app keeps in sessionStorage is prefixed
       // repoiq_: the repository list (one key per page), batch scores, and the
@@ -318,7 +322,9 @@ class ApiClient {
       Object.keys(sessionStorage)
         .filter((key) => key.startsWith('repoiq_'))
         .forEach((key) => sessionStorage.removeItem(key));
-    } catch {}
+    } catch {
+      // Storage unavailable: there is nothing persisted to remove.
+    }
     try {
       // This used to be `require('@/lib/queryPersister')`, which does not exist
       // in an ESM bundle - it threw on every call and was swallowed by the catch,
@@ -327,7 +333,11 @@ class ApiClient {
       // browser the next user could restore the previous user's data.
       clearQueryCache(userId);
       clearAllQueryCaches();
-    } catch {}
+    } catch (err) {
+      // Logged, not swallowed: a silent catch here is exactly how the broken
+      // require() above went unnoticed.
+      console.error('[api] Failed to clear the persisted query cache:', err);
+    }
   }
 
   /** Drop the local session and tell the app to route to the login page. */
@@ -350,15 +360,13 @@ class ApiClient {
     options: RequestInit = {},
     throttleKey?: string
   ): Promise<T> {
-    const url = `${this.baseUrl}${endpoint}`;
-    
     // Proactively refresh token if expiring very soon (non-blocking for most requests)
     // Skip for auth endpoints to avoid infinite loops
     if (!endpoint.includes('/auth/')) {
       await this.ensureTokenFresh();
     }
     
-    let token = this.getToken();
+    const token = this.getToken();
     
     // Don't throttle critical endpoints that need fresh data
     // BUT still deduplicate them to prevent multiple simultaneous requests

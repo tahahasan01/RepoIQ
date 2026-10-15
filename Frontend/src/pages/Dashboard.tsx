@@ -1,13 +1,11 @@
 import { motion } from "framer-motion";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useLocation } from "react-router-dom";
 import {
   PieChart,
   Pie,
   Cell,
   ResponsiveContainer,
-  LineChart,
-  Line,
   XAxis,
   YAxis,
   Tooltip,
@@ -27,7 +25,7 @@ import {
   ArrowDownRight,
 } from "lucide-react";
 import apiClient from "@/lib/api";
-import { scoreColor, scoreLabel } from '@/lib/scoreColor';
+import { scoreColor } from '@/lib/scoreColor';
 import { buildTrend } from "@/lib/trend";
 
 const severityColors: Record<string, string> = {
@@ -46,40 +44,44 @@ interface DashboardIssue {
   message: string;
 }
 
+// sessionStorage cache of the latest analysis per repository. Module scope so
+// the loader below can be memoised without depending on them.
+const CACHE_KEY = (id: string) => `repoiq_analysis_${id}`;
+
+const getCachedAnalysis = (id: string) => {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY(id));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // expire after 30 minutes (increased from 5 for better UX)
+    if (Date.now() - (parsed.timestamp || 0) > 30 * 60 * 1000) {
+      sessionStorage.removeItem(CACHE_KEY(id));
+      return null;
+    }
+    return parsed.data;
+  } catch {
+    return null;
+  }
+};
+
+const setCachedAnalysis = (id: string, data: unknown) => {
+  try {
+    sessionStorage.setItem(CACHE_KEY(id), JSON.stringify({ data, timestamp: Date.now() }));
+  } catch {
+    // Storage full or blocked (private mode): the cache is only a speed-up.
+  }
+};
+
 export default function Dashboard() {
   const { id: repoId } = useParams<{ id: string }>();
   const location = useLocation();
   const queryParams = new URLSearchParams(location.search);
   const analysisId = queryParams.get('analysis_id');
-  const [issuesByType, setIssuesByType] = useState<{ name: string; value: number; color: string }[]>([]);
-  // Helper functions defined outside useEffect for reusability
-  const CACHE_KEY = (id: string) => `repoiq_analysis_${id}`;
-
-  const getCachedAnalysis = (id: string) => {
-    try {
-      const raw = sessionStorage.getItem(CACHE_KEY(id));
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      // expire after 30 minutes (increased from 5 for better UX)
-      if (Date.now() - (parsed.timestamp || 0) > 30 * 60 * 1000) {
-        sessionStorage.removeItem(CACHE_KEY(id));
-        return null;
-      }
-      return parsed.data;
-    } catch {
-      return null;
-    }
-  };
-
-  const setCachedAnalysis = (id: string, data: any) => {
-    try {
-      sessionStorage.setItem(CACHE_KEY(id), JSON.stringify({ data, timestamp: Date.now() }));
-    } catch {}
-  };
-
   // Load initial state from cache IMMEDIATELY to prevent flash of zeros
   const getInitialState = () => {
-    if (!repoId) return { scores: null, stats: null, issues: [], history: [], trend: [] };
+    // The cache holds the latest analysis; a specific one (?analysis_id) is
+    // never cached, so it must not start out showing the latest.
+    if (!repoId || analysisId) return { scores: null, stats: null, issues: [], history: [], trend: [] };
     const cached = getCachedAnalysis(repoId);
     if (!cached) return { scores: null, stats: null, issues: [], history: [], trend: [] };
 
@@ -128,7 +130,12 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(!hasInitialData);
   const [analyzing, setAnalyzing] = useState(false);
 
-  const loadAnalysisData = async (forceRefresh: boolean = false) => {
+  // Pending "still in progress" re-poll, cleared when the repository or
+  // analysis changes or the page unmounts so it cannot keep polling (and
+  // setting state for) a repository that is no longer on screen.
+  const pollTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const loadAnalysisData = useCallback(async (forceRefresh: boolean = false) => {
       if (!repoId || repoId === 'undefined') {
         console.log('[Dashboard] Invalid repoId:', repoId);
         setLoading(false);
@@ -137,7 +144,8 @@ export default function Dashboard() {
       
       try {
         // Try cached analysis first for instant UI (unless force refresh)
-        const cached = !forceRefresh ? getCachedAnalysis(repoId) : null;
+        // The cache holds the latest analysis only; skip it for a specific one.
+        const cached = !forceRefresh && !analysisId ? getCachedAnalysis(repoId) : null;
         
         // Only show loading if we don't have cached data
         if (!cached) {
@@ -176,21 +184,7 @@ export default function Dashboard() {
             };
             setStats(statsCalc);
 
-            const typeMap: Record<string, number> = {};
-            mappedIssues.forEach((issue: any) => {
-              typeMap[issue.type] = (typeMap[issue.type] || 0) + 1;
-            });
-            const colors: Record<string, string> = {
-              Security: "#ef4444",
-              Quality: "#f59e0b",
-              Architecture: "#8b5cf6",
-              Naming: "#3b82f6",
-              Performance: "#22c55e",
-            };
-            setIssuesByType(
-              Object.entries(typeMap).map(([name, value]) => ({ name, value, color: colors[name] || "#6b7280" }))
-            );
-            console.log('[Dashboard] Set stats from cache:', statsCalc, 'issuesByType count:', Object.keys(typeMap).length);
+            console.log('[Dashboard] Set stats from cache:', statsCalc);
           } else {
             console.warn('[Dashboard] Cached data has no issues array or is empty');
           }
@@ -230,7 +224,8 @@ export default function Dashboard() {
         if (results && results.status === 'in_progress') {
           setAnalyzing(true);
           // Poll every 3 seconds until complete
-          setTimeout(loadAnalysisData, 3000);
+          clearTimeout(pollTimer.current);
+          pollTimer.current = setTimeout(() => loadAnalysisData(), 3000);
           return;
         }
         
@@ -289,31 +284,13 @@ export default function Dashboard() {
           console.log('[Dashboard] Mapped issues count:', mappedIssues.length);
           setStats(statsCalc);
 
-          // Calculate issues by type
-          const typeMap: Record<string, number> = {};
-          mappedIssues.forEach((issue: any) => {
-            typeMap[issue.type] = (typeMap[issue.type] || 0) + 1;
-          });
-
-          const colors: Record<string, string> = {
-            Security: "#ef4444",
-            Quality: "#f59e0b",
-            Architecture: "#8b5cf6",
-            Naming: "#3b82f6",
-            Performance: "#22c55e",
-          };
-
-          setIssuesByType(
-            Object.entries(typeMap).map(([name, value]) => ({
-              name,
-              value,
-              color: colors[name] || "#6b7280",
-            }))
-          );
-          console.debug('[Dashboard] issuesByType set to:', Object.entries(typeMap));
           
           // cache results for faster subsequent loads
-          try { setCachedAnalysis(repoId, { ...results, history: historyData?.history || historyData || null }); } catch {}
+          // (Only the latest: caching a historical analysis under the repository
+          // key would show it as the latest on the next visit.)
+          if (!analysisId) {
+            setCachedAnalysis(repoId, { ...results, history: historyData?.history || historyData || null });
+          }
         } else if (!cached) {
           // Only reset if we have NO cached data and NO fresh data
           console.log('[Dashboard] No analysis results found for repo:', repoId);
@@ -327,7 +304,6 @@ export default function Dashboard() {
           });
           setRecentIssues([]);
           setStats({ critical: 0, high: 0, medium: 0, low: 0, total: 0 });
-          setIssuesByType([]);
         } else {
           // We have cached data and no fresh data - keep cached data
           console.log('[Dashboard] Using cached data (API returned no results)');
@@ -345,7 +321,7 @@ export default function Dashboard() {
       } finally {
         setLoading(false);
       }
-  };
+  }, [repoId, analysisId]);
 
   useEffect(() => {
     loadAnalysisData();
@@ -375,8 +351,12 @@ export default function Dashboard() {
     return () => {
       window.removeEventListener("analysisCompleted", handleAnalysisCompleted as EventListener);
       window.removeEventListener("dashboardRefresh", handleDashboardRefresh as EventListener);
+      clearTimeout(pollTimer.current);
     };
-  }, [repoId]);
+    // loadAnalysisData changes with analysisId as well: picking a past run in
+    // the history modal only changes ?analysis_id, and with [repoId] alone this
+    // page kept showing the run that was already on screen.
+  }, [repoId, loadAnalysisData]);
 
   // Build score data from state.
   //
@@ -399,18 +379,6 @@ export default function Dashboard() {
     { name: 'Medium', value: stats.medium, color: '#f59e0b' },
     { name: 'Low', value: stats.low, color: '#10b981' },
   ];
-
-  const handleForceRefresh = () => {
-    if (!repoId) return;
-    // Clear cache
-    const CACHE_KEY = `repoiq_analysis_${repoId}`;
-    try {
-      sessionStorage.removeItem(CACHE_KEY);
-      console.log('[Dashboard] Cache cleared, forcing refresh...');
-    } catch {}
-    // Reload with force refresh
-    loadAnalysisData(true);
-  };
 
   return (
     <DashboardLayout>
