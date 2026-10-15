@@ -26,8 +26,11 @@ npm run dev
 Build for production:
 
 ```sh
-npm run build
-npm run preview
+VITE_API_BASE_URL=https://api.example.com/api/v1 npm run build
+PORT=4173 VITE_API_BASE_URL=https://api.example.com/api/v1 npm start
 ```
 
-Replace any project-specific deployment steps as needed.
+`npm start` runs `server.js`, a dependency-free static server for `dist/`
+(SPA fallback, long-lived caching for hashed assets, security headers and a
+CSP that allows the API origin). `npm run preview` is for local checks only.
+Requires Node 20+.

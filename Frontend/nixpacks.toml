@@ -1,13 +1,21 @@
 # Nixpacks configuration for Frontend
+#
+# VITE_API_BASE_URL must be set on the service: Vite bakes it into the bundle
+# at build time, and server.js reads it at runtime to build the CSP.
 
 [phases.setup]
-nixPkgs = ["nodejs-18_x"]
+# Node 18 is end-of-life. Keep in step with "engines" in package.json and
+# NODE_VERSION in .github/workflows/ci.yml.
+nixPkgs = ["nodejs_22"]
 
 [phases.install]
-cmds = ["npm install"]
+# ci, not install: build exactly what package-lock.json pins.
+cmds = ["npm ci"]
 
 [phases.build]
 cmds = ["npm run build"]
 
 [start]
+# server.js serves dist/ with SPA fallback, cache and security headers
+# (`vite preview` is not meant for production). It reads $PORT.
 cmd = "npm run start"
