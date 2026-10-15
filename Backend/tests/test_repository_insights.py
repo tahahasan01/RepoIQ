@@ -379,5 +379,5 @@ class TestPostAnalysisPipeline:
             {"severity": "high", "description": "x"},
             {"severity": "critical", "auto_fixable": True, "description": "y"},
         ]))
-        assert roadmap["medium_term"][0]["category"] == "uncategorized"
+        assert [i["category"] for i in roadmap["quick_wins"]] == ["uncategorized", "uncategorized"]
         assert roadmap["estimated_impact"]["critical_issues"] == 1

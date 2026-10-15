@@ -13,26 +13,14 @@ import { parseScoreThreshold } from "@/lib/notifications";
 
 type ToggleField = "email_notifications" | "security_alerts" | "weekly_digest" | "auto_analyze_new_repos";
 
+// Only settings something acts on. "Email notifications" and "Weekly digest"
+// were toggles for email RepoIQ never sends, and new repositories are not
+// analysed automatically; the stored fields stay, the controls do not.
 const TOGGLES: { field: ToggleField; label: string; description: string }[] = [
-  {
-    field: "email_notifications",
-    label: "Email notifications",
-    description: "Email me when an analysis of one of my repositories finishes.",
-  },
   {
     field: "security_alerts",
     label: "Security alerts",
-    description: "Tell me when an analysis finds critical vulnerabilities.",
-  },
-  {
-    field: "weekly_digest",
-    label: "Weekly digest",
-    description: "A weekly summary of activity across my repositories.",
-  },
-  {
-    field: "auto_analyze_new_repos",
-    label: "Analyze new repositories automatically",
-    description: "Stored for upcoming automation. New repositories aren't analyzed automatically yet.",
+    description: "Show alerts when an analysis of an organization's repository finds a security problem.",
   },
 ];
 

@@ -53,7 +53,7 @@ class TeamInsightsService:
         # re-runs that check each time - 33 sequential queries for one page.
         # Now the independent reads run concurrently on the checked team.
         comparison = TeamComparisonService()
-        repositories, members, metrics = await asyncio.gather(
+        repositories, members, metrics, organization = await asyncio.gather(
             teams.assigned_repositories(team_id),
             run_blocking(
                 self.db.table("team_members")
@@ -61,7 +61,15 @@ class TeamInsightsService:
                 .eq("team_id", team_id).execute
             ),
             comparison._metrics_for_teams([team_id]),
+            # The page links to the organisation by name; it showed the word
+            # "Organization" because the summary never carried the name.
+            run_blocking(
+                self.db.table("organizations").select("id, name")
+                .eq("id", team.get("organization_id")).single().execute
+            ),
         )
+        if organization.data:
+            team = {**team, "organization": organization.data}
         members = members.data or []
         repo_ids = [r["id"] for r in repositories]
         member_ids = [m["user_id"] for m in members]

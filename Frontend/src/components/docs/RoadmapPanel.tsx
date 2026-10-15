@@ -3,6 +3,8 @@ import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRoadmap } from "@/hooks/useApiQueries";
 import { ApiRequestError } from "@/lib/apiErrors";
+import { Link } from "react-router-dom";
+import { AREA_LABELS, findingArea, formatCategory } from "@/lib/findings";
 import type { RoadmapItem } from "@/types/assistant";
 
 /** The improvement roadmap the latest analysis produced: what to fix, in which order. */
@@ -47,10 +49,10 @@ export function RoadmapPanel({ repoId }: { repoId: string }) {
 
   const impact = data.estimated_impact ?? {};
   const counts = [
-    { label: "Critical issues", value: impact.critical_issues ?? 0, color: "text-red-600" },
-    { label: "High issues", value: impact.high_issues ?? 0, color: "text-orange-600" },
-    { label: "Architecture issues", value: impact.architecture_issues ?? 0, color: "text-blue-600" },
-    { label: "Auto-fixable", value: impact.auto_fixable ?? 0, color: "text-emerald-600" },
+    { label: "Critical", value: impact.critical_issues ?? 0, color: "text-red-600 dark:text-red-400" },
+    { label: "High", value: impact.high_issues ?? 0, color: "text-orange-600 dark:text-orange-400" },
+    { label: "Medium", value: impact.medium_issues ?? 0, color: "text-amber-600 dark:text-amber-400" },
+    { label: "Low", value: impact.low_issues ?? 0, color: "text-emerald-600 dark:text-emerald-400" },
   ];
 
   const quick = data.quick_wins ?? [];
@@ -60,12 +62,12 @@ export function RoadmapPanel({ repoId }: { repoId: string }) {
   return (
     <div className="space-y-8">
       <div>
-        <h3 className="mb-4 text-base font-semibold uppercase tracking-wide text-foreground">What the roadmap covers</h3>
+        <h3 className="mb-4 text-base font-semibold text-foreground">Findings in the latest analysis</h3>
         <dl className="grid grid-cols-2 gap-4 md:grid-cols-4">
           {counts.map((c) => (
             <div key={c.label} className="rounded-lg border border-border p-5 text-center">
               <dd className={`mb-1 text-2xl font-bold ${c.color}`}>{c.value}</dd>
-              <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{c.label}</dt>
+              <dt className="text-xs font-medium text-muted-foreground">{c.label}</dt>
             </div>
           ))}
         </dl>
@@ -73,30 +75,36 @@ export function RoadmapPanel({ repoId }: { repoId: string }) {
 
       {quick.length + medium.length + long.length === 0 ? (
         <p className="rounded-lg border border-border p-6 text-center text-sm text-muted-foreground">
-          The latest analysis found nothing critical, high or architectural to plan around.
+          The latest analysis found nothing to fix.
         </p>
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <RoadmapColumn
             icon={Zap}
-            title="Quick wins"
-            hint="Critical and auto-fixable: high impact, low effort."
+            title="Fix first"
+            hint="Critical and high severity, security first."
             items={quick}
-            empty="No critical issues that can be fixed automatically."
+            total={impact.fix_first_total ?? quick.length}
+            empty="Nothing critical or high."
+            repoId={repoId}
           />
           <RoadmapColumn
             icon={CalendarClock}
-            title="Medium term"
-            hint="High-severity issues that need some work."
+            title="Next"
+            hint="Medium severity."
             items={medium}
-            empty="No high-severity issues."
+            total={impact.next_total ?? medium.length}
+            empty="Nothing of medium severity."
+            repoId={repoId}
           />
           <RoadmapColumn
             icon={Rocket}
-            title="Long term"
-            hint="Architecture changes: bigger effort."
+            title="Later"
+            hint="Low severity, and architecture changes that take longer."
             items={long}
-            empty="No architecture issues."
+            total={impact.later_total ?? long.length}
+            empty="Nothing left after the above."
+            repoId={repoId}
           />
         </div>
       )}
@@ -109,13 +117,17 @@ function RoadmapColumn({
   title,
   hint,
   items,
+  total,
   empty,
+  repoId,
 }: {
   icon: LucideIcon;
   title: string;
   hint: string;
   items: RoadmapItem[];
+  total: number;
   empty: string;
+  repoId: string;
 }) {
   return (
     <section className="flex flex-col rounded-lg border border-border" aria-label={title}>
@@ -124,7 +136,7 @@ function RoadmapColumn({
           <Icon className="h-4 w-4 text-primary" aria-hidden="true" />
           {title}
           <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-            {items.length}
+            {total}
           </span>
         </h4>
         <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
@@ -136,14 +148,28 @@ function RoadmapColumn({
           {items.map((item, i) => (
             <li key={`${item.issue}-${i}`} className="px-4 py-3">
               <p className="text-sm text-foreground">{item.issue}</p>
-              <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                <span>{item.category}</span>
-                <span>Impact: {item.impact}</span>
-                <span>Effort: {item.effort}</span>
+              <p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                {item.file_path && (
+                  <code className="font-mono" title={item.file_path}>
+                    {item.file_path.split("/").pop()}
+                    {item.line_number ? `:${item.line_number}` : ""}
+                  </code>
+                )}
+                {item.severity && <span className="capitalize">{item.severity}</span>}
+                {item.area && <span>{AREA_LABELS[findingArea(item.area)]}</span>}
+                <span>{formatCategory(item.category)}</span>
               </p>
             </li>
           ))}
         </ol>
+      )}
+      {total > items.length && (
+        <Link
+          to={`/dashboard/${repoId}/issues`}
+          className="border-t border-border px-4 py-2 text-xs font-medium text-link hover:underline"
+        >
+          {total - items.length} more in Issues
+        </Link>
       )}
     </section>
   );

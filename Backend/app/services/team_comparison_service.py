@@ -200,43 +200,42 @@ class TeamComparisonService:
         """
         Daily average score and issue count across these repositories. No access
         check: the caller must already be authorised for them.
+
+        Each day's point is the average of every repository's LATEST analysis
+        as of that day, carried forward until it is analysed again. It used to
+        average every run completed that day, so re-running a repository three
+        times counted it three times, and the chart's latest point disagreed
+        with the team's "Average score" tile computed from latest analyses.
         """
         try:
             if not repo_ids:
                 return []
 
-            # Get analyses in time period
             start_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
             analyses_result = (await run_blocking(
-                self.db.table("analysis_results").select("overall_score, total_issues, completed_at")
+                self.db.table("analysis_results")
+                .select("repository_id, overall_score, total_issues, completed_at")
                 .in_("repository_id", repo_ids).eq("status", "completed")
                 .gte("completed_at", start_date).order("completed_at").execute
             ))
             analyses = analyses_result.data or []
 
-            # Group by date (daily)
-            trends = {}
+            latest: Dict[str, Dict[str, Any]] = {}
+            snapshots: Dict[str, Dict[str, Dict[str, Any]]] = {}
             for analysis in analyses:
                 completed_at = analysis.get("completed_at")
-                if completed_at:
-                    date_key = completed_at[:10]  # YYYY-MM-DD
-                    if date_key not in trends:
-                        trends[date_key] = {
-                            "date": date_key,
-                            "scores": [],
-                            "issues": []
-                        }
+                if not completed_at:
+                    continue
+                latest[analysis["repository_id"]] = analysis
+                snapshots[str(completed_at)[:10]] = dict(latest)  # state at the end of that day
 
-                    if analysis.get("overall_score"):
-                        trends[date_key]["scores"].append(analysis["overall_score"])
-                    trends[date_key]["issues"].append(analysis.get("total_issues", 0))
-
-            # Calculate averages per day
             trend_list = []
-            for date_key in sorted(trends.keys()):
-                day_data = trends[date_key]
-                avg_score = sum(day_data["scores"]) / len(day_data["scores"]) if day_data["scores"] else 0
-                avg_issues = sum(day_data["issues"]) / len(day_data["issues"]) if day_data["issues"] else 0
+            for date_key in sorted(snapshots):
+                current = list(snapshots[date_key].values())
+                scores = [a["overall_score"] for a in current if a.get("overall_score") is not None]
+                issues = [a.get("total_issues") or 0 for a in current]
+                avg_score = sum(scores) / len(scores) if scores else 0
+                avg_issues = sum(issues) / len(issues) if issues else 0
 
                 trend_list.append({
                     "date": date_key,

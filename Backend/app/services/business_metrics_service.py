@@ -143,12 +143,8 @@ class BusinessMetricsService:
             health_score = overview.get("overall_health_score", 100)
             risk_score += (100 - health_score) * 0.2
             
-            # Technical debt contributes
-            debt_hours = overview.get("technical_debt_hours", 0)
-            if debt_hours > 100:
-                risk_score += 10
-            elif debt_hours > 50:
-                risk_score += 5
+            # No "technical debt hours" term: that figure was a fixed number of
+            # hours per finding, not a measurement.
             
             risk_score = min(100, risk_score)
             

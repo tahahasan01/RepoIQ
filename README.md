@@ -57,7 +57,7 @@ diffs containing invisible or direction-changing Unicode are refused.
 **Organisations and teams.** Group repositories under organisations and teams,
 invite people, compare teams, see an executive dashboard, and get alerts when a
 repository's score drops below your threshold or a security problem appears.
-Alerts can also be delivered to your own endpoints as signed webhooks.
+Analysis results (completed or failed) can also be sent to your own HTTPS endpoint as signed webhooks.
 
 <details>
 <summary>More screenshots</summary>

@@ -172,7 +172,7 @@ class TestTeamSummaryChecksAccessOnce:
 
         assert len(summary["repositories"]) == 3
         assert summary["metrics"]["total_repositories"] == 3
-        assert counter["n"] <= 16  # was 33
+        assert counter["n"] <= 17  # was 33; +1 for the organisation name
 
     async def test_independent_reads_are_gathered(self, monkeypatch):
         """The members, repositories and metrics reads do not wait on each other."""
@@ -211,7 +211,7 @@ class TestTeamSummaryChecksAccessOnce:
 
         await service.get_summary("t", "u")
 
-        assert gathered == [3, 3]
+        assert gathered == [4, 3]  # repos, members, metrics, organisation; then the rest
 
 
 @requires_db

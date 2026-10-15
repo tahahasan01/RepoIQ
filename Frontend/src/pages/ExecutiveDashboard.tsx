@@ -3,14 +3,11 @@ import {
   TrendingUp,
   AlertTriangle,
   Shield,
-  FileCode,
   ArrowLeft,
   Loader2,
   CheckCircle2,
-  XCircle,
   Activity,
   Target,
-  Clock,
   Users,
   FolderGit2,
   AlertCircle,
@@ -30,8 +27,6 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  RadialBarChart,
-  RadialBar,
 } from "recharts";
 import { useOrganizationAlerts } from "@/hooks/useNotificationQueries";
 import { Navbar } from "@/components/layout/Navbar";
@@ -39,7 +34,6 @@ import {
   useOrganizationOverview, 
   useBusinessRiskScore, 
   useTopRiskAreas, 
-  useComplianceStatus, 
   useTeamLeaderboard 
 } from "@/hooks/useApiQueries";
 
@@ -60,10 +54,6 @@ export default function ExecutiveDashboard() {
     placeholderData: (previousData) => previousData,
     refetchOnMount: false,
   });
-  const { data: compliance, isLoading: complianceLoading } = useComplianceStatus(orgId || "", {
-    placeholderData: (previousData) => previousData,
-    refetchOnMount: false,
-  });
   const { data: teamLeaderboard = [], isLoading: leaderboardLoading } = useTeamLeaderboard(orgId || "", "overall_score", {
     placeholderData: (previousData) => previousData,
     refetchOnMount: false,
@@ -71,9 +61,8 @@ export default function ExecutiveDashboard() {
   
   // Show loading only if we have NO cached data at all
   // If any data exists, show it immediately
-  const loading = (overviewLoading && !overview && !riskScore && !compliance) || 
-                  (riskLoading && !riskScore && !overview) || 
-                  (complianceLoading && !compliance && !overview);
+  const loading = (overviewLoading && !overview && !riskScore) ||
+                  (riskLoading && !riskScore && !overview);
 
   if (loading && !overview && !riskScore) {
     return (
@@ -112,14 +101,6 @@ export default function ExecutiveDashboard() {
   const healthScore = overview?.overall_health_score || 0;
   const riskScoreValue = riskScore?.risk_score || 0;
 
-  // Prepare gauge data
-  const gaugeData = [
-    {
-      name: "Risk",
-      value: riskScoreValue,
-      fill: riskScoreValue <= 30 ? "#22c55e" : riskScoreValue <= 60 ? "#f59e0b" : "#ef4444",
-    },
-  ];
 
   const chartData = teamLeaderboard.slice(0, 5).map((team, idx) => ({
     name: team.team_name?.substring(0, 10) || `Team ${idx + 1}`,
@@ -127,18 +108,6 @@ export default function ExecutiveDashboard() {
     issues: team.total_issues || 0,
   }));
 
-  // Compliance items for checklist
-  const complianceItems = compliance
-    ? [
-        { label: "Security Standards", passed: compliance.security_compliant, icon: Shield },
-        { label: "Code Quality", passed: compliance.code_quality_compliant, icon: FileCode },
-        { label: "No Critical Vulnerabilities", passed: compliance.no_critical_vulnerabilities, icon: AlertTriangle },
-      ]
-    : [];
-
-  const complianceScore = complianceItems.length > 0
-    ? Math.round((complianceItems.filter((item) => item.passed).length / complianceItems.length) * 100)
-    : 0;
 
   return (
     <div className="min-h-screen bg-background">
@@ -176,16 +145,12 @@ export default function ExecutiveDashboard() {
                 </Badge>
               </Link>
             )}
-            <Badge variant="outline" className="text-sm">
-              <Activity className="h-3 w-3 mr-1" />
-              Live Data
-            </Badge>
           </div>
         </div>
 
         {/* Hero Metrics */}
         {overview && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
             {/* Health Score */}
             <Card className="relative overflow-hidden">
               <div
@@ -269,32 +234,6 @@ export default function ExecutiveDashboard() {
               </CardContent>
             </Card>
 
-            {/* Technical Debt */}
-            <Card className="relative overflow-hidden">
-              <div
-                className="absolute inset-0 opacity-10"
-                style={{
-                  background: `linear-gradient(135deg, #0ea5e9 0%, transparent 60%)`,
-                }}
-              />
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Technical Debt
-                </CardTitle>
-                <div className="p-2 bg-blue-500/20 rounded-lg">
-                  <Clock className="h-4 w-4 text-blue-500" />
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-4xl font-bold">{overview.technical_debt_hours || 0}</span>
-                  <span className="text-lg text-muted-foreground">hrs</span>
-                </div>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Estimated to resolve
-                </p>
-              </CardContent>
-            </Card>
           </div>
         )}
 
@@ -308,48 +247,47 @@ export default function ExecutiveDashboard() {
                     <Target className="h-5 w-5" />
                     Business Risk Assessment
                   </CardTitle>
-                  <CardDescription>Overall risk score based on security, quality, and technical debt</CardDescription>
+                  <CardDescription>From critical findings, the security score and overall health</CardDescription>
                 </div>
-                <Badge variant={getRiskBadgeVariant(riskScore.risk_level)} className="text-sm px-3 py-1">
+                <Badge variant={getRiskBadgeVariant(riskScore.risk_level)} className="text-sm px-3 py-1 capitalize">
                   {riskScore.risk_level || "Unknown"} Risk
                 </Badge>
               </div>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                {/* Gauge Chart */}
-                <div className="flex flex-col items-center justify-center">
-                  <div className="relative w-48 h-48">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <RadialBarChart
-                        cx="50%"
-                        cy="50%"
-                        innerRadius="70%"
-                        outerRadius="100%"
-                        barSize={20}
-                        data={gaugeData}
-                        startAngle={180}
-                        endAngle={0}
-                      >
-                        <RadialBar
-                          background
-                          dataKey="value"
-                          cornerRadius={10}
-                        />
-                      </RadialBarChart>
-                    </ResponsiveContainer>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center">
-                      <span className="text-5xl font-bold">{riskScoreValue}</span>
-                      <span className="text-sm text-muted-foreground">Risk Score</span>
-                    </div>
+                {/* The score on its 0-100 scale, with the "low risk" boundary marked. */}
+                <div className="flex flex-col justify-center">
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-5xl font-bold">{Math.round(riskScoreValue)}</span>
+                    <span className="text-lg text-muted-foreground">/ 100</span>
                   </div>
-                  <p className="text-sm text-muted-foreground text-center mt-2">
-                    Lower is better • Target: &lt;30
-                  </p>
+                  <p className="text-sm text-muted-foreground mt-1">Risk score. Lower is better; under 30 is low risk.</p>
+                  <div
+                    className="relative mt-4 h-2.5 rounded-full bg-muted"
+                    role="meter"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(riskScoreValue)}
+                    aria-label="Risk score"
+                  >
+                    <div
+                      className={`h-full rounded-full ${
+                        riskScoreValue >= 70 ? "bg-red-500" : riskScoreValue >= 50 ? "bg-orange-500" : riskScoreValue >= 30 ? "bg-amber-500" : "bg-emerald-500"
+                      }`}
+                      style={{ width: `${Math.max(2, Math.min(100, riskScoreValue))}%` }}
+                    />
+                    <div className="absolute inset-y-[-4px] w-px bg-foreground/40" style={{ left: "30%" }} aria-hidden="true" />
+                  </div>
+                  <div className="mt-1 flex justify-between text-xs text-muted-foreground" aria-hidden="true">
+                    <span>0</span>
+                    <span style={{ marginLeft: "22%" }}>30</span>
+                    <span className="ml-auto">100</span>
+                  </div>
                 </div>
 
                 {/* Risk Factors */}
-                <div className="lg:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4 content-start">
                   <div className="p-4 border rounded-lg bg-muted/30">
                     <div className="flex items-center gap-2 mb-2">
                       <AlertCircle className="h-4 w-4 text-red-500" />
@@ -371,13 +309,6 @@ export default function ExecutiveDashboard() {
                     </div>
                     <p className="text-2xl font-bold">{riskScore.factors?.health_score || 0}</p>
                   </div>
-                  <div className="p-4 border rounded-lg bg-muted/30">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Clock className="h-4 w-4 text-blue-500" />
-                      <span className="text-sm text-muted-foreground">Tech Debt (hrs)</span>
-                    </div>
-                    <p className="text-2xl font-bold">{riskScore.factors?.technical_debt_hours || 0}</p>
-                  </div>
                 </div>
               </div>
             </CardContent>
@@ -394,10 +325,6 @@ export default function ExecutiveDashboard() {
             <TabsTrigger value="risks" className="data-[state=active]:bg-background">
               <AlertTriangle className="h-4 w-4 mr-2" />
               Risk Areas
-            </TabsTrigger>
-            <TabsTrigger value="compliance" className="data-[state=active]:bg-background">
-              <CheckCircle2 className="h-4 w-4 mr-2" />
-              Compliance
             </TabsTrigger>
             <TabsTrigger value="teams" className="data-[state=active]:bg-background">
               <Users className="h-4 w-4 mr-2" />
@@ -484,8 +411,11 @@ export default function ExecutiveDashboard() {
                   <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-green-500/10 flex items-center justify-center">
                     <CheckCircle2 className="h-8 w-8 text-green-500" />
                   </div>
-                  <h3 className="text-lg font-semibold mb-2">No High-Risk Areas</h3>
-                  <p className="text-muted-foreground">Great job! No critical issues have been identified.</p>
+                  <h3 className="text-lg font-semibold mb-2">No critical findings</h3>
+                  <p className="text-muted-foreground">
+                    No repository in this organization has a critical finding. Lower-severity findings are on each
+                    repository's Issues page.
+                  </p>
                 </CardContent>
               </Card>
             ) : (
@@ -527,64 +457,6 @@ export default function ExecutiveDashboard() {
             )}
           </TabsContent>
 
-          {/* Compliance Tab */}
-          <TabsContent value="compliance" className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-2xl font-semibold">Compliance Status</h2>
-                <p className="text-muted-foreground">Track your organization's compliance with standards</p>
-              </div>
-              <div className="text-right">
-                <span className="text-3xl font-bold">{complianceScore}%</span>
-                <p className="text-sm text-muted-foreground">Compliant</p>
-              </div>
-            </div>
-
-            <Card>
-              <CardContent className="p-6">
-                <div className="space-y-6">
-                  {complianceItems.map((item, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-4 border rounded-lg">
-                      <div className="flex items-center gap-4">
-                        <div className={`p-2 rounded-lg ${item.passed ? "bg-green-500/10" : "bg-red-500/10"}`}>
-                          <item.icon className={`h-5 w-5 ${item.passed ? "text-green-500" : "text-red-500"}`} />
-                        </div>
-                        <span className="font-medium">{item.label}</span>
-                      </div>
-                      {item.passed ? (
-                        <div className="flex items-center gap-2 text-green-500">
-                          <CheckCircle2 className="h-5 w-5" />
-                          <span className="font-medium">Passed</span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-2 text-red-500">
-                          <XCircle className="h-5 w-5" />
-                          <span className="font-medium">Failed</span>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-
-                  <div className="pt-4 border-t">
-                    <div className="flex items-center justify-between">
-                      <span className="text-lg font-semibold">Overall Status</span>
-                      {compliance?.overall_compliant ? (
-                        <Badge className="bg-green-500 hover:bg-green-600 text-white px-4 py-1">
-                          <CheckCircle2 className="h-4 w-4 mr-1" />
-                          Compliant
-                        </Badge>
-                      ) : (
-                        <Badge variant="destructive" className="px-4 py-1">
-                          <XCircle className="h-4 w-4 mr-1" />
-                          Non-Compliant
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
 
           {/* Team Performance Tab */}
           <TabsContent value="teams" className="space-y-6">

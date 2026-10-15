@@ -84,8 +84,11 @@ export interface StartAutofixResponse {
 export interface RoadmapItem {
   issue: string;
   category: string;
-  impact: string;
-  effort: string;
+  severity?: string;
+  /** Which score the finding counts against (its agent_type). */
+  area?: string;
+  file_path?: string | null;
+  line_number?: number | null;
 }
 
 export interface ImprovementRoadmap {
@@ -96,8 +99,12 @@ export interface ImprovementRoadmap {
   estimated_impact?: {
     critical_issues?: number;
     high_issues?: number;
-    architecture_issues?: number;
-    auto_fixable?: number;
+    medium_issues?: number;
+    low_issues?: number;
+    /** Totals per bucket; each bucket's item list is capped. */
+    fix_first_total?: number;
+    next_total?: number;
+    later_total?: number;
   };
   created_at?: string;
 }

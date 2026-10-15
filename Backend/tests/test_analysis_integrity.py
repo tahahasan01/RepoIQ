@@ -217,3 +217,58 @@ class TestFindingDimension:
         result = await orchestrator._analyze_file_batch([{"path": "app.py", "content": "x = 1\n"}], None)
 
         assert [i["agent_type"] for i in result["issues"]] == ["security", "security"]
+
+
+class TestRoadmapBuckets:
+
+    @pytest.mark.asyncio
+    async def test_every_finding_lands_in_a_bucket(self):
+        """Medium and low findings used to appear nowhere on the roadmap."""
+        from app.agents.orchestrator import AgentOrchestrator
+
+        def f(severity, area="quality", **kw):
+            return {"severity": severity, "agent_type": area, "description": f"{severity}-{area}",
+                    "category": "c", "file_path": "a.py", "line_number": 1, **kw}
+
+        issues = [f("low"), f("medium", "security"), f("high"), f("medium", "architecture"),
+                  f("critical", "security"), f("medium")]
+        roadmap = await AgentOrchestrator().generate_improvement_roadmap(issues)
+
+        names = lambda bucket: [i["issue"] for i in roadmap[bucket]]  # noqa: E731
+        assert names("quick_wins") == ["critical-security", "high-quality"]
+        assert names("medium_term") == ["medium-security", "medium-quality"]  # security first
+        assert names("long_term") == ["medium-architecture", "low-quality"]
+        impact = roadmap["estimated_impact"]
+        assert (impact["fix_first_total"], impact["next_total"], impact["later_total"]) == (2, 2, 2)
+        assert roadmap["quick_wins"][0]["file_path"] == "a.py"
+        assert "auto_fixable" not in impact
+
+
+class TestTeamTrend:
+
+    @pytest.mark.asyncio
+    async def test_each_day_averages_each_repositorys_latest_score(self):
+        """Re-running one repository used to count it once per run that day."""
+        from unittest.mock import MagicMock
+        from app.services.team_comparison_service import TeamComparisonService
+
+        rows = [
+            {"repository_id": "a", "overall_score": 100, "total_issues": 0, "completed_at": "2026-10-14T09:00:00"},
+            {"repository_id": "b", "overall_score": 60, "total_issues": 10, "completed_at": "2026-10-15T09:00:00"},
+            {"repository_id": "a", "overall_score": 80, "total_issues": 4, "completed_at": "2026-10-15T10:00:00"},
+            {"repository_id": "a", "overall_score": 84, "total_issues": 2, "completed_at": "2026-10-15T11:00:00"},
+        ]
+        service = TeamComparisonService.__new__(TeamComparisonService)
+        chain = MagicMock()
+        for method in ("table", "select", "in_", "eq", "gte", "order"):
+            getattr(chain, method).return_value = chain
+        chain.execute.return_value = MagicMock(data=rows)
+        service.db = chain
+
+        trend = await service._health_trends(["a", "b"], days=30)
+
+        assert trend == [
+            {"date": "2026-10-14", "average_score": 100.0, "average_issues": 0.0},
+            # a's latest that day (84) and b (60); not the mean of 60, 80 and 84.
+            {"date": "2026-10-15", "average_score": 72.0, "average_issues": 6.0},
+        ]

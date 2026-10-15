@@ -543,50 +543,59 @@ Accuracy over volume. An empty issues array is an acceptable answer."""
         }
 
     async def generate_improvement_roadmap(self, issues: List[Dict[str, Any]]) -> Dict[str, Any]:
-        critical_issues = [i for i in issues if i.get("severity") == "critical"]
-        high_issues = [i for i in issues if i.get("severity") == "high"]
-        
-        quick_wins = []
-        for issue in critical_issues[:5]:
-            if issue.get("auto_fixable"):
-                quick_wins.append({
-                    "issue": issue.get("message", issue.get("description", "No description")),
-                    "category": issue.get("category", "uncategorized"),
-                    "impact": "high",
-                    "effort": "low"
-                })
-        
-        medium_term = []
-        for issue in high_issues[:10]:
-            medium_term.append({
+        """
+        Every finding in one of three buckets, most urgent first.
+
+        The buckets used to be "critical AND auto-fixable", "high" and
+        "architecture". The model never reports auto_fixable, so the first was
+        always empty, and medium and low findings appeared nowhere: a repository
+        with five medium security findings got an empty roadmap. Each item also
+        carried a hardcoded "impact"/"effort" that nothing had assessed.
+
+        fix_first: critical and high. next: medium. later: low, plus
+        architecture findings of any severity below high (bigger changes).
+        Items are capped per bucket; the totals say how many there are.
+        """
+        rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        area_rank = {"security": 0, "quality": 1, "architecture": 2, "documentation": 3}
+
+        def item(issue: Dict[str, Any]) -> Dict[str, Any]:
+            return {
                 "issue": issue.get("message", issue.get("description", "No description")),
                 "category": issue.get("category", "uncategorized"),
-                "impact": "high",
-                "effort": "medium"
-            })
-        
-        long_term = []
-        architecture_issues = [i for i in issues if i.get("agent_type") == "architecture"]
-        for issue in architecture_issues[:5]:
-            long_term.append({
-                "issue": issue.get("message", issue.get("description", "No description")),
-                "category": issue.get("category", "uncategorized"),
-                "impact": "medium",
-                "effort": "high"
-            })
-        
+                "severity": issue.get("severity", "low"),
+                "area": issue.get("agent_type", "quality"),
+                "file_path": issue.get("file_path"),
+                "line_number": issue.get("line_number"),
+            }
+
+        ordered = sorted(
+            issues,
+            key=lambda i: (rank.get(i.get("severity"), 4), area_rank.get(i.get("agent_type"), 1)),
+        )
+        fix_first, next_up, later = [], [], []
+        for issue in ordered:
+            severity = issue.get("severity")
+            if severity in ("critical", "high"):
+                fix_first.append(issue)
+            elif issue.get("agent_type") == "architecture" or severity not in ("medium",):
+                later.append(issue)
+            else:
+                next_up.append(issue)
+
+        limit = 10
         return {
             "priority_order": ["critical", "high", "medium", "low"],
-            "quick_wins": quick_wins,
-            "medium_term": medium_term,
-            "long_term": long_term,
-            # Counts of what the roadmap covers. This used to multiply those
-            # counts by 5, 3 and 10 and present the result as projected
-            # "improvement" - numbers with nothing behind them.
+            "quick_wins": [item(i) for i in fix_first[:limit]],
+            "medium_term": [item(i) for i in next_up[:limit]],
+            "long_term": [item(i) for i in later[:limit]],
             "estimated_impact": {
-                "critical_issues": len(critical_issues),
-                "high_issues": len(high_issues),
-                "architecture_issues": len(architecture_issues),
-                "auto_fixable": len([i for i in issues if i.get("auto_fixable")]),
+                "critical_issues": sum(1 for i in issues if i.get("severity") == "critical"),
+                "high_issues": sum(1 for i in issues if i.get("severity") == "high"),
+                "medium_issues": sum(1 for i in issues if i.get("severity") == "medium"),
+                "low_issues": sum(1 for i in issues if i.get("severity") == "low"),
+                "fix_first_total": len(fix_first),
+                "next_total": len(next_up),
+                "later_total": len(later),
             }
         }
