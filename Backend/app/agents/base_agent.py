@@ -132,6 +132,20 @@ class BaseAgent(ABC):
             await enforce_spend_budget(user_id)
 
         system, turns = _split_system(messages)
+
+        if settings.LLM_PROVIDER == "claude_agent_sdk":
+            from app.agents import agent_sdk_client
+
+            completion = await run_blocking(
+                lambda: agent_sdk_client.complete(system, turns, json_schema)
+            )
+            return self._finish(
+                completion.text,
+                completion.stop_reason,
+                completion.input_tokens + completion.output_tokens,
+                user_id,
+            )
+
         output_config: Dict[str, Any] = {"effort": settings.ANTHROPIC_EFFORT}
         if json_schema is not None:
             output_config["format"] = {"type": "json_schema", "schema": json_schema}
@@ -167,13 +181,30 @@ class BaseAgent(ABC):
             logger.error(f"LLM call failed: {type(e).__name__}: {e}")
             raise
 
-        if user_id and getattr(response, "usage", None):
-            record_spend(
-                user_id,
-                (response.usage.input_tokens or 0) + (response.usage.output_tokens or 0),
-            )
+        usage = getattr(response, "usage", None)
+        tokens = ((usage.input_tokens or 0) + (usage.output_tokens or 0)) if usage else 0
+        details = getattr(response, "stop_details", None)
+        return self._finish(
+            "".join(b.text for b in response.content if b.type == "text"),
+            response.stop_reason,
+            tokens,
+            user_id,
+            refusal_category=getattr(details, "category", None) if details else None,
+        )
 
-        if response.stop_reason == "max_tokens":
+    def _finish(
+        self,
+        text: str,
+        stop_reason: Optional[str],
+        tokens: int,
+        user_id: Optional[str],
+        refusal_category: Optional[str] = None,
+    ) -> str:
+        """Shared by both providers: spend accounting, truncation, refusal."""
+        if user_id and tokens:
+            record_spend(user_id, tokens)
+
+        if stop_reason == "max_tokens":
             logger.error(
                 f"LLM response truncated at max_tokens={self.max_tokens}; "
                 "raise LLM_MAX_OUTPUT_TOKENS or reduce the batch size"
@@ -181,13 +212,11 @@ class BaseAgent(ABC):
             raise LLMResponseTruncated(
                 f"Model stopped at the {self.max_tokens} token output limit"
             )
-        if response.stop_reason == "refusal":
-            details = getattr(response, "stop_details", None)
-            category = getattr(details, "category", None) if details else None
-            logger.warning(f"LLM declined the request (category={category})")
-            raise LLMRefusal(f"Model declined the request (category={category})")
+        if stop_reason == "refusal":
+            logger.warning(f"LLM declined the request (category={refusal_category})")
+            raise LLMRefusal(f"Model declined the request (category={refusal_category})")
 
-        return "".join(b.text for b in response.content if b.type == "text")
+        return text
     
     def calculate_score(self, issues: List[Dict[str, Any]]) -> int:
         if not issues:

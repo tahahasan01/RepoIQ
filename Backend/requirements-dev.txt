@@ -1,0 +1,15 @@
+# Development and CI dependencies. Production installs requirements.txt only.
+-r requirements.txt
+
+# --- Tests ---
+pytest
+pytest-asyncio
+pytest-cov
+
+# --- Local AI provider (LLM_PROVIDER=claude_agent_sdk) ---
+# Runs analysis through the Claude Code CLI with the developer's own login, so
+# the pipeline can be exercised without an API key. Refused in production.
+claude-agent-sdk==0.2.167
+# The SDK pulls in mcp -> sse-starlette, which otherwise upgrades Starlette past
+# what FastAPI 0.115 supports (FastAPI pins starlette<0.42) and breaks the app.
+starlette>=0.40.0,<0.42.0

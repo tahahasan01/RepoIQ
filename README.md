@@ -384,7 +384,7 @@ python -m venv .venv
 # macOS/Linux:
 source .venv/bin/activate
 
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # production installs requirements.txt only
 cp .env.example .env
 ```
 
@@ -412,7 +412,9 @@ GITHUB_APP_CLIENT_SECRET=
 GITHUB_APP_PRIVATE_KEY=
 GITHUB_REDIRECT_URI=http://localhost:8080/auth/github/callback
 
-# AI — set ONE of these; with both set the API rejects every request
+# AI — for local development without an API key, set
+# LLM_PROVIDER=claude_agent_sdk instead (see below). Otherwise set ONE of
+# these; with both set the API rejects every request.
 ANTHROPIC_API_KEY=
 # ANTHROPIC_AUTH_TOKEN=
 ANTHROPIC_MODEL=claude-opus-5-5
@@ -525,6 +527,7 @@ Nothing needs editing in code.
 | `ANALYSIS_BATCH_SIZE` | `8` | Files per AI call — fewer is more accurate, slower |
 | `ANALYSIS_MAX_FILE_BYTES` | `51200` | Files above this are skipped |
 | `ANALYSIS_EXECUTION_MODE` | `auto` | `auto` \| `celery` \| `inline` |
+| `LLM_PROVIDER` | `anthropic` | `claude_agent_sdk` runs analysis through your Claude Code login for **local development only** — install `requirements-dev.txt` and sign in to the `claude` CLI. Refused when `APP_ENV=production` |
 | `ANTHROPIC_MODEL` | `claude-opus-5-5` | Part of the per-file findings cache key |
 | `ANTHROPIC_EFFORT` | `high` | `low` \| `medium` \| `high` \| `xhigh` \| `max` — depth vs. cost |
 | `ANTHROPIC_REFUSAL_FALLBACK` | `true` | Re-run a declined request on Anthropic's recommended fallback model |

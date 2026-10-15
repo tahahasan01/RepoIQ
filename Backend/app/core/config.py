@@ -1,7 +1,8 @@
 import os
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List, Optional
+from typing import List, Literal, Optional
 from functools import lru_cache
 
 
@@ -81,6 +82,15 @@ class Settings(BaseSettings):
     # escaped-newline form is accepted and normalised.
     GITHUB_APP_PRIVATE_KEY: Optional[str] = None
     
+    # Which client the agents call Claude through.
+    #   "anthropic"        - the Anthropic API with ANTHROPIC_API_KEY. The only
+    #                        option for a deployed service.
+    #   "claude_agent_sdk" - LOCAL DEVELOPMENT ONLY. Runs requests through the
+    #                        Claude Code CLI with the developer's own Claude
+    #                        login, so analysis can be exercised locally without
+    #                        an API key. Refused when APP_ENV=production.
+    LLM_PROVIDER: Literal["anthropic", "claude_agent_sdk"] = "anthropic"
+
     # Claude (Anthropic). Set exactly one credential: ANTHROPIC_API_KEY (a
     # Console key, sk-ant-api...) is the one meant for a deployed service;
     # ANTHROPIC_AUTH_TOKEN takes an OAuth access token instead.
@@ -193,6 +203,22 @@ class Settings(BaseSettings):
     @property
     def api_prefix(self) -> str:
         return self.API_V1_PREFIX
+
+    @property
+    def is_production(self) -> bool:
+        return self.APP_ENV.lower() in ("production", "prod")
+
+    @model_validator(mode="after")
+    def _reject_dev_only_settings_in_production(self) -> "Settings":
+        # Fail at boot, not at the first analysis: the Agent SDK provider runs
+        # on one developer's personal Claude login and is not a credential a
+        # service may use.
+        if self.is_production and self.LLM_PROVIDER == "claude_agent_sdk":
+            raise ValueError(
+                "LLM_PROVIDER=claude_agent_sdk is for local development only; "
+                "set LLM_PROVIDER=anthropic with ANTHROPIC_API_KEY in production"
+            )
+        return self
     
     # REPOIQ_ENV_FILE lets a caller point at a different env file, or at none.
     #
