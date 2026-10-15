@@ -1,3 +1,4 @@
 release: python -m app.db.migrate
 web: uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers
 worker: celery -A app.core.celery_app worker --loglevel=info -Q celery,analysis
+beat: celery -A app.core.celery_app beat --loglevel=info --schedule /tmp/celerybeat-schedule

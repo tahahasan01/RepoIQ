@@ -1,4 +1,5 @@
-# Full local stack: Postgres, Redis, schema migration, API and Celery worker.
+# Full local stack: Postgres, Redis, schema migration, API, Celery worker and
+# Celery beat.
 #
 #   docker compose up --build
 #
@@ -73,6 +74,17 @@ services:
     volumes:
       - ./app:/app/app
     command: celery -A app.core.celery_app worker --loglevel=info -Q celery,analysis
+
+  # Publishes scheduled tasks (the hourly alert check) for the worker to run.
+  # Exactly one: every beat process publishes the whole schedule.
+  beat:
+    <<: *backend
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    command: celery -A app.core.celery_app beat --loglevel=info --schedule /tmp/celerybeat-schedule
 
 volumes:
   postgres_data:
