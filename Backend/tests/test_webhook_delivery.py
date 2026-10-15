@@ -316,7 +316,7 @@ class TestDeliver:
             return httpx.Response(302, headers={"Location": "http://169.254.169.254/latest"})
 
         outcome = self._deliver(webhook, handler)
-        assert calls == [webhook["url"]]
+        assert calls == ["https://93.184.216.34/in"]  # the one pinned request, nothing after it
         assert outcome.ok  # a 3xx is the receiver's answer; it is not chased
 
     def test_an_unsafe_destination_is_blocked_and_not_retried(self, db, user):  # noqa: F811
@@ -509,3 +509,170 @@ class TestDeliveriesEndpoint:
         db.table("webhooks").update({"active": False}).eq("id", webhook["id"]).execute()
         as_user(user)
         assert len(client.get(f"/api/v1/webhooks/{webhook['id']}/deliveries").json()["deliveries"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# Security review: DNS rebinding, and what reaches logs
+# ---------------------------------------------------------------------------
+
+class _RecordingBackend:
+    """
+    Stands in for httpcore's network backend, so the REAL httpx/httpcore stack
+    runs and we see where it actually opens a socket and what TLS name it uses.
+    """
+
+    def __init__(self):
+        self.connects = []
+        self.server_hostnames = []
+
+    def install(self):
+        import httpcore
+        import httpcore._backends.auto as auto
+
+        recorder = self
+
+        class Stream:
+            async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+                recorder.server_hostnames.append(server_hostname)
+                raise httpcore.ConnectError("stop before any bytes are sent")
+
+            async def aclose(self):
+                pass
+
+        async def connect_tcp(_self, host, port, timeout=None, local_address=None, socket_options=None):
+            recorder.connects.append((host, port))
+            return Stream()
+
+        return patch.object(auto.AutoBackend, "connect_tcp", connect_tcp)
+
+
+def _bare_service():
+    from app.services.webhook_service import WebhookService
+
+    service = WebhookService.__new__(WebhookService)
+    service._log_delivery = AsyncMock()
+    return service
+
+
+class TestDnsRebinding:
+
+    WEBHOOK = {"id": "w", "url": "https://rebind.example.com/hook", "secret": "s"}
+
+    def test_the_connection_goes_to_the_validated_address_not_a_second_lookup(self):
+        """
+        A rebinding DNS server answers the validation lookup with a public
+        address and every later lookup with 127.0.0.1. Only one lookup may
+        happen, and the socket must open to its answer.
+        """
+        backend = _RecordingBackend()
+        answers = [PUBLIC_ADDRINFO]
+
+        def getaddrinfo(*args, **kwargs):
+            return answers.pop(0) if answers else [(2, 1, 6, "", ("127.0.0.1", 443))]
+
+        with patch("socket.getaddrinfo", side_effect=getaddrinfo) as lookups, backend.install():
+            outcome = asyncio.run(_bare_service().deliver(dict(self.WEBHOOK), "e", {}))
+
+        assert lookups.call_count == 1
+        assert backend.connects == [("93.184.216.34", 443)]
+        # TLS still names, and verifies the certificate for, the real host.
+        assert backend.server_hostnames == ["rebind.example.com"]
+        assert outcome.error == "connection_error"
+
+    def test_an_internal_first_resolution_is_rejected_without_connecting(self):
+        backend = _RecordingBackend()
+        with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("10.0.0.5", 443))]), backend.install():
+            outcome = asyncio.run(_bare_service().deliver(dict(self.WEBHOOK), "e", {}))
+
+        assert (outcome.status, outcome.error) == ("blocked", "unsafe_destination")
+        assert backend.connects == []
+
+    def test_the_receiver_still_sees_its_own_hostname(self):
+        seen = {}
+
+        def handler(request):
+            seen.update(host=request.url.host, header=request.headers["Host"],
+                        sni=request.extensions.get("sni_hostname"))
+            return httpx.Response(200)
+
+        webhook = {"id": "w", "url": "https://hooks.example.com:8443/in?x=1", "secret": "s"}
+        with _public_dns(), _mock_http(handler):
+            assert asyncio.run(_bare_service().deliver(webhook, "e", {})).ok
+
+        assert seen == {"host": "93.184.216.34", "header": "hooks.example.com:8443",
+                        "sni": "hooks.example.com"}
+
+    def test_an_ip_literal_url_is_sent_as_is(self):
+        from app.services.webhook_service import _pin_to_address
+
+        url, headers, extensions = _pin_to_address("https://93.184.216.34/in", "93.184.216.34", "93.184.216.34")
+        assert (str(url), headers, extensions) == ("https://93.184.216.34/in", {}, {})
+
+
+class TestNothingSensitiveIsLogged:
+    """
+    Slack- and Discord-style webhook URLs carry their credential in the path,
+    and the signature, the body and the receiver's response are not ours to log.
+    """
+
+    URL = "https://hooks.example.com/services/T0KEN-IN-PATH"
+    SECRET = "s3cret-signing-key"
+    LEAKS = ("T0KEN-IN-PATH", SECRET, "sha256=", "BODY-MARKER", "RESPONSE-MARKER")
+
+    @staticmethod
+    def _logged(logger):
+        return " ".join(
+            " ".join(str(a) for a in call.args) + " ".join(str(v) for v in call.kwargs.values())
+            for call in logger.method_calls
+        )
+
+    def _deliver(self, handler):
+        from app.services import webhook_service
+
+        service = _bare_service()
+        webhook = {"id": "wh-1", "url": self.URL, "secret": self.SECRET}
+        with _public_dns(), _mock_http(handler), patch.object(webhook_service, "logger") as logger:
+            asyncio.run(service.deliver(webhook, "analysis.completed", {"payload": "BODY-MARKER"}))
+        stored = " ".join(str(a) for a in service._log_delivery.await_args.args) + \
+            str(service._log_delivery.await_args.kwargs)
+        return self._logged(logger), stored
+
+    def _assert_clean(self, text):
+        for leak in self.LEAKS:
+            assert leak not in text, leak
+
+    def test_success_and_failure_log_and_store_ids_only(self):
+        for handler in (
+            lambda r: httpx.Response(200, text="RESPONSE-MARKER"),
+            lambda r: httpx.Response(500, text="RESPONSE-MARKER", headers={"X-Token": "RESPONSE-MARKER"}),
+        ):
+            logged, stored = self._deliver(handler)
+            self._assert_clean(logged)
+            self._assert_clean(stored)  # the delivery row: ids, status, a category
+            assert "wh-1" in logged     # still identifiable
+
+    def test_exception_text_is_not_logged(self):
+        """httpx exception messages embed the request URL."""
+        def transport_error(request):
+            raise httpx.RemoteProtocolError(f"broke talking to {self.URL}", request=request)
+
+        def unexpected(request):
+            raise RuntimeError(f"{self.URL} {self.SECRET}")
+
+        for handler in (transport_error, unexpected):
+            logged, stored = self._deliver(handler)
+            self._assert_clean(logged)
+            self._assert_clean(stored)
+
+    @requires_db
+    def test_registration_logs_the_host_not_the_url(self, db, user):  # noqa: F811
+        from app.services import webhook_service
+
+        with _public_dns(), patch.object(webhook_service, "logger") as logger:
+            asyncio.run(webhook_service.WebhookService().register_webhook(
+                user["id"], self.URL, ["*"], self.SECRET
+            ))
+
+        logged = self._logged(logger)
+        self._assert_clean(logged)
+        assert "hooks.example.com" in logged

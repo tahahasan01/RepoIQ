@@ -45,6 +45,8 @@ import hashlib
 import hmac
 import json
 import asyncio
+import ipaddress
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional
@@ -63,6 +65,30 @@ RETRY_DELAYS_SECONDS = (5, 30, 300)
 
 # Status codes that mean "try again later" rather than "no".
 _RETRYABLE_STATUS = {408, 425, 429}
+
+
+def _pin_to_address(url: str, hostname: str, address: str):
+    """
+    (request URL, extra headers, httpx extensions) that connect to `address`
+    while presenting `hostname` over HTTP (Host) and TLS (SNI and certificate
+    verification - httpcore uses sni_hostname as the TLS server_hostname).
+
+    For a URL whose host is already an IP literal nothing changes: there is no
+    second lookup to race, and SNI must not carry an IP.
+    """
+    original = httpx.URL(url)
+    try:
+        ipaddress.ip_address(hostname)
+        return original, {}, {}
+    except ValueError:
+        pass
+    # netloc is host[:port] as written, without userinfo - exactly the Host
+    # header the original URL would have produced.
+    return (
+        original.copy_with(host=address),
+        {"Host": original.netloc.decode("ascii")},
+        {"sni_hostname": hostname},
+    )
 
 
 @dataclass
@@ -133,10 +159,12 @@ class WebhookService:
 
         try:
             result = (await run_blocking(self.db.table("webhooks").insert(webhook_data).execute))
-            logger.info(f"Webhook registered for user {user_id}: {url}")
+            # Ids and the host only: a webhook URL's path is often its credential.
+            webhook_id = result.data[0]["id"] if result.data else None
+            logger.info(f"Webhook {webhook_id} registered for user {user_id} ({httpx.URL(url).host})")
             return result.data[0] if result.data else webhook_data
         except Exception as e:
-            logger.error(f"Failed to register webhook: {e}")
+            logger.error(f"Failed to register webhook: {type(e).__name__}")
             raise
 
     async def get_user_webhooks(self, user_id: str) -> List[Dict[str, Any]]:
@@ -238,6 +266,11 @@ class WebhookService:
         url = webhook.get("url")
         secret = webhook.get("secret", "")
         delivery_id = delivery_id or str(uuid.uuid4())
+        # SECURITY: logs identify a delivery by ids only. The URL is not
+        # logged - receivers such as Slack and Discord put the credential in the
+        # path - and neither are the body, the signature, response headers or
+        # bodies, or exception text (httpx messages embed the request URL).
+        label = f"webhook {webhook.get('id')} delivery {delivery_id} attempt {attempt}"
 
         async def record(outcome: DeliveryOutcome) -> DeliveryOutcome:
             await self._log_delivery(
@@ -252,10 +285,20 @@ class WebhookService:
         # Checked on every attempt, retries included. Not retried: the answer
         # will not become safe by waiting.
         try:
-            resolve_and_validate(url)
-        except UnsafeUrlError as e:
-            logger.error(f"Refusing webhook delivery to unsafe destination: {e}")
+            hostname, addresses = resolve_and_validate(url)
+        except UnsafeUrlError:
+            logger.error(f"Refusing {label}: unsafe destination")
             return await record(DeliveryOutcome(False, "blocked", 0, False, "unsafe_destination"))
+
+        # SECURITY: connect to the address that was just validated, not to the
+        # hostname. Handing httpx the hostname makes it resolve again when it
+        # connects, and a rebinding DNS server answers that second lookup with
+        # 127.0.0.1 or 169.254.169.254 - the check above would then guard a
+        # connection that is never made. The URL is rewritten to the pinned IP;
+        # Host carries the real name for the receiver's routing, and the
+        # sni_hostname extension makes TLS send SNI for, and verify the
+        # certificate against, the real name rather than the IP.
+        target, pinned_headers, extensions = _pin_to_address(url, hostname, addresses[0])
 
         webhook_payload = {
             "event": event_type,
@@ -267,6 +310,7 @@ class WebhookService:
         signature = self._generate_signature(payload_json, secret)
 
         headers = {
+            **pinned_headers,
             "Content-Type": "application/json",
             "X-RepoIQ-Event": event_type,
             "X-RepoIQ-Delivery": delivery_id,
@@ -276,14 +320,20 @@ class WebhookService:
         }
 
         response_code = 0
+        started = time.monotonic()
         try:
             # follow_redirects=False: a 302 to http://169.254.169.254 would
             # walk straight past the validation above.
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-                response = await client.post(url, content=payload_json, headers=headers)
+                response = await client.post(
+                    target, content=payload_json, headers=headers, extensions=extensions
+                )
             response_code = response.status_code
             if response_code < 400:
-                logger.info(f"Webhook delivered: {url} ({response_code}, attempt {attempt})")
+                logger.info(
+                    f"Delivered {label}: {event_type} -> {response_code} "
+                    f"in {int((time.monotonic() - started) * 1000)}ms"
+                )
                 return await record(DeliveryOutcome(True, "success", response_code, False))
             retryable = response_code >= 500 or response_code in _RETRYABLE_STATUS
             error = f"http_{response_code}"
@@ -293,15 +343,18 @@ class WebhookService:
             retryable, error = True, "connection_error"
         except httpx.HTTPError as e:
             retryable, error = True, "request_error"
-            logger.warning(f"Webhook request error: {url} - {type(e).__name__}")
+            logger.warning(f"Request error on {label}: {type(e).__name__}")
         except Exception as e:
             # Not a transport failure (e.g. a URL httpx cannot use). Waiting
             # will not fix it; record it instead of failing the task unlogged.
             retryable, error = False, "request_error"
-            logger.error(f"Webhook error: {url} - {type(e).__name__}: {e}")
+            logger.error(f"Unexpected error on {label}: {type(e).__name__}")
 
         status = "retrying" if (retryable and retries_left) else "failed"
-        logger.warning(f"Webhook delivery {status}: {url} ({error}, attempt {attempt})")
+        logger.warning(
+            f"Delivery {status} for {label}: {event_type} -> {error} "
+            f"after {int((time.monotonic() - started) * 1000)}ms"
+        )
         return await record(DeliveryOutcome(False, status, response_code, retryable, error))
 
     async def send_webhook(
@@ -354,7 +407,7 @@ class WebhookService:
                 "delivered_at": datetime.utcnow().isoformat()
             }).execute))
         except Exception as e:
-            logger.warning(f"Failed to log webhook delivery: {type(e).__name__}: {e}")
+            logger.warning(f"Failed to log delivery {delivery_id} of webhook {webhook_id}: {type(e).__name__}")
 
 
 # Event types
@@ -529,5 +582,5 @@ async def emit_analysis_failed(
             "error": message,
         })
     except Exception as e:
-        logger.warning(f"Could not emit analysis.failed for {analysis_id}: {type(e).__name__}: {e}")
+        logger.warning(f"Could not emit analysis.failed for {analysis_id}: {type(e).__name__}")
         return 0
