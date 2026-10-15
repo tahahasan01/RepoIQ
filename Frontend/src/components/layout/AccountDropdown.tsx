@@ -40,8 +40,8 @@ export default function AccountDropdown() {
 
   const handleLogout = () => {
     setOpen(false);
-    auth.logout();
-    navigate("/");
+    // Revokes the session server-side, then reloads into the landing page.
+    void auth.logout({ redirectTo: "/" });
   };
 
   useEffect(() => {

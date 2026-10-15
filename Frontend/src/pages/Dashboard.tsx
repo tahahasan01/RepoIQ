@@ -27,7 +27,6 @@ import {
   ArrowDownRight,
 } from "lucide-react";
 import apiClient from "@/lib/api";
-import { scanStorage, ScanResult, ScanIssue } from "@/services/scanService";
 import { scoreColor, scoreLabel } from '@/lib/scoreColor';
 
 const severityColors: Record<string, string> = {
@@ -361,21 +360,9 @@ export default function Dashboard() {
   useEffect(() => {
     loadAnalysisData();
 
-    // Listen for new scans
-    const handleScanCompleted = (event: CustomEvent<ScanResult>) => {
-      const mappedIssues = event.detail.issues.map((issue) => ({
-        id: issue.id,
-        file: issue.file,
-        line: issue.line,
-        severity: issue.severity,
-        type: issue.type,
-        message: issue.description
-      }));
-      setRecentIssues(mappedIssues.slice(0, 5));
-      setStats(event.detail.stats);
-    };
-    
-    // Listen for analysis completion to refresh data
+    // Listen for analysis completion to refresh data. (A "scanCompleted"
+    // listener that read a mock scan result used to sit here; nothing has
+    // dispatched that event since the mock scanner was replaced by the API.)
     const handleAnalysisCompleted = (event: CustomEvent) => {
       console.log('[Dashboard] Analysis completed event received:', event.detail);
       if (event.detail?.repoId === repoId) {
@@ -392,12 +379,10 @@ export default function Dashboard() {
       }
     };
 
-    window.addEventListener("scanCompleted", handleScanCompleted as EventListener);
     window.addEventListener("analysisCompleted", handleAnalysisCompleted as EventListener);
     window.addEventListener("dashboardRefresh", handleDashboardRefresh as EventListener);
     
     return () => {
-      window.removeEventListener("scanCompleted", handleScanCompleted as EventListener);
       window.removeEventListener("analysisCompleted", handleAnalysisCompleted as EventListener);
       window.removeEventListener("dashboardRefresh", handleDashboardRefresh as EventListener);
     };

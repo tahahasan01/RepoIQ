@@ -341,4 +341,5 @@ async def logout(current_user: dict = Depends(get_current_user)):
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(current_user: dict = Depends(get_current_user)):
-    return current_user
+    has_password = await AuthService().has_password(current_user["id"])
+    return {**current_user, "has_password": has_password}

@@ -14,7 +14,7 @@ import {
   FileDown,
   GitBranch,
 } from "lucide-react";
-import { BugReport } from "@/services/scanService";
+import type { BugReport } from "@/types/scan";
 import { generateFullAnalysisReport, generateBugReportPDF, AnalysisReport } from "@/services/reportService";
 import { useRepository, useAnalysisResults, useAnalysisById } from "@/hooks/useApiQueries";
 

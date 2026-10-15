@@ -25,8 +25,12 @@ class UserResponse(UserBase):
     bio: Optional[str] = None
     github_username: Optional[str] = None
     github_connected: bool = False
+    # Whether the account has a password (GitHub sign-in accounts do not), so the
+    # client can stop offering a change-password form that cannot succeed.
+    # Filled in by the /me endpoints; None means "not determined" elsewhere.
+    has_password: Optional[bool] = None
     created_at: datetime
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 

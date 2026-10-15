@@ -26,7 +26,6 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import apiClient from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
@@ -46,7 +45,6 @@ export default function Organizations() {
   
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newOrgName, setNewOrgName] = useState("");
-  const [newOrgPlan, setNewOrgPlan] = useState("free");
   
   // Show loading only if we have no cached data
   const loading = orgsLoading && organizations.length === 0;
@@ -96,8 +94,8 @@ export default function Organizations() {
   }, [organizations, queryClient]);
 
   const createOrgMutation = useMutation({
-    mutationFn: ({ name, plan }: { name: string; plan: string }) =>
-      apiClient.createOrganization(name, plan),
+    // Free plan only: there is no plan to choose and no billing.
+    mutationFn: ({ name }: { name: string }) => apiClient.createOrganization(name),
     onMutate: async () => {
       // Cancel outgoing refetches
       await queryClient.cancelQueries({ queryKey: queryKeys.organizations });
@@ -118,7 +116,6 @@ export default function Organizations() {
       
       setCreateDialogOpen(false);
       setNewOrgName("");
-      setNewOrgPlan("free");
       toast({
         title: "Success",
         description: "Organization created successfully",
@@ -235,7 +232,7 @@ export default function Organizations() {
       });
       return;
     }
-    createOrgMutation.mutate({ name: newOrgName, plan: newOrgPlan });
+    createOrgMutation.mutate({ name: newOrgName.trim() });
   };
 
   if (loading) {
@@ -282,21 +279,12 @@ export default function Organizations() {
                     value={newOrgName}
                     onChange={(e) => setNewOrgName(e.target.value)}
                     placeholder="My Organization"
+                    maxLength={100}
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="plan">Plan</Label>
-                  <Select value={newOrgPlan} onValueChange={setNewOrgPlan}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="free">Free</SelectItem>
-                      <SelectItem value="pro">Pro</SelectItem>
-                      <SelectItem value="enterprise">Enterprise</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+                <p className="text-sm text-muted-foreground">
+                  Organizations are on the free plan.
+                </p>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>
@@ -343,7 +331,7 @@ export default function Organizations() {
                       </div>
                       <div>
                         <CardTitle className="text-lg">{org.name}</CardTitle>
-                        <CardDescription className="capitalize">{org.plan_type}</CardDescription>
+                        <CardDescription>Free plan</CardDescription>
                       </div>
                     </div>
                     <AlertDialog>

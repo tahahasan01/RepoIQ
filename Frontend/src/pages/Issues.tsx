@@ -16,7 +16,7 @@ import {
   Check,
   X,
 } from "lucide-react";
-import { scanStorage, ScanIssue } from "@/services/scanService";
+import type { ScanIssue } from "@/types/scan";
 
 const severityOrder = ["critical", "high", "medium", "low"];
 const severityColors: Record<string, string> = {
@@ -216,18 +216,21 @@ export default function Issues() {
 
     load();
 
-    const handleScanCompleted = async (event: CustomEvent) => {
-      // Clear cache on new scan
-      if (repoId) {
-        sessionStorage.removeItem(ISSUES_CACHE_KEY(repoId as string));
-      }
+    // Reload when an analysis of this repository finishes. This listened for
+    // "scanCompleted", which only the removed mock scanner ever dispatched, so
+    // the list never refreshed; the notification store's polling dispatches
+    // "analysisCompleted" with the repository id.
+    const handleAnalysisCompleted = async (event: Event) => {
+      const completedRepoId = (event as CustomEvent<{ repoId?: string }>).detail?.repoId;
+      if (!repoId || String(completedRepoId) !== String(repoId)) return;
+      sessionStorage.removeItem(ISSUES_CACHE_KEY(repoId as string));
       await load();
     };
 
-    window.addEventListener("scanCompleted", handleScanCompleted as EventListener);
+    window.addEventListener("analysisCompleted", handleAnalysisCompleted);
     return () => {
       mounted = false;
-      window.removeEventListener("scanCompleted", handleScanCompleted as EventListener);
+      window.removeEventListener("analysisCompleted", handleAnalysisCompleted);
     };
   }, [repoId]);
 

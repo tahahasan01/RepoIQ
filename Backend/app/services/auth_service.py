@@ -583,6 +583,29 @@ class AuthService:
         )
         return (result.data or {}).get("github_access_token")
 
+    async def has_password(self, user_id: str) -> Optional[bool]:
+        """
+        Whether the account has a RepoIQ password at all.
+
+        Accounts created through GitHub sign-in have password_hash NULL, so the
+        change-password endpoint can never succeed for them; the client needs to
+        know that to stop offering the form. Only the NULL-ness is returned -
+        the hash itself never leaves this method, and like the GitHub token it
+        is kept out of get_user's cached record.
+
+        Returns None when the lookup fails, so callers report "unknown" rather
+        than a guess.
+        """
+        try:
+            result = await run_blocking(
+                lambda: self.service_db.table("users").select("password_hash")
+                .eq("id", user_id).single().execute()
+            )
+            return bool((result.data or {}).get("password_hash"))
+        except Exception as e:
+            logger.error(f"has_password lookup failed: {type(e).__name__}")
+            return None
+
     async def update_user(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             result = await run_blocking(

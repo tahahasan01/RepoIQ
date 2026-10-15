@@ -10,13 +10,11 @@ import {
   Plus,
   BarChart3,
   TrendingUp,
-  Shield,
   AlertTriangle,
   CheckCircle2,
   ExternalLink,
   Edit2,
   Trash2,
-  Crown,
   Zap,
   Activity,
 } from "lucide-react";
@@ -70,20 +68,29 @@ export default function OrganizationDetail() {
   });
   
   const [editingName, setEditingName] = useState(false);
-  const [newName, setNewName] = useState(organization?.name || "");
-  
+  // Seeded when editing starts. This used to be reset to organization.name
+  // during every render whenever the two differed - which is every render after
+  // a keystroke - so the field could never hold an edited value.
+  const [newName, setNewName] = useState("");
+
   // Show loading only if we have no cached data
   const loading = orgLoading && !organization;
-  
-  // Update newName when organization loads
-  if (organization && newName !== organization.name) {
-    setNewName(organization.name);
-  }
+
+  const startEditingName = () => {
+    setNewName(organization?.name || "");
+    setEditingName(true);
+  };
 
   const updateOrgMutation = useMutation({
     mutationFn: ({ orgId, name }: { orgId: string; name: string }) =>
       apiClient.updateOrganization(orgId, { name: name }),
-    onSuccess: () => {
+    onSuccess: (updated, { name }) => {
+      // Show the new name straight away: this query does not refetch on mount
+      // and serves cached data, so waiting on the invalidation alone could
+      // leave the old name on screen.
+      queryClient.setQueryData(queryKeys.organization(id!), (old: Record<string, unknown> | undefined) =>
+        old ? { ...old, ...(updated && typeof updated === "object" ? updated : {}), name } : old
+      );
       queryClient.invalidateQueries({ queryKey: queryKeys.organization(id!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.organizations });
       setEditingName(false);
@@ -172,9 +179,16 @@ export default function OrganizationDetail() {
     },
   });
 
+  const trimmedName = newName.trim();
+  const nameUnchanged = trimmedName === (organization?.name || "");
+
   const handleUpdateName = () => {
-    if (!id || !newName.trim()) return;
-    updateOrgMutation.mutate({ orgId: id, name: newName });
+    if (!id || !trimmedName) return;
+    if (nameUnchanged) {
+      setEditingName(false);
+      return;
+    }
+    updateOrgMutation.mutate({ orgId: id, name: trimmedName });
   };
 
   const handleDelete = () => {
@@ -214,19 +228,9 @@ export default function OrganizationDetail() {
     );
   }
 
-  const planColors: Record<string, string> = {
-    free: "bg-slate-500",
-    pro: "bg-blue-500",
-    enterprise: "bg-purple-500",
-  };
-
-  const planIcons: Record<string, any> = {
-    free: Zap,
-    pro: Crown,
-    enterprise: Shield,
-  };
-
-  const PlanIcon = planIcons[organization.plan_type] || Zap;
+  // Organizations are free-plan only: the backend ignores plan_type and there
+  // is no billing, so the plan is a label, not a choice.
+  const PLAN_LABEL = "Free plan";
 
   return (
     <div className="min-h-screen bg-background">
@@ -246,16 +250,16 @@ export default function OrganizationDetail() {
                   <Building2 className="h-8 w-8 text-white" />
                 </div>
                 <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-background flex items-center justify-center border-2 border-background">
-                  <Badge className={`${planColors[organization.plan_type]} text-white text-[10px] px-1.5 py-0`}>
-                    {organization.plan_type}
+                  <Badge className="bg-slate-500 text-white text-[10px] px-1.5 py-0">
+                    free
                   </Badge>
                 </div>
               </div>
               <div>
                 <h1 className="text-3xl font-bold">{organization.name}</h1>
                 <div className="flex items-center gap-2 mt-1">
-                  <PlanIcon className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-muted-foreground capitalize">{organization.plan_type} Plan</span>
+                  <Zap className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-muted-foreground">{PLAN_LABEL}</span>
                   <span className="text-muted-foreground">•</span>
                   <span className="text-muted-foreground text-sm">
                     Created {new Date(organization.created_at).toLocaleDateString()}
@@ -347,11 +351,11 @@ export default function OrganizationDetail() {
                     Plan
                   </CardTitle>
                   <div className="p-2 bg-orange-500/20 rounded-lg">
-                    <PlanIcon className="h-4 w-4 text-orange-500" />
+                    <Zap className="h-4 w-4 text-orange-500" />
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="text-3xl font-bold capitalize">{organization.plan_type}</div>
+                  <div className="text-3xl font-bold">Free</div>
                   <p className="text-xs text-muted-foreground mt-1">Current plan</p>
                 </CardContent>
               </Card>
@@ -570,22 +574,30 @@ export default function OrganizationDetail() {
                         <Input
                           value={newName}
                           onChange={(e) => setNewName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleUpdateName();
+                            if (e.key === "Escape") setEditingName(false);
+                          }}
+                          maxLength={100}
+                          aria-label="Organization name"
                           className="max-w-xs"
+                          autoFocus
                         />
-                        <Button onClick={handleUpdateName} disabled={updateOrgMutation.isPending} size="sm">
+                        <Button
+                          onClick={handleUpdateName}
+                          disabled={updateOrgMutation.isPending || !trimmedName}
+                          size="sm"
+                        >
                           {updateOrgMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
                         </Button>
-                        <Button variant="ghost" onClick={() => {
-                          setEditingName(false);
-                          setNewName(organization.name);
-                        }} size="sm">
+                        <Button variant="ghost" onClick={() => setEditingName(false)} size="sm">
                           Cancel
                         </Button>
                       </>
                     ) : (
                       <>
                         <span className="text-lg">{organization.name}</span>
-                        <Button variant="ghost" size="icon" onClick={() => setEditingName(true)}>
+                        <Button variant="ghost" size="icon" onClick={startEditingName} aria-label="Rename organization">
                           <Edit2 className="h-4 w-4" />
                         </Button>
                       </>
@@ -606,35 +618,24 @@ export default function OrganizationDetail() {
               </CardContent>
             </Card>
 
-            {/* Plan & Billing */}
+            {/* Plan */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <Crown className="h-5 w-5" />
-                  Plan & Billing
+                  <Zap className="h-5 w-5" />
+                  Plan
                 </CardTitle>
-                <CardDescription>Your current subscription plan</CardDescription>
+                <CardDescription>Every organization is on the free plan</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="flex items-center justify-between p-4 border rounded-lg bg-muted/30">
-                  <div className="flex items-center gap-4">
-                    <div className={`p-3 rounded-xl ${planColors[organization.plan_type]}`}>
-                      <PlanIcon className="h-6 w-6 text-white" />
-                    </div>
-                    <div>
-                      <p className="font-semibold capitalize text-lg">{organization.plan_type} Plan</p>
-                      <p className="text-sm text-muted-foreground">
-                        {organization.plan_type === "free" && "Basic features for small teams"}
-                        {organization.plan_type === "pro" && "Advanced features for growing teams"}
-                        {organization.plan_type === "enterprise" && "Full features for large organizations"}
-                      </p>
-                    </div>
+                <div className="flex items-center gap-4 p-4 border rounded-lg bg-muted/30">
+                  <div className="p-3 rounded-xl bg-slate-500">
+                    <Zap className="h-6 w-6 text-white" />
                   </div>
-                  {organization.plan_type !== "enterprise" && (
-                    <Button variant="outline">
-                      Upgrade Plan
-                    </Button>
-                  )}
+                  <div>
+                    <p className="font-semibold text-lg">{PLAN_LABEL}</p>
+                    <p className="text-sm text-muted-foreground">There is nothing to upgrade or pay for.</p>
+                  </div>
                 </div>
               </CardContent>
             </Card>

@@ -10,6 +10,8 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { persistQueryCache, clearAllQueryCaches } from "@/lib/queryPersister";
 import { usePrefetchOnLogin } from "@/hooks/usePrefetchOnLogin";
+import { isNonRetryableClientError } from "@/lib/apiErrors";
+import { rememberPostLoginRedirect } from "@/lib/redirect";
 
 // Eager load critical pages (landing, login)
 import Landing from "./pages/Landing";
@@ -74,14 +76,17 @@ const queryClient = new QueryClient({
       // 'always' still serves the cached value first; the request happens in the
       // background and the UI updates when it lands.
       refetchOnMount: 'always',
-      retry: 2, // Retry failed requests twice
+      // Retry failed requests twice - but not a 4xx, which will not change on
+      // retry (a blocked file type or missing GitHub access just tripled the
+      // wait before the page could explain the problem).
+      retry: (failureCount, error) => !isNonRetryableClientError(error) && failureCount < 2,
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
       // Use cached data immediately while the background refetch is in flight
       placeholderData: (previousData) => previousData,
       refetchInterval: false, // Polling is opt-in per query (e.g. analysis status)
     },
     mutations: {
-      retry: 1,
+      retry: (failureCount, error) => !isNonRetryableClientError(error) && failureCount < 1,
     },
   },
 });
@@ -100,6 +105,9 @@ const AppInner = () => {
         // derive the user's key - and leaving their data behind is the bug.
         clearAllQueryCaches();
         if (window.location.pathname !== "/login") {
+          // Come back to this page after signing in again. Ignored if it is
+          // not a safe internal path (or is an auth page).
+          rememberPostLoginRedirect(window.location.pathname + window.location.search);
           window.location.href = "/login";
         }
       } catch {}

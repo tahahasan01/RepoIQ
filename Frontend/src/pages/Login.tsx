@@ -1,10 +1,10 @@
 import { motion } from "framer-motion";
 import { Github, Loader2, Quote, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useState, useEffect } from "react";
 import { useRole } from "@/hooks/useRole";
-import apiClient from "@/lib/api";
+import { startGitHubFlow } from "@/lib/githubAuth";
 import { useAuth } from "@/hooks/useAuth";
 
 const codingQuotes = [
@@ -19,6 +19,7 @@ export default function Login() {
   const [quoteIndex, setQuoteIndex] = useState(0);
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { setRole } = useRole();
   const auth = useAuth();
 
@@ -53,18 +54,33 @@ export default function Login() {
         return "Invalid authentication response. Please try again.";
       case "callback_failed":
         return "Authentication failed. Please try again.";
+      case "install_requested":
+        return "Your request to install RepoIQ was sent to the organization's owners. Sign in once it has been approved.";
+      case "logout_incomplete":
+        return "You're signed out on this device, but the server couldn't confirm your session was ended. It will expire on its own.";
+      case "state_mismatch":
+        return "That GitHub sign-in link wasn't started from this browser, so it was ignored. Please sign in again.";
+      case "github_unavailable":
+        return "Couldn't reach GitHub sign-in. Please try again.";
       default:
         return "An error occurred during login. Please try again.";
     }
   };
 
-  const handleGitHubLogin = () => {
+  const handleGitHubLogin = async () => {
     setIsLoading(true);
-    apiClient.getGitHubAuthUrl().then((res) => {
-      if (res?.auth_url) {
-        window.location.href = res.auth_url;
-      }
-    }).catch((err) => console.error("GitHub auth url failed", err)).finally(() => setIsLoading(false));
+    try {
+      // Sign-in leaves the site, which loses router state, so the page that
+      // sent the user here (ProtectedRoute's state.from) is remembered across
+      // the round trip. Without one, a destination recorded when the session
+      // expired is kept.
+      const from = (location.state as { from?: unknown } | null)?.from;
+      await startGitHubFlow("signin", { returnTo: typeof from === "string" ? from : undefined });
+    } catch (err) {
+      console.error("GitHub auth url failed", err);
+      setIsLoading(false);
+      setSearchParams({ error: "github_unavailable" });
+    }
   };
 
   return (

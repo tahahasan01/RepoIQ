@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
-import apiClient from "@/lib/api";
+import { startGitHubFlow } from "@/lib/githubAuth";
 
 const codingQuotes = [
   { text: "Make it work, make it right, make it fast.", author: "Kent Beck" },
@@ -27,14 +27,16 @@ export default function SignUp() {
   const handleGitHubOnly = async () => {
     setIsLoading(true);
     try {
-      const res = await apiClient.getGitHubAuthUrl();
-      if (res?.auth_url) {
-        window.location.href = res.auth_url;
-      }
+      // A new account in GitHub App mode has to install the app before it can
+      // see any repository. Starting at the install page skips the
+      // authorise -> "not installed" (409) -> install bounce that sign-in would
+      // take; GitHub then returns to the callback, which finishes sign-in.
+      // OAuth mode has no install page and uses the sign-in URL. Returning
+      // users belong on the Log in page, which always uses the sign-in URL.
+      await startGitHubFlow("install", { returnTo: null });
     } catch (err) {
-      toast({ title: "Error", description: "Unable to start GitHub signup." });
-    } finally {
       setIsLoading(false);
+      toast({ title: "Error", description: "Unable to start GitHub signup.", variant: "destructive" });
     }
   };
 
@@ -100,6 +102,10 @@ export default function SignUp() {
                   </>
                 )}
               </Button>
+
+              <p className="text-center text-xs text-gray-500">
+                You'll install the RepoIQ GitHub App and choose which repositories it can read.
+              </p>
 
               <div className="text-center text-sm text-gray-400">
                 Already have an account? <Link to="/login" className="text-cyan-400 hover:text-cyan-300 hover:underline font-medium">Log in</Link>

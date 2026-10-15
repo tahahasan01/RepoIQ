@@ -1,13 +1,15 @@
-import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
-import { useAuth } from "@/hooks/useAuth";
+import { useAuth, type AuthUser } from "@/hooks/useAuth";
 import { useCurrentUser } from "@/hooks/useApiQueries";
+import { useToast } from "@/hooks/use-toast";
+import { startGitHubFlow } from "@/lib/githubAuth";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
 import NotificationBell from "@/components/NotificationBell";
+import { DeleteAccountDialog } from "@/components/DeleteAccountDialog";
 import {
   Zap,
   User,
@@ -17,14 +19,38 @@ import {
   Github,
   Mail,
   Calendar,
+  Loader2,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 export default function UserSettings() {
   const auth = useAuth();
-  // /auth/me carries fields the cached login user does not (created_at).
+  const location = useLocation();
+  const { toast } = useToast();
+  // /auth/me carries fields the cached login user does not (created_at,
+  // github_connected).
   const { data: currentUser } = useCurrentUser();
-  const user = currentUser ?? auth.user;
+  const user: AuthUser | null = currentUser ?? auth.user;
+
+  // The badge used to say "Connected" unconditionally. github_connected comes
+  // from /auth/me; until that loads the badge is not shown rather than guessed.
+  const githubKnown = typeof user?.github_connected === "boolean";
+  const githubConnected = user?.github_connected === true;
+  const [connecting, setConnecting] = useState(false);
+
+  const handleConnectGitHub = async () => {
+    setConnecting(true);
+    try {
+      await startGitHubFlow("signin", { returnTo: location.pathname });
+    } catch (err) {
+      setConnecting(false);
+      toast({
+        title: "Couldn't start GitHub",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -159,7 +185,7 @@ export default function UserSettings() {
             </div>
 
             <div className="space-y-4">
-              <div className="flex items-center justify-between p-4 bg-muted/30 rounded-lg">
+              <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-muted/30 rounded-lg">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-lg bg-[#24292e] flex items-center justify-center">
                     <Github className="h-5 w-5 text-white" />
@@ -167,13 +193,31 @@ export default function UserSettings() {
                   <div>
                     <p className="font-medium">GitHub</p>
                     <p className="text-sm text-muted-foreground">
-                      {user?.github_username || user?.login || "Connected"}
+                      {githubConnected
+                        ? user?.github_username || user?.login || "Connected"
+                        : "Connect GitHub to see and analyze your repositories"}
                     </p>
                   </div>
                 </div>
-                <span className="text-sm px-3 py-1 rounded-full bg-green-500/10 text-green-500">
-                  Connected
-                </span>
+                {githubKnown && (
+                  <div className="flex items-center gap-3">
+                    {githubConnected ? (
+                      <span className="text-sm px-3 py-1 rounded-full bg-green-500/10 text-green-500">
+                        Connected
+                      </span>
+                    ) : (
+                      <>
+                        <span className="text-sm px-3 py-1 rounded-full bg-muted text-muted-foreground">
+                          Not connected
+                        </span>
+                        <Button size="sm" className="gap-2" onClick={handleConnectGitHub} disabled={connecting}>
+                          {connecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}
+                          Connect GitHub
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </motion.section>
@@ -214,18 +258,8 @@ export default function UserSettings() {
             <p className="text-sm text-muted-foreground mb-4">
               Once you delete your account, there is no going back. Please be certain.
             </p>
-            <Button 
-              variant="destructive" 
-              className="gap-2"
-              onClick={() => {
-                if (confirm("Are you sure you want to log out?")) {
-                  auth.logout();
-                  window.location.href = "/";
-                }
-              }}
-            >
-              Log Out
-            </Button>
+            {/* This button used to say "Log Out" and only cleared local tokens. */}
+            <DeleteAccountDialog />
           </motion.section>
         </div>
       </main>

@@ -1,35 +1,50 @@
 import { motion } from "framer-motion";
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useLocation } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   User,
   Github,
   Bell,
   Shield,
-  Palette,
   Key,
-  Trash2,
   Save,
   LogOut,
-  Copy,
   Upload,
+  Loader2,
+  ExternalLink,
 } from "lucide-react";
-import { useTheme } from "@/hooks/useTheme";
-import { scanStorage } from "@/services/scanService";
 import apiClient from "@/lib/api";
-import { useAuth } from "@/hooks/useAuth";
+import { startGitHubFlow, type GitHubFlow } from "@/lib/githubAuth";
+import { useAuth, type AuthUser } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
-import { useNavigate } from "react-router-dom";
+import { clearRepositoryCaches, queryKeys, useCurrentUser, useRepositories } from "@/hooks/useApiQueries";
+import { DeleteAccountDialog } from "@/components/DeleteAccountDialog";
 
 export default function Settings() {
-  const { theme, setTheme } = useTheme();
   const { toast } = useToast();
-  const { user: authUser, logout } = useAuth();
-  const navigate = useNavigate();
+  const { user: authUser, login, logout } = useAuth();
+  const location = useLocation();
+  const queryClient = useQueryClient();
+
+  // GET /auth/me is the source of truth; the cached login user only fills the
+  // first paint.
+  const { data: currentUser, isLoading: userLoading } = useCurrentUser();
+  const user: AuthUser | null = currentUser ?? authUser;
+
+  const githubConnected = Boolean(user?.github_connected ?? user?.github_username);
+  const githubUser = user?.github_username || user?.username || user?.login || null;
+
+  const { data: repoList = [], isLoading: reposLoading } = useRepositories(1, 100, {
+    enabled: githubConnected,
+  });
+  const repoNames: string[] = githubConnected
+    ? (repoList || []).map((r: { name?: string; full_name?: string }) => r.full_name || r.name || "")
+    : [];
 
   const [notifications, setNotifications] = useState({
     email: true,
@@ -38,96 +53,50 @@ export default function Settings() {
     slack: false,
   });
 
-  const [avatar, setAvatar] = useState<string | null>(null);
-  const [repos, setRepos] = useState<string[]>([]);
-  const [enabledRepos, setEnabledRepos] = useState<Record<string, boolean>>({});
-  const [githubUser, setGithubUser] = useState<string | null>(null);
-  const [repoCount, setRepoCount] = useState<number>(0);
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
+  // null = not edited, so the field shows the saved name and follows refetches.
+  // (Seeding local state from the query and resetting it on every render is
+  // what made the organization rename field undo each keystroke.)
+  const [nameDraft, setNameDraft] = useState<string | null>(null);
+  const savedName = user?.full_name || user?.name || "";
+  const fullName = nameDraft ?? savedName;
+  const nameChanged = nameDraft !== null && nameDraft.trim() !== savedName;
+
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isSaving, setIsSaving] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [githubBusy, setGithubBusy] = useState<GitHubFlow | "disconnect" | null>(null);
 
-  useEffect(() => {
-    let mounted = true;
+  const avatar = user?.avatar_url || user?.avatar || null;
+  // Only an explicit false means "no password" - an older backend, or a failed
+  // lookup, leaves it unset and the form stays available.
+  const hasNoPassword = currentUser?.has_password === false;
 
-    async function load() {
-      setIsLoading(true);
-      console.log('[Settings] Loading user data...');
-      console.log('[Settings] Auth user:', authUser);
-      
-      try {
-        // First try to use data from auth context
-        if (authUser) {
-          console.log('[Settings] Using auth context user data');
-          setAvatar(authUser.avatar_url || authUser.avatar || null);
-          setFullName(authUser.full_name || authUser.name || "");
-          setEmail(authUser.email || "");
-          setGithubUser(authUser.github_username || authUser.username || authUser.login || null);
-        }
-        
-        // Then fetch fresh data from API
-        const user = await apiClient.getCurrentUser().catch((err) => {
-          console.error('[Settings] Failed to fetch user:', err);
-          return null;
-        });
-        
-        if (!mounted) return;
-        
-        if (user) {
-          console.log('[Settings] Got user from API:', user);
-          setAvatar(user.avatar_url || user.avatar || null);
-          setFullName(user.full_name || user.name || "");
-          setEmail(user.email || "");
-          setGithubUser(user.github_username || user.username || user.login || null);
-        } else if (!authUser) {
-          console.warn('[Settings] No user data available from auth context or API');
-        }
-
-        const repoList = await apiClient.getRepositories(1, 100).catch((err) => {
-          console.error('[Settings] Failed to fetch repositories:', err);
-          return [];
-        });
-        
-        if (!mounted) return;
-        
-        const repoNames = (repoList || []).map((r: any) => r.name || r.full_name);
-        console.log('[Settings] Loaded', repoNames.length, 'repositories');
-        setRepos(repoNames);
-        setRepoCount(repoNames.length || 0);
-        const initial: Record<string, boolean> = {};
-        repoNames.forEach((r: any) => (initial[r] = true));
-        setEnabledRepos(initial);
-      } catch (err) {
-        console.error('[Settings] Load error:', err);
-        const scans = scanStorage.getScans();
-        const repoNames = Array.from(new Set(scans.map((s) => s.repoName)));
-        setRepos(repoNames);
-        setRepoCount(repoNames.length || 0);
-        const initial: Record<string, boolean> = {};
-        repoNames.forEach((r) => (initial[r] = true));
-        setEnabledRepos(initial);
-      } finally {
-        if (mounted) setIsLoading(false);
-      }
-    }
-
-    load();
-    return () => {
-      mounted = false;
-    };
-  }, [authUser]);
+  /** Keep the cached /auth/me and the stored login user in step with a change. */
+  const applyUserUpdate = (changes: Partial<AuthUser>) => {
+    queryClient.setQueryData(queryKeys.currentUser, (old: AuthUser | undefined) =>
+      old ? { ...old, ...changes } : old
+    );
+    if (authUser) login({ ...authUser, ...changes });
+    queryClient.invalidateQueries({ queryKey: queryKeys.currentUser });
+  };
 
   const handleSaveProfile = async () => {
+    if (!nameChanged || nameDraft === null) return;
     try {
       setIsSaving(true);
-      await apiClient.updateProfile({ full_name: fullName, email });
-      toast({ title: "Profile updated successfully" });
+      // PUT /users/me accepts full_name, bio and avatar_url only; email is not
+      // editable and used to be sent and silently ignored.
+      const updated = await apiClient.updateProfile({ full_name: nameDraft.trim() });
+      applyUserUpdate({ full_name: updated?.full_name ?? nameDraft.trim() });
+      setNameDraft(null);
+      toast({ title: "Name updated" });
     } catch (error) {
-      toast({ title: "Failed to update profile", variant: "destructive" });
+      toast({
+        title: "Failed to update profile",
+        description: error instanceof Error ? error.message : undefined,
+        variant: "destructive",
+      });
     } finally {
       setIsSaving(false);
     }
@@ -150,7 +119,11 @@ export default function Settings() {
       setNewPassword("");
       setConfirmPassword("");
     } catch (error) {
-      toast({ title: "Failed to change password", variant: "destructive" });
+      toast({
+        title: "Failed to change password",
+        description: error instanceof Error ? error.message : undefined,
+        variant: "destructive",
+      });
     } finally {
       setIsSaving(false);
     }
@@ -159,105 +132,78 @@ export default function Settings() {
   const handleAvatarUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    
+
     try {
       const result = await apiClient.uploadAvatar(file);
-      setAvatar(result.avatar_url);
+      applyUserUpdate({ avatar_url: result.avatar_url });
       toast({ title: "Avatar updated successfully" });
     } catch (error) {
       toast({ title: "Failed to upload avatar", variant: "destructive" });
     }
   };
 
-  const handleSignOut = async () => {
-    try {
-      await apiClient.logout();
-    } catch (error) {
-      // Continue with logout even if API call fails
-    }
-    logout();
-    navigate("/login");
+  const handleSignOut = () => {
+    void logout();
   };
 
-  const handleRefreshAccess = async () => {
+  /**
+   * Re-authorise (or connect) GitHub, or open the GitHub App's install /
+   * configure page to change which repositories RepoIQ can read. Both run in
+   * this tab and return here. "Refresh Access" used to open GitHub in a new
+   * tab, whose callback then hit an early return for signed-in users and threw
+   * the code away.
+   */
+  const handleGitHubFlow = async (flow: GitHubFlow) => {
+    setGithubBusy(flow);
     try {
-      const res = await apiClient.getGitHubAuthUrl();
-      const url = res?.auth_url;
-      if (url) {
-        // Open GitHub OAuth in a new window/tab
-        window.open(url, '_blank');
-      } else {
-        toast({ title: 'Failed to get GitHub auth URL', variant: 'destructive' });
-      }
+      await startGitHubFlow(flow, { returnTo: location.pathname + location.search });
     } catch (err) {
-      console.error('[Settings] Refresh access failed', err);
-      toast({ title: 'Failed to refresh access', variant: 'destructive' });
+      setGithubBusy(null);
+      toast({
+        title: "Couldn't start GitHub",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
   const handleDisconnectGitHub = async () => {
-    if (!confirm('Disconnect GitHub from your account?')) return;
+    if (!confirm("Disconnect GitHub from your account? RepoIQ will lose access to your repositories until you reconnect.")) return;
+    setGithubBusy("disconnect");
     try {
       await apiClient.disconnectGitHub();
-      toast({ title: 'GitHub disconnected' });
-      // Refresh local user and repos
-      const user = await apiClient.getCurrentUser().catch(() => null);
-      if (user) {
-        setAvatar(user.avatar || user.avatar_url || null);
-        setFullName(user.full_name || user.name || '');
-        setEmail(user.email || '');
-        setGithubUser(user.github_username || user.username || user.login || null);
-      }
-      const repoList = await apiClient.getRepositories(1, 100).catch(() => []);
-      const repoNames = (repoList || []).map((r: any) => r.name || r.full_name);
-      setRepos(repoNames);
-      setRepoCount(repoNames.length || 0);
-      const initial: Record<string, boolean> = {};
-      repoNames.forEach((r: any) => (initial[r] = true));
-      setEnabledRepos(initial);
+      // Repository endpoints answer 403 from here on, so nothing cached about
+      // repositories is still true. The page used to re-fetch the list and keep
+      // showing it, alongside the old avatar and username.
+      clearRepositoryCaches(queryClient);
+      applyUserUpdate({ github_connected: false, github_username: null, avatar_url: null });
+      toast({
+        title: "GitHub disconnected",
+        description: "To remove RepoIQ from GitHub entirely, uninstall the app in your GitHub settings.",
+      });
     } catch (err) {
-      console.error('[Settings] Disconnect failed', err);
-      toast({ title: 'Failed to disconnect GitHub', variant: 'destructive' });
+      console.error("[Settings] Disconnect failed", err);
+      toast({
+        title: "Failed to disconnect GitHub",
+        description: err instanceof Error ? err.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setGithubBusy(null);
     }
   };
 
-  const handleDeleteAccount = async () => {
-    if (!confirm("Are you sure you want to delete your account? This action cannot be undone.")) {
-      return;
-    }
-    try {
-      await apiClient.deleteAccount();
-      toast({ title: "Account deleted" });
-      logout();
-      navigate("/login");
-    } catch (error) {
-      toast({ title: "Failed to delete account", variant: "destructive" });
-    }
-  };
+  const isLoading = userLoading && !user;
 
   return (
     <DashboardLayout>
       <div className="max-w-4xl space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-            >
-              <h1 className="text-2xl font-bold mb-2">Settings</h1>
-              <p className="text-muted-foreground">
-                {isLoading ? "Loading account information..." : "Manage your account and preferences"}
-              </p>
-            </motion.div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" onClick={() => toast({ title: "Changes discarded" })}>Cancel</Button>
-            <Button onClick={() => toast({ title: "Settings saved" })} className="gap-2">
-              <Save className="h-4 w-4" /> Save All
-            </Button>
-          </div>
-        </div>
-        {/* top heading shown once above */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+          <h1 className="text-2xl font-bold mb-2">Settings</h1>
+          <p className="text-muted-foreground">
+            {isLoading ? "Loading account information..." : "Manage your account and preferences"}
+          </p>
+        </motion.div>
 
         {/* Profile */}
         <motion.div
@@ -274,13 +220,12 @@ export default function Settings() {
             <div className="relative">
               <div className="w-20 h-20 rounded-full bg-muted/10 flex items-center justify-center overflow-hidden">
                 {avatar ? (
-                  // eslint-disable-next-line @next/next/no-img-element
                   <img src={avatar} alt="avatar" className="w-full h-full object-cover" />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center text-muted-foreground">
-                    {(fullName && fullName.trim().length > 0)
-                      ? fullName.split(' ').filter(Boolean).map(n => n[0]).join('').toUpperCase()
-                      : 'U'}
+                    {fullName.trim().length > 0
+                      ? fullName.split(" ").filter(Boolean).map((n) => n[0]).join("").toUpperCase()
+                      : "U"}
                   </div>
                 )}
               </div>
@@ -290,24 +235,33 @@ export default function Settings() {
               </label>
             </div>
             <div className="flex-1 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-sm font-medium mb-2 block">Name</label>
-                  <Input value={fullName} onChange={(e) => setFullName(e.target.value)} />
+                  <label htmlFor="settings-name" className="text-sm font-medium mb-2 block">Name</label>
+                  <Input
+                    id="settings-name"
+                    value={fullName}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                  />
                 </div>
                 <div>
-                  <label className="text-sm font-medium mb-2 block">Email</label>
-                  <Input value={email} onChange={(e) => setEmail(e.target.value)} type="email" />
+                  <span className="text-sm font-medium mb-2 block">Email</span>
+                  <p className="h-10 px-3 flex items-center rounded-md border border-input bg-muted/30 text-sm text-muted-foreground truncate">
+                    {user?.email || "Not available"}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Comes from your GitHub account and can't be changed here.
+                  </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-2">
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  className="gap-2" 
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
                   onClick={handleSaveProfile}
-                  disabled={isSaving}
+                  disabled={isSaving || !nameChanged || !fullName.trim()}
                 >
                   <Save className="h-4 w-4" /> {isSaving ? "Saving..." : "Save Changes"}
                 </Button>
@@ -330,40 +284,87 @@ export default function Settings() {
             <Github className="h-5 w-5 text-primary" />
             <h2 className="text-lg font-semibold">GitHub Connection</h2>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <p className="font-medium">{githubUser ? `Connected as @${githubUser}` : 'Not connected'}</p>
-              <p className="text-sm text-muted-foreground">Access to {repoCount} repositories</p>
-              <div className="text-sm text-muted-foreground mt-2">Auto-sync settings:</div>
-              <div className="flex items-center gap-3 mt-2">
-                <Switch checked={true} />
-                <div>
-                  <div className="font-medium">Auto scan new repos</div>
-                  <div className="text-xs text-muted-foreground">When enabled, newly added repos will be scanned automatically</div>
-                </div>
-              </div>
+              <p className="font-medium">
+                {githubConnected ? (githubUser ? `Connected as @${githubUser}` : "Connected") : "Not connected"}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {!githubConnected
+                  ? "Connect GitHub to see and analyze your repositories."
+                  : reposLoading
+                    ? "Loading repositories..."
+                    : `Access to ${repoNames.length >= 100 ? "100+" : repoNames.length} repositories`}
+              </p>
+              {githubConnected && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Use "Manage repository access" to choose which repositories RepoIQ can read.
+                </p>
+              )}
             </div>
-            <div className="flex flex-col items-end justify-between">
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={handleRefreshAccess}>Refresh Access</Button>
-                <Button variant="destructive" size="sm" onClick={handleDisconnectGitHub}>Disconnect</Button>
+            <div className="flex flex-col md:items-end justify-between gap-3">
+              <div className="flex flex-wrap gap-2">
+                {githubConnected ? (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-2"
+                      onClick={() => handleGitHubFlow("install")}
+                      disabled={githubBusy !== null}
+                    >
+                      {githubBusy === "install" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
+                      Manage repository access
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleGitHubFlow("signin")}
+                      disabled={githubBusy !== null}
+                    >
+                      {githubBusy === "signin" && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Refresh Access
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={handleDisconnectGitHub}
+                      disabled={githubBusy !== null}
+                    >
+                      {githubBusy === "disconnect" && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Disconnect
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    size="sm"
+                    className="gap-2"
+                    onClick={() => handleGitHubFlow("signin")}
+                    disabled={githubBusy !== null || isLoading}
+                  >
+                    {githubBusy === "signin" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}
+                    Connect GitHub
+                  </Button>
+                )}
               </div>
-              <div className="w-full mt-2">
-                <h4 className="text-sm font-medium mb-2">Repository access</h4>
-                <div className="max-h-40 overflow-auto space-y-2">
-                  {/* repo toggles (sample) */}
-                  {repos.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">No repositories connected</div>
-                  ) : (
-                    repos.map((r) => (
-                      <div key={r} className="flex items-center justify-between bg-muted/10 p-2 rounded">
-                        <div className="text-sm">{r}</div>
-                        <Checkbox checked={!!enabledRepos[r]} onCheckedChange={(c) => setEnabledRepos({ ...enabledRepos, [r]: !!c })} />
+              {githubConnected && (
+                <div className="w-full">
+                  <h4 className="text-sm font-medium mb-2">Repositories RepoIQ can read</h4>
+                  <div className="max-h-40 overflow-auto space-y-2">
+                    {repoNames.length === 0 ? (
+                      <div className="text-sm text-muted-foreground">
+                        {reposLoading ? "Loading..." : "No repositories connected"}
                       </div>
-                    ))
-                  )}
+                    ) : (
+                      repoNames.map((r) => (
+                        <div key={r} className="text-sm bg-muted/10 p-2 rounded truncate">
+                          {r}
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </motion.div>
@@ -411,7 +412,7 @@ export default function Settings() {
           </div>
         </motion.div>
 
-        {/* Danger Zone */}
+        {/* Security */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -422,45 +423,61 @@ export default function Settings() {
             <Key className="h-5 w-5 text-primary" />
             <h2 className="text-lg font-semibold">Security</h2>
           </div>
-          <div className="space-y-4">
-            <div>
-              <label className="text-sm font-medium mb-2 block">Current Password</label>
-              <Input 
-                type="password" 
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                placeholder="Enter current password"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
+          {hasNoPassword ? (
+            // GitHub sign-in accounts have no RepoIQ password, so PUT
+            // /users/me/password can never succeed for them.
+            <p className="text-sm text-muted-foreground">
+              You sign in with GitHub, so your account has no RepoIQ password to change. Manage
+              your sign-in security (password, two-factor authentication) in your GitHub account
+              settings.
+            </p>
+          ) : (
+            <div className="space-y-4">
               <div>
-                <label className="text-sm font-medium mb-2 block">New Password</label>
-                <Input 
+                <label htmlFor="settings-current-password" className="text-sm font-medium mb-2 block">Current Password</label>
+                <Input
+                  id="settings-current-password"
                   type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Enter new password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  placeholder="Enter current password"
+                  autoComplete="current-password"
                 />
               </div>
-              <div>
-                <label className="text-sm font-medium mb-2 block">Confirm Password</label>
-                <Input 
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Confirm new password"
-                />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="settings-new-password" className="text-sm font-medium mb-2 block">New Password</label>
+                  <Input
+                    id="settings-new-password"
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Enter new password"
+                    autoComplete="new-password"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="settings-confirm-password" className="text-sm font-medium mb-2 block">Confirm Password</label>
+                  <Input
+                    id="settings-confirm-password"
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Confirm new password"
+                    autoComplete="new-password"
+                  />
+                </div>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleChangePassword}
+                disabled={isSaving || !currentPassword || !newPassword || !confirmPassword}
+              >
+                <Key className="h-4 w-4 mr-2" /> Change Password
+              </Button>
             </div>
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={handleChangePassword}
-              disabled={isSaving || !currentPassword || !newPassword || !confirmPassword}
-            >
-              <Key className="h-4 w-4 mr-2" /> Change Password
-            </Button>
-          </div>
+          )}
         </motion.div>
 
         {/* Danger Zone */}
@@ -474,27 +491,15 @@ export default function Settings() {
             <Shield className="h-5 w-5 text-destructive" />
             <h2 className="text-lg font-semibold text-destructive">Danger Zone</h2>
           </div>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div>
               <p className="font-medium">Delete Account</p>
               <p className="text-sm text-muted-foreground">Permanently delete your account and all data</p>
             </div>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={handleDeleteAccount}
-            >
-              <Trash2 className="h-4 w-4 mr-2" /> Delete Account
-            </Button>
+            <DeleteAccountDialog size="sm" />
           </div>
         </motion.div>
       </div>
     </DashboardLayout>
   );
 }
-
-// load repos when module renders
-// small effect to populate sample repo list
- (function bootstrapRepos() {
-  // noop — actual loading happens in component mount
- })();

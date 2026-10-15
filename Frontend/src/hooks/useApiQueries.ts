@@ -8,8 +8,9 @@
  * - Built-in loading and error states
  * - Automatic garbage collection
  */
-import { useQuery, useMutation, useQueryClient, UseQueryOptions } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, UseQueryOptions, type QueryClient } from '@tanstack/react-query';
 import apiClient from '@/lib/api';
+import { useRepositoryStore } from '@/stores/repositoryStore';
 
 // Query key factory for consistent cache keys
 export const queryKeys = {
@@ -343,6 +344,44 @@ export function useClearChatHistory(repoId: string) {
 // ============================================
 // CACHE UTILITIES
 // ============================================
+
+// Every cached query whose data comes from, or depends on, the user's GitHub
+// repository access.
+const REPOSITORY_SCOPED_QUERY_ROOTS = [
+  'repositories',
+  'repository',
+  'repositoryFiles',
+  'fileContent',
+  'analysisResults',
+  'analysisHistory',
+  'analysis',
+  'issues',
+  'batchAnalysis',
+  'architecture',
+  'roadmap',
+  'chatHistory',
+  'organizationRepositories',
+  'teamRepositories',
+] as const;
+
+/**
+ * Drop everything cached about the user's repositories: React Query entries,
+ * the repository store's list and its sessionStorage page caches.
+ *
+ * For when repository access itself changes - GitHub disconnected, or an
+ * installation added or removed repositories - so no page keeps showing
+ * repositories the user can no longer reach. Removed rather than invalidated:
+ * an invalidated query keeps showing its old data until the refetch lands, and
+ * after a disconnect that refetch is expected to fail.
+ */
+export function clearRepositoryCaches(queryClient: QueryClient) {
+  REPOSITORY_SCOPED_QUERY_ROOTS.forEach((root) => {
+    queryClient.removeQueries({ queryKey: [root] });
+  });
+  const store = useRepositoryStore.getState();
+  store.clearCache();
+  useRepositoryStore.setState({ repositories: [], error: null, errorKind: null });
+}
 
 export function useInvalidateAnalysis() {
   const queryClient = useQueryClient();
