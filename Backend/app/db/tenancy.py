@@ -103,7 +103,11 @@ def _strict() -> bool:
     never take a working endpoint down. The signal still reaches the logs, and CI
     is where it is meant to fail.
     """
-    return settings.ENVIRONMENT != "production"
+    # APP_ENV is what deployments actually set (the production config checks
+    # key off it); ENVIRONMENT is an older name that defaults to "development".
+    # Reading only ENVIRONMENT left an APP_ENV=production deploy raising, where
+    # a false positive is a 500.
+    return not (settings.is_production or settings.ENVIRONMENT == "production")
 
 
 def assert_scoped(

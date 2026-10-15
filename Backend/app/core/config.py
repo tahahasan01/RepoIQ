@@ -4,6 +4,50 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Literal, Optional
 from functools import lru_cache
+from urllib.parse import urlparse
+
+# HS256 keys shorter than this are brute-forceable offline from a single token.
+MIN_SECRET_LENGTH = 32
+
+# Fragments of the placeholder values shipped in .env.example, the docs and the
+# test suite. A deploy that copied one of those verbatim has a public secret.
+_PLACEHOLDER_MARKERS = (
+    "change-this", "change_this", "changeme", "change-me", "change_me",
+    "your-", "your_", "placeholder", "example", "test_secret", "dev_secret",
+)
+
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def _looks_like_placeholder(value: Optional[str]) -> bool:
+    lowered = (value or "").lower()
+    return any(marker in lowered for marker in _PLACEHOLDER_MARKERS)
+
+
+def _real_value(value: Optional[str]) -> bool:
+    """Set to something other than whitespace or a copied placeholder."""
+    return bool(value and value.strip()) and not _looks_like_placeholder(value)
+
+
+def _is_public_https(url: Optional[str]) -> bool:
+    parsed = urlparse((url or "").strip())
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and bool(host) and host not in _LOCAL_HOSTS
+
+
+def _origin_problems(allowed_origins: str) -> List[str]:
+    origins = [o.strip() for o in (allowed_origins or "").split(",") if o.strip()]
+    if not origins:
+        return ["ALLOWED_ORIGINS must list the frontend's https:// origin(s)"]
+    # Credentialed CORS: an allowed origin can read every authenticated
+    # response, so a leftover dev origin is a real exposure, not just noise.
+    bad = [o for o in origins if o == "*" or not _is_public_https(o)]
+    if bad:
+        return [
+            "ALLOWED_ORIGINS must contain only public https:// origins; "
+            f"remove {', '.join(bad)}"
+        ]
+    return []
 
 
 class Settings(BaseSettings):
@@ -202,7 +246,11 @@ class Settings(BaseSettings):
     ALERT_QUALITY_THRESHOLD: int = 70
 
     RATE_LIMIT_PER_MINUTE: int = 60
-    
+
+    # The interactive API docs publish every route, parameter and schema. Off
+    # in production unless deliberately enabled; always on in development.
+    ENABLE_API_DOCS: bool = False
+
     @property
     def allowed_methods_list(self) -> List[str]:
         return [method.strip() for method in self.ALLOWED_METHODS.split(",")]
@@ -213,7 +261,8 @@ class Settings(BaseSettings):
     
     @property
     def allowed_origins_list(self) -> List[str]:
-        return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")]
+        # Blank entries (a trailing comma) are dropped rather than allowed as "".
+        return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
     
     @property
     def BACKEND_CORS_ORIGINS(self) -> List[str]:
@@ -228,15 +277,81 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.APP_ENV.lower() in ("production", "prod")
 
+    @property
+    def api_docs_enabled(self) -> bool:
+        """/docs, /redoc and /openapi.json: on in development, opt-in in production."""
+        return self.ENABLE_API_DOCS or not self.is_production
+
     @model_validator(mode="after")
     def _reject_dev_only_settings_in_production(self) -> "Settings":
-        # Fail at boot, not at the first analysis: the Agent SDK provider runs
-        # on one developer's personal Claude login and is not a credential a
-        # service may use.
-        if self.is_production and self.LLM_PROVIDER == "claude_agent_sdk":
-            raise ValueError(
+        """
+        Refuse to boot a production process that is misconfigured.
+
+        Every one of these used to surface later and worse: a placeholder
+        SECRET_KEY lets anyone mint session tokens, a localhost CORS origin
+        breaks the real frontend with an opaque browser error, a missing model
+        credential fails the first analysis an hour after deploy. All problems
+        are reported at once, so a deploy is not fixed one restart at a time.
+        """
+        if not self.is_production:
+            return self
+
+        problems = []
+
+        # The Agent SDK provider runs on one developer's personal Claude login
+        # and is not a credential a service may use.
+        if self.LLM_PROVIDER == "claude_agent_sdk":
+            problems.append(
                 "LLM_PROVIDER=claude_agent_sdk is for local development only; "
                 "set LLM_PROVIDER=anthropic with ANTHROPIC_API_KEY in production"
+            )
+        if self.LLM_PROVIDER == "anthropic" and not (
+            _real_value(self.ANTHROPIC_API_KEY) or _real_value(self.ANTHROPIC_AUTH_TOKEN)
+        ):
+            problems.append("LLM_PROVIDER=anthropic needs ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN)")
+
+        if self.DEBUG:
+            # FastAPI debug mode returns tracebacks in 500 responses, and the
+            # global handler includes exception text when DEBUG is on.
+            problems.append("DEBUG must be false in production")
+
+        # SECRET_KEY signs every session token.
+        if len(self.SECRET_KEY or "") < MIN_SECRET_LENGTH or _looks_like_placeholder(self.SECRET_KEY):
+            problems.append(
+                f"SECRET_KEY must be a random value of at least {MIN_SECRET_LENGTH} characters "
+                "(python -c \"import secrets; print(secrets.token_urlsafe(48))\")"
+            )
+        # Without a dedicated key, stored GitHub tokens are encrypted with a key
+        # derived from SECRET_KEY, so rotating the signing key after a leak
+        # would make every stored token undecryptable - which in practice means
+        # the leaked key never gets rotated. Values written under the
+        # SECRET_KEY-derived key stay readable after this is set (see
+        # encryption_service), so requiring it is safe for an existing deploy.
+        if not _real_value(self.TOKEN_ENCRYPTION_KEY):
+            problems.append("TOKEN_ENCRYPTION_KEY must be set in production")
+        elif len(self.TOKEN_ENCRYPTION_KEY) < MIN_SECRET_LENGTH:
+            problems.append(f"TOKEN_ENCRYPTION_KEY must be at least {MIN_SECRET_LENGTH} characters")
+        elif self.TOKEN_ENCRYPTION_KEY == self.SECRET_KEY:
+            problems.append("TOKEN_ENCRYPTION_KEY must differ from SECRET_KEY")
+
+        problems.extend(_origin_problems(self.ALLOWED_ORIGINS))
+
+        mode = (self.GITHUB_AUTH_MODE or "").lower()
+        if mode not in ("oauth", "app"):
+            problems.append("GITHUB_AUTH_MODE must be 'oauth' or 'app'")
+        elif mode == "app":
+            missing = [
+                name for name in ("GITHUB_APP_ID", "GITHUB_APP_SLUG", "GITHUB_APP_PRIVATE_KEY")
+                if not _real_value(getattr(self, name))
+            ]
+            if missing:
+                problems.append(f"GITHUB_AUTH_MODE=app needs {', '.join(missing)}")
+        if not _is_public_https(self.GITHUB_REDIRECT_URI):
+            problems.append("GITHUB_REDIRECT_URI must be a public https:// URL in production")
+
+        if problems:
+            raise ValueError(
+                "Refusing to start with APP_ENV=production:\n  - " + "\n  - ".join(problems)
             )
         return self
     

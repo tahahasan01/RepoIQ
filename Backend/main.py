@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware, current_request_id
+from app.middleware.security_headers import SecurityHeadersMiddleware, security_headers
 
 settings = get_settings()
 
@@ -37,7 +38,7 @@ async def lifespan(app: FastAPI):
     in-flight work a moment to finish - previously this logged the same line
     twice and did nothing else, so a deploy dropped connections mid-request.
     """
-    logger.info(f"Starting {settings.APP_NAME} (env={settings.ENVIRONMENT})")
+    logger.info(f"Starting {settings.APP_NAME} (env={settings.APP_ENV})")
 
     # Open the connection pool and Redis up front, so the first request after a
     # deploy does not pay for establishing them.
@@ -78,13 +79,34 @@ async def lifespan(app: FastAPI):
     logger.info("Shutdown complete")
 
 
+def docs_config(s) -> dict:
+    """
+    FastAPI's docs_url / redoc_url / openapi_url for these settings.
+
+    SECURITY: the OpenAPI schema is a complete map of the API - every route,
+    including the admin ones, with its parameters. Production serves none of
+    the three unless ENABLE_API_DOCS is set.
+    """
+    if s.api_docs_enabled:
+        return {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
+    return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
+
+_docs = docs_config(settings)
+# The docs pages load Swagger UI / ReDoc from a CDN, so they get a CSP that
+# admits it; every other path keeps default-src 'none'.
+_docs_paths = [p for p in (_docs["docs_url"], _docs["redoc_url"]) if p]
+if _docs["docs_url"]:
+    _docs_paths.append(_docs["docs_url"] + "/oauth2-redirect")
+
 # Create FastAPI app
 app = FastAPI(
     title=settings.APP_NAME,
     description="AI-powered GitHub code review platform backend",
     version="1.0.0",
     lifespan=lifespan,
-    debug=settings.DEBUG
+    debug=settings.DEBUG,
+    **_docs,
 )
 
 # Configure CORS - MUST be first middleware for preflight to work
@@ -164,6 +186,12 @@ app.mount(
 # Successful fast requests now log at DEBUG; slow ones and errors get a line.
 app.add_middleware(RequestContextMiddleware)
 
+# Outermost, so rate-limit 429s, CORS preflights and request-context responses
+# carry the headers too. See app/middleware/security_headers.py.
+app.add_middleware(
+    SecurityHeadersMiddleware, hsts=settings.is_production, docs_paths=_docs_paths
+)
+
 
 # Global exception handler
 @app.exception_handler(Exception)
@@ -187,7 +215,12 @@ async def global_exception_handler(request: Request, exc: Exception):
             "request_id": request_id,
             "details": str(exc) if settings.DEBUG else None
         },
-        headers={"X-Request-ID": request_id} if request_id else None,
+        # This response is sent by Starlette's ServerErrorMiddleware, outside
+        # every user middleware, so the security headers are added here.
+        headers={
+            **security_headers(request.url.path, hsts=settings.is_production, docs_paths=_docs_paths),
+            **({"X-Request-ID": request_id} if request_id else {}),
+        },
     )
 
 
@@ -392,7 +425,7 @@ async def root():
     return {
         "message": f"Welcome to {settings.APP_NAME}",
         "version": "1.0.0",
-        "docs": "/docs",
+        "docs": _docs["docs_url"],
         "api_prefix": settings.api_prefix
     }
 
