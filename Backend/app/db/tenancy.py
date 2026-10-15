@@ -63,6 +63,11 @@ TENANT_OWNED_TABLES: Set[str] = {
     "issue_blame",
     "audit_logs",
     "autofix_runs",
+    # Pending invitations name the team and the person invited, so they belong
+    # to both; reads are scoped by team_id (managers) or invited_user_id (the
+    # invitee).
+    "team_invitations",
+    "user_settings",
 }
 
 # Columns that constitute an acceptable tenant constraint.
@@ -77,6 +82,9 @@ OWNERSHIP_COLUMNS: Set[str] = {
     # An explicit list of issue ids, taken from a query that was itself scoped
     # (e.g. the issues of one analysis) - the same standing as analysis_id.
     "issue_id",
+    # The user a team invitation is addressed to: the only person who may see
+    # or answer it, so it is that row's owner in the same sense as user_id.
+    "invited_user_id",
     "id",
 }
 

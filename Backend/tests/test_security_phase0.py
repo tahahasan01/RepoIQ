@@ -203,22 +203,29 @@ class TestRepositoryAssignmentRequiresOwnership:
 class TestTeamMembershipRequiresAdmin:
     """C-3: any team member could add anyone, with any role, and evict anyone."""
 
+    # Adding a member is now an invitation the invitee must accept
+    # (invite_team_member replaced add_team_member; see
+    # tests/test_team_invitations.py). The admin gate is unchanged, so these
+    # tests carry over with the new name, and a refusal is now an exception the
+    # route maps to 403 instead of a bare False it reported as a 400.
     @pytest.mark.asyncio
     async def test_plain_member_cannot_add_a_member(self, team_service):
+        from app.services.team_service import TeamPermissionError
+
         team_service._get_team_row = MagicMock(return_value={
             "id": "team-1", "organization_id": "org-1", "manager_id": "the-manager"
         })
         team_service._is_team_admin = AsyncMock(return_value=False)
         team_service.find_user_by_identifier = AsyncMock(return_value={"id": "victim"})
 
-        result = await team_service.add_team_member(
-            team_id="team-1",
-            user_identifier="victim@example.com",
-            role="manager",
-            added_by="plain-member",
-        )
+        with pytest.raises(TeamPermissionError):
+            await team_service.invite_team_member(
+                team_id="team-1",
+                user_identifier="victim@example.com",
+                role="manager",
+                invited_by="plain-member",
+            )
 
-        assert result is False
         team_service.find_user_by_identifier.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -262,11 +269,11 @@ class TestTeamMembershipRequiresAdmin:
         team_service._is_team_admin = AsyncMock(return_value=True)
 
         with pytest.raises(ValueError, match="Invalid role"):
-            await team_service.add_team_member(
+            await team_service.invite_team_member(
                 team_id="team-1",
                 user_identifier="someone@example.com",
                 role="superadmin",
-                added_by="boss",
+                invited_by="boss",
             )
 
     @pytest.mark.asyncio

@@ -34,7 +34,11 @@ class TeamComparisonService:
                 teams = []
                 for team_id in team_ids:
                     team = await team_service.get_team(team_id, user_id)
-                    if team:
+                    # get_team only checks that the caller can see the team, and
+                    # a caller may belong to several organizations: without the
+                    # organization check another organization's team would be
+                    # reported as part of this one's comparison.
+                    if team and team.get("organization_id") == str(organization_id).lower():
                         teams.append(team)
             else:
                 teams = await team_service.list_organization_teams(organization_id, user_id)
@@ -68,14 +72,20 @@ class TeamComparisonService:
             # Get team repositories
             repos = await team_service.get_team_repositories(team_id, user_id)
             repo_ids = [r["id"] for r in repos]
-            
+
+            # Team size does not depend on repositories. It was only computed
+            # after the no-repositories early return, so a team that had not
+            # been assigned a repository yet reported zero people.
+            members_result = (await run_blocking(self.db.table("team_members").select("user_id").eq("team_id", team_id).execute))
+            team_size = len(members_result.data or [])
+
             if not repo_ids:
                 return {
                     "total_repositories": 0,
                     "overall_score": 0,
                     "total_issues": 0,
                     "critical_issues": 0,
-                    "team_size": 0,
+                    "team_size": team_size,
                     "velocity": 0
                 }
             
@@ -97,10 +107,6 @@ class TeamComparisonService:
             
             scores = [a.get("overall_score", 0) for a in latest_analyses.values() if a.get("overall_score")]
             overall_score = sum(scores) / len(scores) if scores else 0
-            
-            # Get team size
-            members_result = (await run_blocking(self.db.table("team_members").select("user_id").eq("team_id", team_id).execute))
-            team_size = len(members_result.data or [])
             
             # Calculate velocity (simplified: based on issues fixed)
             # Get issues fixed in last 30 days

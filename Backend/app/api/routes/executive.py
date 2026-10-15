@@ -1,6 +1,8 @@
+from uuid import UUID
+
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from loguru import logger
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from app.api.dependencies import get_current_user
 from app.services.business_metrics_service import BusinessMetricsService
 from app.services.team_comparison_service import TeamComparisonService
@@ -91,16 +93,65 @@ async def get_compliance_status(
         )
 
 
+MAX_COMPARED_TEAMS = 20
+
+
+def parse_team_ids(raw: Optional[List[str]]) -> Optional[List[str]]:
+    """
+    Accept team ids as repeated params, comma-separated, or a mix of both:
+    ?team_ids=a&team_ids=b, ?team_ids=a,b and ?team_ids=a,b&team_ids=c.
+
+    The frontend sends the comma form while the route only understood the
+    repeated one, so "a,b" arrived as a single id that matched no team and the
+    comparison silently came back empty. Ids are validated as UUIDs (a bad one
+    is a 422, not an empty result), de-duplicated in order, and capped. None or
+    nothing usable means "every team in the organization".
+    """
+    if not raw:
+        return None
+
+    ids: List[str] = []
+    for value in raw:
+        for part in value.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                canonical = str(UUID(part))
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="team_ids must be team UUIDs, repeated or comma-separated",
+                )
+            if canonical not in ids:
+                ids.append(canonical)
+
+    if len(ids) > MAX_COMPARED_TEAMS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"At most {MAX_COMPARED_TEAMS} teams can be compared at once",
+        )
+    return ids or None
+
+
 @router.get("/organizations/{org_id}/teams/compare", response_model=List[Dict[str, Any]])
 async def compare_teams(
     org_id: str,
-    team_ids: List[str] = Query(None),
+    team_ids: Optional[List[str]] = Query(None),
     current_user: dict = Depends(get_current_user)
 ) -> List[Dict[str, Any]]:
-    """Compare teams side-by-side."""
+    """
+    Compare teams side-by-side.
+
+    team_ids: optional; repeated (?team_ids=a&team_ids=b) or comma-separated
+    (?team_ids=a,b). Omitted = every team in the organization. Teams outside
+    this organization are left out. 422 for a non-UUID id or more than
+    MAX_COMPARED_TEAMS ids.
+    """
+    selected = parse_team_ids(team_ids)
     try:
         service = TeamComparisonService()
-        comparison = await service.compare_teams(org_id, current_user["id"], team_ids)
+        comparison = await service.compare_teams(org_id, current_user["id"], selected)
         return comparison
     except Exception as e:
         logger.error(f"Error comparing teams: {e}")

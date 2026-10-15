@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool, StrictInt, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -65,6 +65,48 @@ class PublicUser(BaseModel):
 class PasswordChange(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=8)
+
+
+class UserSettingsUpdate(BaseModel):
+    """
+    A partial update to the caller's notification preferences.
+
+    Omit a field to leave it unchanged. Strict types on purpose: lax coercion
+    would turn "false" or 0 into a stored preference the user never chose.
+    Unknown fields are rejected rather than ignored, so a client sending a
+    setting this backend does not implement (e.g. a Slack toggle - there is no
+    Slack integration) learns that instead of believing it was saved.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    email_notifications: Optional[StrictBool] = None
+    security_alerts: Optional[StrictBool] = None
+    weekly_digest: Optional[StrictBool] = None
+    alert_score_threshold: Optional[StrictInt] = Field(None, ge=0, le=100)
+    auto_analyze_new_repos: Optional[StrictBool] = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> "UserSettingsUpdate":
+        # Optional only so a field can be omitted. An explicit null would be
+        # written to a NOT NULL column; reject it as a validation error instead.
+        nulls = sorted(f for f in self.model_fields_set if getattr(self, f) is None)
+        if nulls:
+            raise ValueError(f"must not be null: {', '.join(nulls)}")
+        return self
+
+    def changes(self) -> Dict[str, Any]:
+        """Only the fields the client actually sent."""
+        return self.model_dump(exclude_unset=True)
+
+
+class UserSettingsResponse(BaseModel):
+    email_notifications: bool
+    security_alerts: bool
+    weekly_digest: bool
+    alert_score_threshold: int
+    auto_analyze_new_repos: bool
+    # None until the user first saves (every value above is then a default).
+    updated_at: Optional[datetime] = None
 
 
 class TokenResponse(BaseModel):
