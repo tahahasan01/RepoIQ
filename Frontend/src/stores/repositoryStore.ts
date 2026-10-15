@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import apiClient from '@/lib/api';
+import { getErrorKind, type ApiErrorKind } from '@/lib/apiErrors';
 
 export interface Repository {
   id: string;
@@ -30,6 +31,12 @@ interface RepositoryState {
   searchQuery: string;
   lastSyncTime: number | null;
   error: string | null;
+  /**
+   * What kind of failure `error` is. Lets the page offer "Connect GitHub" or
+   * "Install the GitHub App" when the list fails because GitHub access is
+   * missing, instead of showing an empty list.
+   */
+  errorKind: ApiErrorKind | null;
 
   // Actions
   setRepositories: (repos: Repository[]) => void;
@@ -122,6 +129,7 @@ export const useRepositoryStore = create<RepositoryState>()(
       searchQuery: '',
       lastSyncTime: null,
       error: null,
+      errorKind: null,
 
       setRepositories: (repos) => set({ repositories: repos }),
       setCurrentPage: (page) => set({ currentPage: page }),
@@ -129,7 +137,7 @@ export const useRepositoryStore = create<RepositoryState>()(
       setLoading: (loading) => set({ isLoading: loading }),
       setSyncing: (syncing) => set({ isSyncing: syncing }),
       setHasMorePages: (hasMore) => set({ hasMorePages: hasMore }),
-      setError: (error) => set({ error }),
+      setError: (error) => set({ error, errorKind: null }),
 
       loadRepositories: async (page?: number, forceRefresh = false) => {
         const state = get();
@@ -184,7 +192,7 @@ export const useRepositoryStore = create<RepositoryState>()(
         }
 
         // Only set loading if we don't have cache
-        set({ isLoading: true, error: null });
+        set({ isLoading: true, error: null, errorKind: null });
 
         try {
           // Fetch repos and batch analysis IN PARALLEL for speed
@@ -219,13 +227,15 @@ export const useRepositoryStore = create<RepositoryState>()(
             currentPage: targetPage,
             isLoading: false,
             hasMorePages: reposList.length === state.reposPerPage,
-            error: null
+            error: null,
+            errorKind: null
           });
         } catch (err: any) {
           console.error('[RepositoryStore] Failed to load repos', err);
           set({ 
             isLoading: false, 
             error: err?.message || 'Failed to load repositories',
+            errorKind: getErrorKind(err),
             repositories: []
           });
         }
@@ -269,27 +279,28 @@ export const useRepositoryStore = create<RepositoryState>()(
       },
 
       syncRepositories: async () => {
-        set({ isSyncing: true, error: null });
-        
+        set({ isSyncing: true, error: null, errorKind: null });
+
         try {
           // Clear caches
           get().clearCache();
-          
+
           await apiClient.syncRepositories();
-          
-          // Reload current page
+
+          // Reload current page. Any error it records is kept: clearing it here
+          // used to hide a failed reload behind an empty list.
           await get().loadRepositories(get().currentPage, true);
-          
-          set({ 
-            isSyncing: false, 
-            lastSyncTime: Date.now(),
-            error: null 
+
+          set({
+            isSyncing: false,
+            lastSyncTime: Date.now()
           });
         } catch (err: any) {
           console.error('[RepositoryStore] Failed to sync repos', err);
-          set({ 
-            isSyncing: false, 
-            error: err?.message || 'Failed to sync repositories' 
+          set({
+            isSyncing: false,
+            error: err?.message || 'Failed to sync repositories',
+            errorKind: getErrorKind(err)
           });
         }
       },

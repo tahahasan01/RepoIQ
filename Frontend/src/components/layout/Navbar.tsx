@@ -84,8 +84,8 @@ export function Navbar() {
   }
 
   function handleLogout() {
-    logout();
-    navigate("/");
+    // Revokes the session server-side, then reloads into the landing page.
+    void logout({ redirectTo: "/" });
   }
 
   return (

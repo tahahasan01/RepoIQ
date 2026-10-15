@@ -1,23 +1,28 @@
 import { useEffect, useState } from "react";
+import { signOut, type SignOutOptions } from "@/lib/api";
 
-type User = {
+export type AuthUser = {
   id?: string;
   name?: string;
   email?: string;
   avatar?: string;
-  avatar_url?: string;
-  full_name?: string;
-  github_username?: string;
+  avatar_url?: string | null;
+  full_name?: string | null;
+  github_username?: string | null;
+  github_connected?: boolean;
+  /** From GET /auth/me: false for GitHub sign-in accounts, absent if unknown. */
+  has_password?: boolean | null;
+  created_at?: string;
   username?: string;
   login?: string;
-  bio?: string;
+  bio?: string | null;
 };
 
 export function useAuth() {
-  const [user, setUser] = useState<User | null>(() => {
+  const [user, setUser] = useState<AuthUser | null>(() => {
     try {
       const raw = localStorage.getItem("user");
-      return raw ? (JSON.parse(raw) as User) : null;
+      return raw ? (JSON.parse(raw) as AuthUser) : null;
     } catch {
       return null;
     }
@@ -37,7 +42,7 @@ export function useAuth() {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  function login(u: User, token?: string, refreshToken?: string) {
+  function login(u: AuthUser, token?: string, refreshToken?: string) {
     setUser(u);
     try {
       localStorage.setItem("user", JSON.stringify(u));
@@ -46,13 +51,15 @@ export function useAuth() {
     } catch {}
   }
 
-  function logout() {
+  /**
+   * Sign out: revoke the session server-side, clear every local cache, and
+   * reload into `redirectTo`. Delegates to signOut() in lib/api so there is one
+   * implementation. This used to only delete the tokens from localStorage,
+   * which left the session valid on the server until it expired.
+   */
+  function logout(options?: SignOutOptions) {
     setUser(null);
-    try {
-      localStorage.removeItem("user");
-      localStorage.removeItem("token");
-      localStorage.removeItem("refresh_token");
-    } catch {}
+    return signOut(options);
   }
 
   const isAuthenticated = !!localStorage.getItem("token") || !!user;

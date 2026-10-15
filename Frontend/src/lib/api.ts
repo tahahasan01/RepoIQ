@@ -17,6 +17,11 @@
  */
 import { RequestThrottler } from '@/utils/throttle';
 import { clearQueryCache, clearAllQueryCaches } from '@/lib/queryPersister';
+import {
+  ApiRequestError,
+  SESSION_EXPIRED_MESSAGE,
+  errorFromResponse,
+} from '@/lib/apiErrors';
 
 const IS_DEV = import.meta.env.DEV;
 
@@ -93,10 +98,6 @@ function getTokenRemainingMs(token: string): number {
   const expMs = getTokenExpirationMs(token);
   if (!expMs) return 0;
   return Math.max(0, expMs - Date.now());
-}
-
-interface ApiError {
-  detail: string | { msg: string }[];
 }
 
 /**
@@ -268,8 +269,14 @@ class ApiClient {
       localStorage.removeItem('access_token'); // Also clear access_token if stored separately
     } catch {}
     try {
-      // clear repo list cache so UI doesn't look "logged in" with stale data
-      sessionStorage.removeItem('repoiq_repositories_cache');
+      // Every per-session cache the app keeps in sessionStorage is prefixed
+      // repoiq_: the repository list (one key per page), batch scores, and the
+      // per-repository issue and analysis caches. Only the bare list key used to
+      // be removed, so the next person to sign in on this tab could be shown the
+      // previous user's repositories from the page caches.
+      Object.keys(sessionStorage)
+        .filter((key) => key.startsWith('repoiq_'))
+        .forEach((key) => sessionStorage.removeItem(key));
     } catch {}
     try {
       // This used to be `require('@/lib/queryPersister')`, which does not exist
@@ -280,6 +287,21 @@ class ApiClient {
       clearQueryCache(userId);
       clearAllQueryCaches();
     } catch {}
+  }
+
+  /** Drop the local session and tell the app to route to the login page. */
+  private expireSession() {
+    this.clearAuthAndCaches();
+    window.dispatchEvent(new CustomEvent('authExpired'));
+  }
+
+  /**
+   * Forget the session on this device without contacting the server. Used
+   * after the account has been deleted, when there is nothing left to revoke;
+   * everywhere else, sign out through signOut() so the session is revoked.
+   */
+  clearLocalSession() {
+    this.clearAuthAndCaches();
   }
 
   private async request<T>(
@@ -327,9 +349,14 @@ class ApiClient {
     
     // Track pending request for ALL requests (for deduplication)
     this.pendingRequests.set(key, requestPromise);
-    requestPromise.finally(() => {
+    // Not `.finally()`: that returns a second promise which rejects along with
+    // the request and has no handler, so every failed request also raised an
+    // unhandled rejection ("Uncaught (in promise)") on top of the error the
+    // caller handles.
+    const forget = () => {
       this.pendingRequests.delete(key);
-    });
+    };
+    requestPromise.then(forget, forget);
     
     return requestPromise;
   }
@@ -373,54 +400,44 @@ class ApiClient {
       let response = await doFetch();
       log.debug('Response status:', response.status);
 
-      // Handle authentication errors
+      // 401 is the backend's "this session is not valid" (expired, revoked, or
+      // the user no longer exists). Try one refresh; if that fails, or the
+      // refreshed token is rejected too, the session is over.
       if (response.status === 401) {
         log.info('401 received, attempting token refresh');
         const refreshed = await this.tryRefreshToken();
         if (refreshed) {
-          const newToken = this.getToken();
-          response = await doFetch(newToken);
+          response = await doFetch(this.getToken());
           log.debug('Retried request, status:', response.status);
-        } else {
-          // Token refresh failed - clear auth and redirect to login
-          log.info('Token refresh failed, logging out');
-          this.clearAuthAndCaches();
-          window.dispatchEvent(new CustomEvent('authExpired'));
-          throw new Error('Authentication expired. Please log in again.');
+        }
+        if (!refreshed || response.status === 401) {
+          log.info('Session is no longer valid, logging out');
+          this.expireSession();
+          throw new ApiRequestError(SESSION_EXPIRED_MESSAGE, 401, 'session_expired');
         }
       }
 
-      // Handle forbidden - session expired or invalid
-      if (response.status === 403) {
-        log.info('403 Forbidden - session expired or invalid, logging out');
-        this.clearAuthAndCaches();
-        window.dispatchEvent(new CustomEvent('authExpired'));
-        throw new Error('Session expired. Please log in again.');
-      }
-
       if (!response.ok) {
-        const errorData: ApiError = await response.json().catch(() => ({
+        const errorData: { detail?: unknown } = await response.json().catch(() => ({
           detail: 'An error occurred',
         }));
 
         // `detail` can be a string, FastAPI's validation array, or a structured
         // object (e.g. the 409 that tells the client to send the user to the
-        // GitHub App install page). Flattening everything to a string threw that
-        // structure away and produced "[object Object]" for the object case, so
-        // callers had no way to act on it. Keep the message for display and
-        // attach the original detail for callers that need to branch on it.
-        const rawDetail: any = errorData.detail;
-        const message = Array.isArray(rawDetail)
-          ? rawDetail.map((e: any) => e.msg).join(', ')
-          : typeof rawDetail === 'string'
-            ? rawDetail
-            : rawDetail?.message ?? `HTTP ${response.status}`;
+        // GitHub App install page). The error keeps it untouched alongside the
+        // status and a classified `kind`, so callers can branch on it.
+        //
+        // 403 is NOT treated as an expired session. Every 403 used to clear the
+        // session and fire authExpired, so a disconnected GitHub account, an
+        // uninstalled GitHub App or a click on a blocked file type logged the
+        // user out of RepoIQ. Only a 403 caused by missing credentials (FastAPI's
+        // "Not authenticated") still ends the session - see lib/apiErrors.ts.
+        const error = errorFromResponse(response.status, errorData.detail);
+        log.warn('Error:', response.status, error.kind, error.message);
 
-        log.warn('Error:', message);
-
-        const error: any = new Error(message || `HTTP ${response.status}`);
-        error.detail = rawDetail;
-        error.status = response.status;
+        if (error.kind === 'session_expired') {
+          this.expireSession();
+        }
         throw error;
       }
 
@@ -428,6 +445,12 @@ class ApiClient {
       log.debug('Success:', typeof data === 'object' ? Object.keys(data) : data);
       return data;
     } catch (error) {
+      // An HTTP error response is already classified; the CORS/network
+      // heuristics below must not reinterpret it.
+      if (error instanceof ApiRequestError) {
+        throw error;
+      }
+
       // Handle AbortError silently (user cancelled request)
       if (error instanceof DOMException && error.name === 'AbortError') {
         log.debug('Request aborted');
@@ -492,8 +515,7 @@ class ApiClient {
     const refreshToken = localStorage.getItem('refresh_token');
     if (!refreshToken) {
       log.info('No refresh token available');
-      this.clearAuthAndCaches();
-      window.dispatchEvent(new CustomEvent('authExpired'));
+      this.expireSession();
       return false;
     }
 
@@ -506,8 +528,7 @@ class ApiClient {
 
       if (!resp.ok) {
         log.info('Refresh failed, status:', resp.status);
-        this.clearAuthAndCaches();
-        window.dispatchEvent(new CustomEvent('authExpired'));
+        this.expireSession();
         return false;
       }
 
@@ -522,13 +543,11 @@ class ApiClient {
       }
       
       log.warn('Refresh response missing access_token');
-      this.clearAuthAndCaches();
-      window.dispatchEvent(new CustomEvent('authExpired'));
+      this.expireSession();
       return false;
     } catch (err) {
       log.error('Refresh exception', err);
-      this.clearAuthAndCaches();
-      window.dispatchEvent(new CustomEvent('authExpired'));
+      this.expireSession();
       return false;
     }
   }
@@ -553,7 +572,15 @@ class ApiClient {
   }
 
   async getGitHubAuthUrl() {
-    return this.request<{ auth_url: string; state?: string }>('/auth/github/authorize');
+    // In GitHub App mode `auth_url` signs the user in and `install_url` opens
+    // the app's install/configure page, where repository access is chosen.
+    // OAuth mode has only `auth_url`.
+    return this.request<{
+      auth_url: string;
+      install_url?: string;
+      state?: string;
+      mode?: 'app' | 'oauth';
+    }>('/auth/github/authorize');
   }
 
   async disconnectGitHub() {
@@ -907,8 +934,15 @@ class ApiClient {
   }
 
   async compareTeams(orgId: string, teamIds?: string[]) {
-    const params = teamIds ? `?team_ids=${teamIds.join(',')}` : '';
-    return this.request<any[]>(`/executive/organizations/${orgId}/teams/compare${params}`);
+    // Repeated parameters (team_ids=a&team_ids=b) are how FastAPI reads a
+    // List[str] query parameter, and work with backends that also accept a
+    // comma-joined value. A comma-joined value alone arrived as one bogus id.
+    const params = new URLSearchParams();
+    (teamIds ?? []).forEach((id) => params.append('team_ids', id));
+    const query = params.toString();
+    return this.request<any[]>(
+      `/executive/organizations/${orgId}/teams/compare${query ? `?${query}` : ''}`
+    );
   }
 
   async getTeamLeaderboard(orgId: string, metric: string = 'overall_score') {
@@ -933,3 +967,58 @@ class ApiClient {
 
 export const apiClient = new ApiClient(API_BASE_URL);
 export default apiClient;
+
+export interface SignOutOptions {
+  /**
+   * Revoke the session server-side first (the default). Pass false only when
+   * there is nothing left to revoke, e.g. right after deleting the account.
+   */
+  revokeSession?: boolean;
+  /** Where to send the browser afterwards. */
+  redirectTo?: string;
+  /** Navigation hook, for tests. Defaults to a full page load. */
+  navigate?: (url: string) => void;
+}
+
+/**
+ * The one way to sign out.
+ *
+ * Only the Settings page used to call POST /auth/logout; the account menu, the
+ * navbar and the account settings page just deleted the tokens from
+ * localStorage, so the session stayed valid server-side until it expired.
+ *
+ * Ends with a full page load rather than a router navigation: in-memory state
+ * (the React Query cache, the zustand stores) would otherwise survive the
+ * sign-out, and the query persister would write it back to localStorage on its
+ * next tick.
+ */
+export async function signOut(options: SignOutOptions = {}): Promise<void> {
+  const {
+    revokeSession = true,
+    redirectTo = '/login',
+    navigate = (url: string) => window.location.assign(url),
+  } = options;
+
+  let revocationFailed = false;
+  if (revokeSession) {
+    try {
+      // logout() clears the local session whether or not the request succeeds.
+      await apiClient.logout();
+    } catch (err) {
+      // A dead session has nothing left to revoke. Anything else (a 503 from
+      // the revocation store, the network) means the tokens may stay valid
+      // until they expire, and the user is told so rather than told nothing.
+      revocationFailed = !(err instanceof ApiRequestError && err.kind === 'session_expired');
+      log.warn('Server-side logout failed:', err);
+    }
+  } else {
+    apiClient.clearLocalSession();
+  }
+
+  if (revocationFailed) {
+    const separator = redirectTo.includes('?') ? '&' : '?';
+    navigate(`${redirectTo}${separator}error=logout_incomplete`);
+  } else {
+    navigate(redirectTo);
+  }
+}

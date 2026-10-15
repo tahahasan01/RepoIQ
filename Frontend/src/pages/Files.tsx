@@ -22,6 +22,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useParams, useLocation } from "react-router-dom";
 import { useRepositoryFiles, useFileContent, useAnalysisResults, useAnalysisById } from "@/hooks/useApiQueries";
+import { BLOCKED_FILE_MESSAGE, getErrorKind, isGitHubAccessKind } from "@/lib/apiErrors";
+import GitHubAccessNotice from "@/components/GitHubAccessNotice";
 
 // Helper function to build a file tree from a flat list of file paths
 function buildFileTree(files: any[]): any[] {
@@ -279,7 +281,7 @@ export default function Files() {
   const [analysisCollapsed, setAnalysisCollapsed] = useState(false);
 
   // ── React Query: file list (persists across navigations) ──
-  const { data: filesData, isLoading: loadingFiles } = useRepositoryFiles(repoId || '', {
+  const { data: filesData, isLoading: loadingFiles, error: filesError } = useRepositoryFiles(repoId || '', {
     enabled: !!repoId,
   });
   
@@ -359,7 +361,7 @@ export default function Files() {
 
   // ── React Query: file content ──
   // placeholderData: undefined → clears old content immediately when switching files
-  const { data: fileContentRaw, isLoading: loadingFile, isFetching: fetchingFile } = useFileContent(
+  const { data: fileContentRaw, isLoading: loadingFile, isFetching: fetchingFile, error: fileError } = useFileContent(
     repoId || '', 
     effectiveSelectedFile || '',
     { 
@@ -437,7 +439,11 @@ export default function Files() {
   const lines = fileContent.split("\n");
   const loading = loadingFiles && files.length === 0;
   // Show loading when switching files (no data yet for the new file)
-  const showFileLoading = (loadingFile || fetchingFile) && !fileContent;
+  const showFileLoading = (loadingFile || fetchingFile) && !fileContent && !fileError;
+  // A 403 on file content is a blocked sensitive file type (.env, .pem, ...)
+  // or missing GitHub access - it used to log the user out.
+  const fileErrorKind = getErrorKind(fileError);
+  const filesErrorKind = getErrorKind(filesError);
 
   return (
     <DashboardLayout>
@@ -460,6 +466,12 @@ export default function Files() {
                   <div key={i} className="h-7 bg-muted/50 rounded animate-pulse" style={{ paddingLeft: `${(i % 3) * 10 + 6}px` }} />
                 ))}
               </div>
+            ) : isGitHubAccessKind(filesErrorKind) ? (
+              <GitHubAccessNotice
+                kind={filesErrorKind}
+                message={filesError instanceof Error ? filesError.message : null}
+                className="text-xs"
+              />
             ) : fileTree.length > 0 ? (
               fileTree.map((item, index) => (
                 <FileTreeItem
@@ -524,6 +536,31 @@ export default function Files() {
                   </div>
                 ))}
               </div>
+            ) : fileError && !fileContent ? (
+              isGitHubAccessKind(fileErrorKind) ? (
+                <div className="p-4">
+                  <GitHubAccessNotice
+                    kind={fileErrorKind}
+                    message={fileError instanceof Error ? fileError.message : null}
+                  />
+                </div>
+              ) : (
+                <div className="flex items-center justify-center h-full text-muted-foreground">
+                  <div className="text-center px-4">
+                    <File className="h-10 w-10 mx-auto mb-2 opacity-30" />
+                    <p className="text-sm">
+                      {fileErrorKind === "blocked_file"
+                        ? BLOCKED_FILE_MESSAGE
+                        : fileError instanceof Error
+                          ? fileError.message
+                          : "Couldn't load this file."}
+                    </p>
+                    {fileErrorKind === "blocked_file" && (
+                      <p className="text-xs mt-1">Files that can hold secrets (.env, keys, certificates) are not shown.</p>
+                    )}
+                  </div>
+                </div>
+              )
             ) : !fileContent ? (
               <div className="flex items-center justify-center h-full text-muted-foreground">
                 <div className="text-center">

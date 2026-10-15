@@ -41,6 +41,8 @@ import AccountDropdown from "@/components/layout/AccountDropdown";
 import AnalysisHistoryModal from "@/components/AnalysisHistoryModal";
 import NotificationBell from "@/components/NotificationBell";
 import { scoreColor, scoreLabel } from '@/lib/scoreColor';
+import { isGitHubAccessError, isGitHubAccessKind } from '@/lib/apiErrors';
+import GitHubAccessNotice from "@/components/GitHubAccessNotice";
 
 // Language colors for repository cards (used with real GitHub data)
 const languageColors: Record<string, string> = {
@@ -70,6 +72,8 @@ export default function Repositories() {
     currentPage,
     isLoading,
     isSyncing,
+    error: repoError,
+    errorKind: repoErrorKind,
     hasMorePages,
     loadRepositories,
     syncRepositories,
@@ -307,7 +311,12 @@ export default function Repositories() {
       const errorMessage = err?.message || 'Unknown error occurred';
       let errorDetail: string;
       
-      if ((err as any).isCorsError || errorMessage.includes('CORS')) {
+      if (isGitHubAccessError(err)) {
+        // The backend's own explanation ("GitHub is disconnected...", "GitHub
+        // App is not installed...") is the actionable message. This used to be
+        // reported as "Authentication error. Please log in again."
+        errorDetail = `${err.message} You can reconnect GitHub in Settings.`;
+      } else if ((err as any).isCorsError || errorMessage.includes('CORS')) {
         errorDetail = 'CORS Error. Please restart the backend server.';
       } else if ((err as any).isNetworkError || errorMessage.includes('Network Error')) {
         errorDetail = 'Network Error. Please check if the backend is running.';
@@ -315,8 +324,8 @@ export default function Repositories() {
         errorDetail = 'Repository not found. Please sync your repositories.';
       } else if (errorMessage.includes('500')) {
         errorDetail = 'Server error. Check backend logs for details.';
-      } else if (errorMessage.includes('401') || errorMessage.includes('403')) {
-        errorDetail = 'Authentication error. Please log in again.';
+      } else if (err?.status === 401) {
+        errorDetail = 'Your session has expired. Please log in again.';
       } else {
         errorDetail = errorMessage;
       }
@@ -483,14 +492,22 @@ export default function Repositories() {
           </div>
         </motion.div>
 
+        {/* GitHub access missing: say so and offer the fix, instead of an
+            empty list (or, before, a forced logout). */}
+        {!isLoading && isGitHubAccessKind(repoErrorKind) && (
+          <GitHubAccessNotice kind={repoErrorKind} message={repoError} className="mb-6" />
+        )}
+
         {/* Repository grid */}
         {isLoading ? (
           <div className="flex items-center justify-center py-20">
             <RefreshCw className="h-8 w-8 animate-spin text-primary" />
           </div>
-        ) : filteredRepos.length === 0 ? (
+        ) : filteredRepos.length === 0 && isGitHubAccessKind(repoErrorKind) ? null : filteredRepos.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center">
-            <p className="text-muted-foreground mb-4">No repositories found. Click Refresh to sync from GitHub.</p>
+            <p className="text-muted-foreground mb-4">
+              {repoError || "No repositories found. Click Refresh to sync from GitHub."}
+            </p>
             <Button onClick={handleRefresh} disabled={isSyncing} className="gap-2">
               <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} />
               {isSyncing ? 'Syncing...' : 'Sync Repositories'}
