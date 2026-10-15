@@ -1,7 +1,8 @@
-import { motion } from "framer-motion";
 import { useState, useMemo, useCallback } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import {
   ChevronRight,
   ChevronDown,
@@ -11,10 +12,9 @@ import {
   FolderOpen,
   AlertTriangle,
   Info,
-  Loader2,
+  RefreshCw,
   Copy,
   Check,
-  Lightbulb,
   Code,
   Wrench,
 } from "lucide-react";
@@ -23,6 +23,9 @@ import { useParams, useLocation } from "react-router-dom";
 import { useRepositoryFiles, useFileContent, useAnalysisResults, useAnalysisById } from "@/hooks/useApiQueries";
 import { BLOCKED_FILE_MESSAGE, getErrorKind, isGitHubAccessKind } from "@/lib/apiErrors";
 import GitHubAccessNotice from "@/components/GitHubAccessNotice";
+import { SeverityBadge } from "@/components/shared/SeverityBadge";
+import { LoadingState } from "@/components/shared/LoadingState";
+import { EmptyState } from "@/components/shared/EmptyState";
 
 // Helper function to build a file tree from a flat list of file paths
 function buildFileTree(files: any[]): any[] {
@@ -65,40 +68,25 @@ function normalizePath(p: string): string {
   return p.replace(/^\/+/, '').replace(/\/+/g, '/').toLowerCase();
 }
 
-interface FileTreeItemProps {
-  item: any;
-  depth?: number;
-  onSelect: (path: string) => void;
-  selectedFile: string | null;
-  issuesByFile: Record<string, number>;
-}
-
-function FileTreeItem({
-  item,
-  depth = 0,
-  onSelect,
-  selectedFile,
-  issuesByFile,
-}: FileTreeItemProps) {
-  const [isOpen, setIsOpen] = useState(depth === 0);
+/**
+ * How many findings sit in a tree item: for a folder, every finding in a file
+ * under it; for a file, findings whose path matches it (exactly, by suffix, or
+ * by file name and parent folder, since the analysis and the file list do not
+ * always agree on the root).
+ */
+function countIssues(item: any, issuesByFile: Record<string, number>): number {
   const isFolder = item.type === "folder";
-  const isSelected = selectedFile === item.path || selectedFile === item.name;
-  
-  // Calculate issue count: for files match exact path, for folders sum all nested issues
   const normalizedItemPath = normalizePath(item.path || item.name || '');
-  const issueCount = Object.entries(issuesByFile).reduce((count, [filePath, num]) => {
+  return Object.entries(issuesByFile).reduce((count, [filePath, num]) => {
     const normalizedIssuePath = normalizePath(filePath);
-    
+
     if (isFolder) {
-      // For folders: count all issues in files that are inside this folder
       if (normalizedIssuePath.startsWith(normalizedItemPath + '/')) return count + num;
       return count;
     }
-    
-    // For files: exact or suffix match
+
     if (normalizedIssuePath === normalizedItemPath) return count + num;
     if (normalizedIssuePath.endsWith('/' + normalizedItemPath) || normalizedItemPath.endsWith('/' + normalizedIssuePath)) return count + num;
-    // Same filename + same parent folder
     const issueFile = normalizedIssuePath.split('/').pop() || '';
     const itemFile = normalizedItemPath.split('/').pop() || '';
     if (issueFile && issueFile === itemFile) {
@@ -108,66 +96,137 @@ function FileTreeItem({
     }
     return count;
   }, 0);
+}
+
+/** The tree with only the files that have findings, and the folders that hold them. */
+function pruneToFindings(items: any[], issuesByFile: Record<string, number>): any[] {
+  return items.flatMap((item) => {
+    if (item.type === "folder") {
+      const children = pruneToFindings(item.children || [], issuesByFile);
+      return children.length > 0 ? [{ ...item, children }] : [];
+    }
+    return countIssues(item, issuesByFile) > 0 ? [item] : [];
+  });
+}
+
+/**
+ * Arrow-key movement between the tree's visible items: Up/Down move, Home/End
+ * jump. (Left/Right collapse and expand a folder, handled on the item.)
+ */
+function handleTreeKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+  const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("[data-tree-item]"));
+  if (items.length === 0) return;
+  const index = items.indexOf(document.activeElement as HTMLButtonElement);
+  let next = index;
+  if (e.key === "ArrowDown") next = Math.min(items.length - 1, index + 1);
+  if (e.key === "ArrowUp") next = Math.max(0, index - 1);
+  if (e.key === "Home") next = 0;
+  if (e.key === "End") next = items.length - 1;
+  e.preventDefault();
+  items[next]?.focus();
+}
+
+interface FileTreeItemProps {
+  item: any;
+  depth?: number;
+  onSelect: (path: string) => void;
+  selectedFile: string | null;
+  issuesByFile: Record<string, number>;
+  /** Start expanded (every folder, when the tree is filtered to findings). */
+  expandAll?: boolean;
+}
+
+function FileTreeItem({
+  item,
+  depth = 0,
+  onSelect,
+  selectedFile,
+  issuesByFile,
+  expandAll = false,
+}: FileTreeItemProps) {
+  const [isOpen, setIsOpen] = useState(expandAll || depth === 0);
+  const isFolder = item.type === "folder";
+  const isSelected = selectedFile === item.path || selectedFile === item.name;
+  const issueCount = countIssues(item, issuesByFile);
+
+  const activate = () => {
+    if (isFolder) setIsOpen((open) => !open);
+    else onSelect(item.path || item.name);
+  };
 
   return (
     <div>
-      <div
-        onClick={() => {
-          if (isFolder) {
-            setIsOpen(!isOpen);
-          } else {
-            onSelect(item.path || item.name);
+      <button
+        type="button"
+        data-tree-item
+        onClick={activate}
+        onKeyDown={(e) => {
+          if (!isFolder) return;
+          if (e.key === "ArrowRight" && !isOpen) {
+            e.preventDefault();
+            setIsOpen(true);
+          } else if (e.key === "ArrowLeft" && isOpen) {
+            e.preventDefault();
+            setIsOpen(false);
           }
         }}
+        aria-expanded={isFolder ? isOpen : undefined}
+        aria-current={!isFolder && isSelected ? "true" : undefined}
+        aria-label={
+          issueCount > 0
+            ? `${item.name}, ${issueCount} finding${issueCount === 1 ? "" : "s"}`
+            : undefined
+        }
+        title={item.path || item.name}
         className={cn(
-          "flex items-center gap-1.5 py-1.5 px-1.5 rounded-md cursor-pointer transition-colors",
+          "flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           isSelected
-            ? "bg-primary/10 text-primary"
-            : "hover:bg-muted text-muted-foreground hover:text-foreground"
+            ? "bg-primary/10 text-foreground"
+            : "text-muted-foreground hover:bg-muted hover:text-foreground"
         )}
-        style={{ paddingLeft: `${depth * 10 + 6}px` }}
+        style={{ paddingLeft: `${depth * 12 + 6}px` }}
       >
         {isFolder ? (
           <>
             {isOpen ? (
-              <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+              <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             ) : (
-              <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+              <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             )}
             {isOpen ? (
-              <FolderOpen className="h-3.5 w-3.5 text-primary shrink-0" />
+              <FolderOpen className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             ) : (
-              <Folder className="h-3.5 w-3.5 shrink-0" />
+              <Folder className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             )}
           </>
         ) : (
           <>
             <span className="w-3.5 shrink-0" />
-            <File className="h-3.5 w-3.5 shrink-0" />
+            <File className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           </>
         )}
-        <span className="text-[13px] flex-1 truncate" title={item.path || item.name}>{item.name}</span>
+        <span className="flex-1 truncate text-sm">{item.name}</span>
         {issueCount > 0 && (
-          <span className={cn(
-            "text-[10px] px-1.5 py-0.5 rounded-full shrink-0 font-medium",
-            isFolder 
-              ? "bg-amber-500/15 text-amber-500" 
-              : "bg-destructive/15 text-destructive"
-          )}>
+          <span
+            className="shrink-0 rounded-full bg-muted px-1.5 text-xs font-medium tabular-nums text-foreground"
+            aria-hidden="true"
+          >
             {issueCount}
           </span>
         )}
-      </div>
+      </button>
       {isFolder && isOpen && item.children && (
-        <div>
-          {item.children.map((child: any, index: number) => (
+        <div role="group">
+          {item.children.map((child: any) => (
             <FileTreeItem
-              key={index}
+              key={child.path}
               item={child}
               depth={depth + 1}
               onSelect={onSelect}
               selectedFile={selectedFile}
               issuesByFile={issuesByFile}
+              expandAll={expandAll}
             />
           ))}
         </div>
@@ -179,15 +238,15 @@ function FileTreeItem({
 // Code fix suggestion component
 function CodeFixSuggestion({ issue, fileContent }: { issue: any; fileContent: string }) {
   const [copied, setCopied] = useState(false);
-  
+
   const suggestion = issue.suggestion || issue.fix || '';
   const lines = fileContent.split('\n');
   const lineNum = issue.line_number || issue.line || 0;
-  
+
   const startLine = Math.max(0, lineNum - 2);
   const endLine = Math.min(lines.length - 1, lineNum + 1);
   const codeContext = lines.slice(startLine, endLine + 1);
-  
+
   const handleCopy = () => {
     navigator.clipboard.writeText(suggestion);
     setCopied(true);
@@ -195,71 +254,51 @@ function CodeFixSuggestion({ issue, fileContent }: { issue: any; fileContent: st
   };
 
   return (
-    <div className="p-2.5 bg-muted/30 rounded-lg border border-border/50">
+    <div className="rounded-lg border border-border p-3">
       {/* Issue header */}
-      <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-          issue.type === 'error' ? 'bg-destructive/20 text-destructive' :
-          issue.type === 'warning' ? 'bg-warning/20 text-warning' :
-          'bg-primary/20 text-primary'
-        }`}>
-          Line {lineNum}
-        </span>
-        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-          issue.type === 'error' ? 'bg-destructive/10 text-destructive' :
-          issue.type === 'warning' ? 'bg-warning/10 text-warning' :
-          'bg-primary/10 text-primary'
-        }`}>
-          {issue.severity || issue.type}
-        </span>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <SeverityBadge severity={issue.severity} />
+        {lineNum > 0 && <span className="font-mono text-xs text-muted-foreground">Line {lineNum}</span>}
       </div>
-      
+
       {/* Issue description */}
-      <p className="text-xs text-foreground mb-2 leading-relaxed">{issue.message}</p>
-      
+      <p className="mb-2 text-sm leading-relaxed text-foreground">{issue.message}</p>
+
       {/* Current code (problematic) */}
       {lineNum > 0 && codeContext.length > 0 && fileContent && (
         <div className="mb-2">
-          <div className="flex items-center gap-1 mb-1">
-            <AlertTriangle className="h-3 w-3 text-destructive" />
-            <span className="text-[10px] font-medium text-destructive">Current Code</span>
-          </div>
-          <pre className="text-[11px] bg-destructive/5 border border-destructive/20 rounded p-2 overflow-x-auto font-mono leading-relaxed">
+          <div className="mb-1 text-xs font-medium text-muted-foreground">Current code</div>
+          <pre className="overflow-x-auto rounded-md border border-border bg-muted/40 p-2 font-mono text-xs leading-relaxed">
             {codeContext.map((line, i) => (
               <div key={i} className={cn(
                 "flex",
-                startLine + i + 1 === lineNum && "bg-destructive/10 -mx-2 px-2"
+                startLine + i + 1 === lineNum && "-mx-2 bg-sev-critical/10 px-2"
               )}>
-                <span className="text-muted-foreground w-6 text-right mr-2 select-none shrink-0">{startLine + i + 1}</span>
+                <span className="mr-2 w-6 shrink-0 select-none text-right text-muted-foreground">{startLine + i + 1}</span>
                 <span className="break-all">{line || ' '}</span>
               </div>
             ))}
           </pre>
         </div>
       )}
-      
+
       {/* Fix suggestion */}
       {suggestion && (
         <div>
-          <div className="flex items-center justify-between mb-1">
-            <div className="flex items-center gap-1">
-              <Wrench className="h-3 w-3 text-green-500" />
-              <span className="text-[10px] font-medium text-green-500">Suggested Fix</span>
+          <div className="mb-1 flex items-center justify-between">
+            <div className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+              <Wrench className="h-3 w-3" aria-hidden="true" />
+              Suggested fix
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-5 px-1.5 text-[10px]"
-              onClick={handleCopy}
-            >
+            <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs" onClick={handleCopy}>
               {copied ? (
-                <><Check className="h-2.5 w-2.5 mr-0.5" /> Copied</>
+                <><Check className="h-3 w-3" aria-hidden="true" /> Copied</>
               ) : (
-                <><Copy className="h-2.5 w-2.5 mr-0.5" /> Copy</>
+                <><Copy className="h-3 w-3" aria-hidden="true" /> Copy</>
               )}
             </Button>
           </div>
-          <p className="text-xs bg-green-500/5 border border-green-500/20 rounded p-2 whitespace-pre-wrap text-foreground leading-relaxed">
+          <p className="whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-sm leading-relaxed text-foreground">
             {suggestion}
           </p>
         </div>
@@ -278,6 +317,7 @@ export default function Files() {
   
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [analysisCollapsed, setAnalysisCollapsed] = useState(false);
+  const [onlyWithFindings, setOnlyWithFindings] = useState(false);
 
   // ── React Query: file list (persists across navigations) ──
   const { data: filesData, isLoading: loadingFiles, error: filesError } = useRepositoryFiles(repoId || '', {
@@ -444,97 +484,113 @@ export default function Files() {
   const fileErrorKind = getErrorKind(fileError);
   const filesErrorKind = getErrorKind(filesError);
 
+  const visibleTree = useMemo(
+    () => (onlyWithFindings ? pruneToFindings(fileTree, issuesByFile) : fileTree),
+    [onlyWithFindings, fileTree, issuesByFile]
+  );
+  const hasFindings = Object.keys(issuesByFile).length > 0;
+
   return (
     <DashboardLayout>
       {/* Negative margin to reclaim parent padding for full-width layout */}
       <div className="overflow-x-hidden md:overflow-visible md:-mx-3 md:-mt-3">
         <div className="flex flex-col md:flex-row gap-1.5 md:h-[calc(100vh-5.5rem)] w-full md:overflow-hidden md:px-1.5">
           {/* File tree - compact, can shrink */}
-          <motion.div
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="w-full max-h-64 md:max-h-none md:w-56 lg:w-64 md:min-w-[200px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
+          <section
+            aria-label="Files"
+            className="w-full max-h-80 md:max-h-none md:w-60 lg:w-64 md:min-w-[200px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
           >
-          <div className="p-2.5 border-b border-border">
-            <h3 className="font-semibold text-xs">Files</h3>
+          <div className="space-y-2 border-b border-border p-3">
+            <h3 className="text-sm font-semibold">Files</h3>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="only-with-findings"
+                checked={onlyWithFindings}
+                onCheckedChange={setOnlyWithFindings}
+                disabled={!hasFindings}
+              />
+              <Label htmlFor="only-with-findings" className="text-xs font-normal text-muted-foreground">
+                Only files with findings
+              </Label>
+            </div>
           </div>
           <div className="flex-1 overflow-auto p-1.5">
             {loading ? (
-              <div className="space-y-1.5">
-                {[...Array(8)].map((_, i) => (
-                  <div key={i} className="h-7 bg-muted/50 rounded animate-pulse" style={{ paddingLeft: `${(i % 3) * 10 + 6}px` }} />
-                ))}
-              </div>
+              <LoadingState variant="lines" count={8} label="Loading files" className="p-1.5" />
             ) : isGitHubAccessKind(filesErrorKind) ? (
               <GitHubAccessNotice
                 kind={filesErrorKind}
                 message={filesError instanceof Error ? filesError.message : null}
                 className="text-xs"
               />
-            ) : fileTree.length > 0 ? (
-              fileTree.map((item, index) => (
-                <FileTreeItem
-                  key={index}
-                  item={item}
-                  onSelect={handleSelectFile}
-                  selectedFile={effectiveSelectedFile}
-                  issuesByFile={issuesByFile}
-                />
-              ))
-            ) : (
-              <div className="text-center text-muted-foreground py-8 px-2">
-                <File className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                <p className="text-xs font-medium mb-1">No files found</p>
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={() => window.location.reload()}
-                  className="gap-1 text-xs h-7 mt-2"
-                >
-                  <Loader2 className="h-3 w-3" />
-                  Retry
-                </Button>
+            ) : visibleTree.length > 0 ? (
+              // Remounted when the filter changes, so the filtered tree opens
+              // every folder and the full tree goes back to top level only.
+              <div key={String(onlyWithFindings)} onKeyDown={handleTreeKeyDown}>
+                {visibleTree.map((item) => (
+                  <FileTreeItem
+                    key={item.path}
+                    item={item}
+                    onSelect={handleSelectFile}
+                    selectedFile={effectiveSelectedFile}
+                    issuesByFile={issuesByFile}
+                    expandAll={onlyWithFindings}
+                  />
+                ))}
               </div>
+            ) : onlyWithFindings ? (
+              <EmptyState
+                title="No files with findings"
+                action={
+                  <Button variant="outline" size="sm" onClick={() => setOnlyWithFindings(false)}>
+                    Show all files
+                  </Button>
+                }
+                className="py-8"
+              />
+            ) : (
+              <EmptyState
+                icon={File}
+                title="No files found"
+                className="py-8"
+                action={
+                  <Button variant="outline" size="sm" onClick={() => window.location.reload()} className="gap-2">
+                    <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                    Retry
+                  </Button>
+                }
+              />
             )}
           </div>
-        </motion.div>
+        </section>
 
         {/* Code viewer - takes remaining space */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
+        <section
+          aria-label="File content"
           className="flex-1 glass-panel rounded-xl overflow-hidden flex flex-col min-w-0 h-[70vh] md:h-auto"
         >
           {/* Header */}
-          <div className="p-2.5 border-b border-border flex items-center justify-between gap-2">
+          <div className="p-3 border-b border-border flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
-              <File className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              <span className="text-xs font-medium truncate">{effectiveSelectedFile || 'No file selected'}</span>
+              <File className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden="true" />
+              <span className="truncate font-mono text-xs font-medium" title={effectiveSelectedFile || undefined}>
+                {effectiveSelectedFile || 'No file selected'}
+              </span>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-2 shrink-0 text-xs text-muted-foreground">
               {fileIssues.length > 0 && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-destructive/10 text-destructive">
-                  {fileIssues.length} issue{fileIssues.length !== 1 ? 's' : ''}
+                <span className="rounded-full border border-border px-1.5 text-foreground">
+                  {fileIssues.length} finding{fileIssues.length !== 1 ? 's' : ''}
                 </span>
               )}
-              <span className="text-xs text-muted-foreground">
-                {fileContent ? lines.length : 0} lines
-              </span>
+              <span>{fileContent ? lines.length : 0} lines</span>
             </div>
           </div>
 
           {/* Code */}
           <div className="flex-1 overflow-auto">
             {showFileLoading ? (
-              <div className="p-4 space-y-2">
-                {[...Array(15)].map((_, i) => (
-                  <div key={i} className="flex gap-3">
-                    <div className="w-10 h-5 bg-muted/50 rounded animate-pulse" />
-                    <div className="flex-1 h-5 bg-muted/30 rounded animate-pulse" style={{ width: `${Math.random() * 40 + 40}%` }} />
-                  </div>
-                ))}
-              </div>
+              <LoadingState variant="lines" count={15} label="Loading file" className="p-4" />
             ) : fileError && !fileContent ? (
               isGitHubAccessKind(fileErrorKind) ? (
                 <div className="p-4">
@@ -544,29 +600,25 @@ export default function Files() {
                   />
                 </div>
               ) : (
-                <div className="flex items-center justify-center h-full text-muted-foreground">
-                  <div className="text-center px-4">
-                    <File className="h-10 w-10 mx-auto mb-2 opacity-30" />
-                    <p className="text-sm">
-                      {fileErrorKind === "blocked_file"
-                        ? BLOCKED_FILE_MESSAGE
-                        : fileError instanceof Error
-                          ? fileError.message
-                          : "Couldn't load this file."}
-                    </p>
-                    {fileErrorKind === "blocked_file" && (
-                      <p className="text-xs mt-1">Files that can hold secrets (.env, keys, certificates) are not shown.</p>
-                    )}
-                  </div>
-                </div>
+                <EmptyState
+                  icon={File}
+                  className="h-full"
+                  title={
+                    fileErrorKind === "blocked_file"
+                      ? BLOCKED_FILE_MESSAGE
+                      : fileError instanceof Error
+                        ? fileError.message
+                        : "Couldn't load this file."
+                  }
+                  body={
+                    fileErrorKind === "blocked_file"
+                      ? "Files that can hold secrets (.env, keys, certificates) are not shown."
+                      : undefined
+                  }
+                />
               )
             ) : !fileContent ? (
-              <div className="flex items-center justify-center h-full text-muted-foreground">
-                <div className="text-center">
-                  <File className="h-10 w-10 mx-auto mb-2 opacity-30" />
-                  <p className="text-sm">Select a file to view its content</p>
-                </div>
-              </div>
+              <EmptyState icon={File} className="h-full" title="Select a file to view its content" />
             ) : (
               <pre className="text-sm font-mono">
                 {lines.map((line, index) => {
@@ -579,22 +631,25 @@ export default function Files() {
                       key={index}
                       className={cn(
                         "flex group hover:bg-muted/30 transition-colors",
-                        analysis?.type === "error" && "bg-destructive/5",
-                        analysis?.type === "warning" && "bg-warning/5"
+                        analysis?.type === "error" && "bg-sev-critical/5",
+                        analysis?.type === "warning" && "bg-sev-medium/5"
                       )}
                     >
                       <span className="w-10 text-right pr-3 text-muted-foreground select-none py-0.5 border-r border-border text-xs shrink-0">
                         {lineNumber}
                       </span>
-                      <span className="w-6 flex items-center justify-center shrink-0">
+                      <span
+                        className="w-6 flex items-center justify-center shrink-0"
+                        title={analysis ? `${analysis.severity} finding` : undefined}
+                      >
                         {analysis?.type === "error" && (
-                          <AlertTriangle className="h-3 w-3 text-destructive" />
+                          <AlertTriangle className="h-3 w-3 text-sev-critical" aria-hidden="true" />
                         )}
                         {analysis?.type === "warning" && (
-                          <AlertTriangle className="h-3 w-3 text-warning" />
+                          <AlertTriangle className="h-3 w-3 text-sev-medium" aria-hidden="true" />
                         )}
                         {analysis?.type === "info" && (
-                          <Info className="h-3 w-3 text-primary" />
+                          <Info className="h-3 w-3 text-sev-low" aria-hidden="true" />
                         )}
                       </span>
                       <code className="flex-1 py-0.5 pl-1 whitespace-pre">{line || " "}</code>
@@ -604,40 +659,39 @@ export default function Files() {
               </pre>
             )}
           </div>
-        </motion.div>
+        </section>
 
-        {/* Analysis + AI Suggestions panel - compact, can shrink */}
-        <motion.div
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ delay: 0.2 }}
+        {/* Analysis panel - compact, can shrink */}
+        <section
+          aria-label="Analysis"
           className="w-full max-h-[70vh] md:max-h-none md:w-64 xl:w-80 md:min-w-[240px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
         >
-          <div className="p-2.5 border-b border-border flex items-center justify-between">
-            <h3 className="font-semibold text-xs">Analysis</h3>
+          <div className="p-3 border-b border-border flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Analysis</h3>
             <Button
               variant="ghost"
               size="sm"
               onClick={() => setAnalysisCollapsed(!analysisCollapsed)}
-              className="h-6 w-6 p-0"
+              className="h-7 w-7 p-0"
+              aria-expanded={!analysisCollapsed}
+              aria-label={analysisCollapsed ? "Show analysis" : "Hide analysis"}
             >
               {analysisCollapsed ? (
-                <ChevronDown className="h-3.5 w-3.5" />
+                <ChevronDown className="h-4 w-4" />
               ) : (
-                <ChevronUp className="h-3.5 w-3.5" />
+                <ChevronUp className="h-4 w-4" />
               )}
             </Button>
           </div>
-          
+
           {!analysisCollapsed && (
-            <div className="flex-1 overflow-auto p-2.5 space-y-2">
+            <div className="flex-1 overflow-auto p-3 space-y-2">
               {/* One card per finding: line, severity, message, the code and the fix. */}
               <div>
-                <div className="flex items-center gap-1.5 mb-2">
-                  <Lightbulb className="h-3.5 w-3.5 text-amber-500" />
-                  <h4 className="text-xs font-medium">Findings in this file</h4>
+                <div className="mb-2 flex items-center gap-2">
+                  <h4 className="text-sm font-medium">Findings in this file</h4>
                   {fileIssues.length > 0 && (
-                    <span className="text-[10px] bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">
+                    <span className="rounded-full bg-muted px-1.5 text-xs font-medium tabular-nums">
                       {fileIssues.length}
                     </span>
                   )}
@@ -645,23 +699,20 @@ export default function Files() {
                 {fileIssues.length > 0 ? (
                   <div className="space-y-2">
                     {fileIssues.map((issue, idx) => (
-                      <CodeFixSuggestion 
-                        key={idx} 
-                        issue={issue} 
-                        fileContent={fileContent} 
+                      <CodeFixSuggestion
+                        key={idx}
+                        issue={issue}
+                        fileContent={fileContent}
                       />
                     ))}
                   </div>
                 ) : (
-                  <div className="py-4 text-center text-xs text-muted-foreground">
-                    <Code className="h-5 w-5 mx-auto mb-1.5 opacity-50" />
-                    <p>No findings in this file</p>
-                  </div>
+                  <EmptyState icon={Code} title="No findings in this file" className="py-6" />
                 )}
               </div>
             </div>
           )}
-        </motion.div>
+        </section>
         </div>
       </div>
     </DashboardLayout>
