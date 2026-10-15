@@ -11,6 +11,15 @@
 import { useQuery, useMutation, useQueryClient, UseQueryOptions, type QueryClient } from '@tanstack/react-query';
 import apiClient from '@/lib/api';
 import { useRepositoryStore } from '@/stores/repositoryStore';
+import { nextAutofixPollDelay } from '@/lib/autofix';
+import { createOptimisticMessage, withConfirmedReply, withOptimisticMessage, withoutMessage } from '@/lib/chat';
+import type {
+  ArchitectureDiagram,
+  AutofixRun,
+  ChatMessage,
+  ImprovementRoadmap,
+  SendChatMessageInput,
+} from '@/types/assistant';
 
 // Query key factory for consistent cache keys
 export const queryKeys = {
@@ -49,8 +58,14 @@ export const queryKeys = {
     ['roadmap', repoId] as const,
   
   // Chat
-  chatHistory: (repoId: string) => 
+  chatHistory: (repoId: string) =>
     ['chatHistory', repoId] as const,
+
+  // Auto-fix
+  autofixRuns: (repoId: string) =>
+    ['autofixRuns', repoId] as const,
+  autofixRun: (runId: string) =>
+    ['autofixRun', runId] as const,
   
   // Organizations
   organizations: ['organizations'] as const,
@@ -223,7 +238,7 @@ export function useIssues(analysisId: string, options?: Partial<UseQueryOptions<
 // ARCHITECTURE QUERIES
 // ============================================
 
-export function useArchitecture(repoId: string, options?: Partial<UseQueryOptions<any>>) {
+export function useArchitecture(repoId: string, options?: Partial<UseQueryOptions<ArchitectureDiagram>>) {
   return useQuery({
     queryKey: queryKeys.architecture(repoId),
     queryFn: () => apiClient.getArchitectureDiagram(repoId),
@@ -238,7 +253,7 @@ export function useArchitecture(repoId: string, options?: Partial<UseQueryOption
 // ROADMAP QUERIES
 // ============================================
 
-export function useRoadmap(repoId: string, options?: Partial<UseQueryOptions<any>>) {
+export function useRoadmap(repoId: string, options?: Partial<UseQueryOptions<ImprovementRoadmap>>) {
   return useQuery({
     queryKey: queryKeys.roadmap(repoId),
     queryFn: () => apiClient.getImprovementRoadmap(repoId),
@@ -252,12 +267,48 @@ export function useRoadmap(repoId: string, options?: Partial<UseQueryOptions<any
 // CHAT QUERIES
 // ============================================
 
-export function useChatHistory(repoId: string, options?: Partial<UseQueryOptions<any[]>>) {
+export function useChatHistory(repoId: string, options?: Partial<UseQueryOptions<ChatMessage[]>>) {
   return useQuery({
     queryKey: queryKeys.chatHistory(repoId),
     queryFn: () => apiClient.getChatHistory(repoId),
     staleTime: 60 * 1000, // 1 minute - chat updates frequently
     enabled: !!repoId,
+    // The app-wide placeholder keeps the previous query's data; for chat that
+    // would show one repository's conversation under another's name.
+    placeholderData: undefined,
+    ...options,
+  });
+}
+
+// ============================================
+// AUTO-FIX QUERIES
+// ============================================
+
+export function useAutofixRuns(repoId: string, options?: Partial<UseQueryOptions<AutofixRun[]>>) {
+  return useQuery({
+    queryKey: queryKeys.autofixRuns(repoId),
+    queryFn: () => apiClient.listAutofixRuns(repoId),
+    staleTime: 30 * 1000,
+    enabled: !!repoId,
+    placeholderData: undefined,
+    ...options,
+  });
+}
+
+/**
+ * One auto-fix run, polled while the backend is working on it and left alone
+ * once it waits for review or has finished (see nextAutofixPollDelay).
+ */
+export function useAutofixRun(runId: string | null, options?: Partial<UseQueryOptions<AutofixRun>>) {
+  return useQuery({
+    queryKey: queryKeys.autofixRun(runId ?? ''),
+    queryFn: () => apiClient.getAutofixRun(runId as string),
+    enabled: !!runId,
+    staleTime: 0,
+    placeholderData: undefined,
+    refetchOnWindowFocus: false,
+    refetchInterval: (query) =>
+      nextAutofixPollDelay(query.state.data, query.state.status === 'error'),
     ...options,
   });
 }
@@ -304,28 +355,97 @@ export function useCancelAnalysis() {
   });
 }
 
+/**
+ * Start an auto-fix run. Nothing changes on GitHub or in the analysis yet:
+ * the run only proposes changes, and issues are marked fixed by the next
+ * analysis after the pull request is merged.
+ */
 export function useAutoFixIssues() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
-    mutationFn: ({ repoId, issueIds }: { repoId: string; issueIds: string[] }) => 
+    mutationFn: ({ repoId, issueIds }: { repoId: string; issueIds: string[] }) =>
       apiClient.autoFixIssues(repoId, issueIds),
+    // Each attempt is a paid model run; a retry after a timeout could start two.
+    retry: false,
     onSuccess: (_, { repoId }) => {
-      // Invalidate related queries
-      queryClient.invalidateQueries({ queryKey: queryKeys.analysisResults(repoId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.repository(repoId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.autofixRuns(repoId) });
     },
   });
 }
 
+function useAutofixDecision(
+  repoId: string,
+  decide: (runId: string) => Promise<Partial<AutofixRun>>,
+  nextStatus: AutofixRun['status']
+) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (runId: string) => decide(runId),
+    retry: false,
+    onSuccess: (data, runId) => {
+      // Show the new state at once and let polling take it from there.
+      queryClient.setQueryData<AutofixRun>(queryKeys.autofixRun(runId), (run) =>
+        run ? { ...run, ...data, status: data?.status ?? nextStatus } : run
+      );
+      queryClient.invalidateQueries({ queryKey: queryKeys.autofixRun(runId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.autofixRuns(repoId) });
+    },
+  });
+}
+
+/** Approve a run's proposals: the backend opens a draft pull request. */
+export function useApproveAutofix(repoId: string) {
+  return useAutofixDecision(repoId, (runId) => apiClient.approveAutofixRun(runId), 'publishing');
+}
+
+/** Throw a run's proposals away. Nothing was pushed, so nothing is undone on GitHub. */
+export function useDiscardAutofix(repoId: string) {
+  return useAutofixDecision(repoId, (runId) => apiClient.discardAutofixRun(runId), 'discarded');
+}
+
+/**
+ * Ask a question about the repository.
+ *
+ * The question appears in the history at once (marked pending) and the reply
+ * is appended when it arrives. A failed send removes the question again, so
+ * the history only ever shows what the server has stored; the caller puts the
+ * text back in the input.
+ */
 export function useSendChatMessage(repoId: string) {
   const queryClient = useQueryClient();
-  
+  const key = queryKeys.chatHistory(repoId);
+
   return useMutation({
-    mutationFn: (message: string) => apiClient.sendChatMessage(repoId, message),
-    onSuccess: () => {
-      // Invalidate chat history
-      queryClient.invalidateQueries({ queryKey: queryKeys.chatHistory(repoId) });
+    mutationFn: ({ message, contextFiles = [] }: SendChatMessageInput) =>
+      apiClient.sendChatMessage(repoId, message, contextFiles),
+    // A retried question is a second paid model call and a duplicate turn.
+    retry: false,
+    onMutate: async ({ message, contextFiles = [] }: SendChatMessageInput) => {
+      await queryClient.cancelQueries({ queryKey: key });
+      const optimistic = createOptimisticMessage(message, contextFiles);
+      queryClient.setQueryData<ChatMessage[]>(key, (history) =>
+        withOptimisticMessage(history, optimistic)
+      );
+      return { optimisticId: optimistic.id };
+    },
+    onError: (_error, _input, context) => {
+      if (!context) return;
+      queryClient.setQueryData<ChatMessage[]>(key, (history) =>
+        withoutMessage(history, context.optimisticId)
+      );
+    },
+    onSuccess: (reply, _input, context) => {
+      if (!context) return;
+      queryClient.setQueryData<ChatMessage[]>(key, (history) =>
+        withConfirmedReply(history, context.optimisticId, reply)
+      );
+    },
+    onSettled: (_data, error) => {
+      // Pick up the stored ids of both turns. Skipped after a failure: the
+      // rollback already matches the server, and a refetch would only flicker.
+      if (!error) queryClient.invalidateQueries({ queryKey: key });
     },
   });
 }
@@ -335,7 +455,9 @@ export function useClearChatHistory(repoId: string) {
   
   return useMutation({
     mutationFn: () => apiClient.clearChatHistory(repoId),
+    retry: false,
     onSuccess: () => {
+      queryClient.setQueryData<ChatMessage[]>(queryKeys.chatHistory(repoId), []);
       queryClient.invalidateQueries({ queryKey: queryKeys.chatHistory(repoId) });
     },
   });
@@ -360,6 +482,8 @@ const REPOSITORY_SCOPED_QUERY_ROOTS = [
   'architecture',
   'roadmap',
   'chatHistory',
+  'autofixRuns',
+  'autofixRun',
   'organizationRepositories',
   'teamRepositories',
 ] as const;

@@ -22,6 +22,14 @@ import {
   SESSION_EXPIRED_MESSAGE,
   errorFromResponse,
 } from '@/lib/apiErrors';
+import type {
+  ArchitectureDiagram,
+  AutofixRun,
+  ChatHistoryResponse,
+  ChatMessage,
+  ImprovementRoadmap,
+  StartAutofixResponse,
+} from '@/types/assistant';
 
 const IS_DEV = import.meta.env.DEV;
 
@@ -738,8 +746,10 @@ class ApiClient {
     return this.request<any>(`/github/repositories/${repoId}/files/content?file_path=${encodeURIComponent(filePath)}`);
   }
 
+  // Auto-fix: start a run, poll it, then approve (opens a draft pull request)
+  // or discard its proposals. Nothing reaches GitHub before approval.
   async autoFixIssues(repoId: string, issueIds: string[]) {
-    return this.request<{ message: string; issue_count: number }>(
+    return this.request<StartAutofixResponse>(
       `/analysis/repositories/${repoId}/fix`,
       {
         method: 'POST',
@@ -748,17 +758,32 @@ class ApiClient {
     );
   }
 
+  async getAutofixRun(runId: string) {
+    return this.request<AutofixRun>(`/analysis/autofix/${runId}`);
+  }
+
+  async listAutofixRuns(repoId: string) {
+    return this.request<AutofixRun[]>(`/analysis/repositories/${repoId}/autofix`);
+  }
+
+  async approveAutofixRun(runId: string) {
+    return this.request<Partial<AutofixRun>>(`/analysis/autofix/${runId}/approve`, {
+      method: 'POST',
+    });
+  }
+
+  async discardAutofixRun(runId: string) {
+    return this.request<Partial<AutofixRun>>(`/analysis/autofix/${runId}/discard`, {
+      method: 'POST',
+    });
+  }
+
   async getImprovementRoadmap(repoId: string) {
-    return this.request<any>(`/analysis/repositories/${repoId}/roadmap`);
+    return this.request<ImprovementRoadmap>(`/analysis/repositories/${repoId}/roadmap`);
   }
 
   async getArchitectureDiagram(repoId: string) {
-    return this.request<{
-      repository_id: string;
-      repository_name: string;
-      diagram: string;
-      file_count: number;
-    }>(`/analysis/repositories/${repoId}/architecture`);
+    return this.request<ArchitectureDiagram>(`/analysis/repositories/${repoId}/architecture`);
   }
 
   async refresh(refreshToken: string) {
@@ -780,15 +805,27 @@ class ApiClient {
   }
 
   // Chat endpoints (repo-based)
-  async sendChatMessage(repoId: string, message: string) {
-    return this.request<any>(`/chat/repositories/${repoId}/message`, {
+  /** Ask a question; resolves to the assistant's reply row. */
+  async sendChatMessage(repoId: string, message: string, contextFiles: string[] = []) {
+    return this.request<ChatMessage>(`/chat/repositories/${repoId}/message`, {
       method: 'POST',
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(
+        contextFiles.length > 0 ? { message, context_files: contextFiles } : { message }
+      ),
     });
   }
 
-  async getChatHistory(repoId: string) {
-    return this.request<any[]>(`/chat/repositories/${repoId}/history`);
+  /**
+   * The conversation, oldest first. The backend wraps it as `{messages}`; this
+   * was typed as a bare array, so every caller would have read an object as
+   * the list.
+   */
+  async getChatHistory(repoId: string): Promise<ChatMessage[]> {
+    const data = await this.request<ChatHistoryResponse | ChatMessage[]>(
+      `/chat/repositories/${repoId}/history`
+    );
+    if (Array.isArray(data)) return data;
+    return Array.isArray(data?.messages) ? data.messages : [];
   }
 
   async clearChatHistory(repoId: string) {
