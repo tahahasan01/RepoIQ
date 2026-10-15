@@ -1,5 +1,7 @@
 # RepoIQ — Production Readiness Audit
 
+> **Historical record (August 2026).** This describes the codebase as it was then. Remediation is recorded phase by phase in [REMEDIATION_PLAN.md](REMEDIATION_PLAN.md). Code comments cite its finding IDs (e.g. C-1, H-5). For the current system see [README.md](README.md).
+
 **Date:** 2026-08-21
 **Branch audited:** `hardening/phase-1-4` (working tree, incl. uncommitted `config.py` changes)
 **Scope:** Full stack — `Backend/` (FastAPI + Supabase + Redis + Celery + OpenAI agents), `Frontend/` (Vite + React + TS), CI, deployment config, DB migrations.

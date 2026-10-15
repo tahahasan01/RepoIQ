@@ -1,5 +1,7 @@
 # RepoIQ — Remediation Build Plan
 
+> **Historical record (August 2026)** of how the findings in [AUDIT.md](AUDIT.md) were remediated. Code comments cite its task numbers. For the current system see [README.md](README.md).
+
 Companion to [`AUDIT.md`](./AUDIT.md). Every task below cites the audit finding it closes.
 Branch: `hardening/phase-1-4`.
 

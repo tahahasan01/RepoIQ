@@ -1,36 +1,12 @@
 # RepoIQ frontend
 
-This repository contains the frontend for the RepoIQ application (Vite + React + TypeScript).
+React + Vite + TypeScript single-page app for RepoIQ. Setup and deployment are
+documented in the [root README](../README.md).
 
-## Running locally
-
-Requirements: Node.js and npm (or pnpm/yarn).
-
-```sh
-git clone <YOUR_GIT_URL>
-cd <YOUR_PROJECT_NAME>
+```bash
 npm install
-npm run dev
+cp .env.example .env      # VITE_API_BASE_URL=http://localhost:8000/api/v1
+npm run dev               # http://localhost:8080
+npm run typecheck && npx vitest run && npm run lint && npm run build
+npm start                 # serve the production build (server.js), reads PORT
 ```
-
-## Technologies
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## Deployment
-
-Build for production:
-
-```sh
-VITE_API_BASE_URL=https://api.example.com/api/v1 npm run build
-PORT=4173 VITE_API_BASE_URL=https://api.example.com/api/v1 npm start
-```
-
-`npm start` runs `server.js`, a dependency-free static server for `dist/`
-(SPA fallback, long-lived caching for hashed assets, security headers and a
-CSP that allows the API origin). `npm run preview` is for local checks only.
-Requires Node 20+.
