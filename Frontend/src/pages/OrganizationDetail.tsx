@@ -1,20 +1,17 @@
-import { useState } from "react";
+import { useState, type ComponentType, type ReactNode } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
-  Building2,
   Users,
   FolderGit2,
   Settings,
-  ArrowLeft,
   Loader2,
   Plus,
   BarChart3,
   AlertTriangle,
-  ExternalLink,
+  ChevronRight,
   Edit2,
   Trash2,
   Zap,
-  Activity,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -40,6 +37,8 @@ import { useOrganization, useOrganizationTeams, useOrganizationRepositories, que
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { OrganizationAlerts } from "@/components/alerts/OrganizationAlerts";
 import { useOrganizationAlerts } from "@/hooks/useNotificationQueries";
+import { PageHeader } from "@/components/organizations/PageHeader";
+import { ErrorState, LoadingCard, LoadingState } from "@/components/organizations/PageStates";
 
 const TABS = ["overview", "alerts", "teams", "repositories", "settings"] as const;
 
@@ -55,13 +54,31 @@ export default function OrganizationDetail() {
   const { data: openAlerts = [] } = useOrganizationAlerts(id, false);
   
   // Use React Query for instant loading with cached data
-  const { data: organization, isLoading: orgLoading, error: orgError } = useOrganization(id || "", {
+  const {
+    data: organization,
+    isLoading: orgLoading,
+    error: orgError,
+    refetch: refetchOrg,
+    isFetching: orgFetching,
+  } = useOrganization(id || "", {
     placeholderData: (previousData) => previousData,
   });
-  const { data: teams = [], isLoading: teamsLoading } = useOrganizationTeams(id || "", {
+  const {
+    data: teams = [],
+    isLoading: teamsLoading,
+    error: teamsError,
+    refetch: refetchTeams,
+    isFetching: teamsFetching,
+  } = useOrganizationTeams(id || "", {
     placeholderData: (previousData) => previousData,
   });
-  const { data: repositories = [], isLoading: reposLoading } = useOrganizationRepositories(id || "", {
+  const {
+    data: repositories = [],
+    isLoading: reposLoading,
+    error: reposError,
+    refetch: refetchRepos,
+    isFetching: reposFetching,
+  } = useOrganizationRepositories(id || "", {
     placeholderData: (previousData) => previousData,
   });
   
@@ -198,9 +215,9 @@ export default function OrganizationDetail() {
     return (
       <div className="min-h-screen bg-background">
         <Navbar />
-        <div className="flex items-center justify-center min-h-[80vh]">
-          <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        </div>
+        <main className="container mx-auto px-4 py-8 max-w-7xl pt-24">
+          <LoadingState label="Loading organization…" className="min-h-[60vh]" />
+        </main>
       </div>
     );
   }
@@ -209,77 +226,50 @@ export default function OrganizationDetail() {
     return (
       <div className="min-h-screen bg-background">
         <Navbar />
-        <div className="container mx-auto px-4 py-8 pt-24">
-          <Card>
-            <CardContent className="py-16 text-center">
-              <p className="text-muted-foreground">Organization not found</p>
-              <Link to="/organizations">
-                <Button variant="outline" className="mt-4">
-                  <ArrowLeft className="h-4 w-4 mr-2" />
-                  Back to Organizations
-                </Button>
-              </Link>
-            </CardContent>
-          </Card>
-        </div>
+        <main className="container mx-auto px-4 py-8 max-w-7xl pt-24">
+          <PageHeader
+            breadcrumb={[{ label: "Organizations", to: "/organizations" }, { label: "Not found" }]}
+            title="Organization unavailable"
+          />
+          <ErrorState
+            title="Couldn't load this organization. It may not exist, or you may not be a member."
+            error={orgError}
+            onRetry={orgError ? () => refetchOrg() : undefined}
+            retrying={orgFetching}
+          >
+            <Button variant="ghost" asChild>
+              <Link to="/organizations">Back to organizations</Link>
+            </Button>
+          </ErrorState>
+        </main>
       </div>
     );
   }
 
-  // Organizations are free-plan only: the backend ignores plan_type and there
-  // is no billing, so the plan is a label, not a choice.
-  const PLAN_LABEL = "Free plan";
+  const createdOn = new Date(organization.created_at).toLocaleDateString();
 
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
-      <div className="container mx-auto px-4 py-8 max-w-7xl pt-24">
-        {/* Header Section */}
-        <div className="flex items-start justify-between mb-8">
-          <div className="flex items-center gap-4">
-            <Link to="/organizations">
-              <Button variant="ghost" size="icon" className="rounded-full">
-                <ArrowLeft className="h-5 w-5" />
-              </Button>
-            </Link>
-            <div className="flex items-center gap-4">
-              <div className="relative">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-cyan-400 flex items-center justify-center shadow-lg">
-                  <Building2 className="h-8 w-8 text-white" />
-                </div>
-                <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-background flex items-center justify-center border-2 border-background">
-                  <Badge className="bg-slate-500 text-white text-[10px] px-1.5 py-0">
-                    free
-                  </Badge>
-                </div>
-              </div>
-              <div>
-                <h1 className="text-3xl font-bold">{organization.name}</h1>
-                <div className="flex items-center gap-2 mt-1">
-                  <Zap className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-muted-foreground">{PLAN_LABEL}</span>
-                  <span className="text-muted-foreground">•</span>
-                  <span className="text-muted-foreground text-sm">
-                    Created {new Date(organization.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-          <Link to={`/executive/${id}`}>
-            <Button className="gap-2 bg-gradient-to-r from-primary to-cyan-500 hover:from-primary/90 hover:to-cyan-500/90">
-              <BarChart3 className="h-4 w-4" />
-              Executive Dashboard
+      <main className="container mx-auto px-4 py-8 max-w-7xl pt-24">
+        <PageHeader
+          breadcrumb={[{ label: "Organizations", to: "/organizations" }, { label: organization.name }]}
+          title={organization.name}
+          description={`Created ${createdOn}`}
+          actions={
+            <Button variant="outline" className="gap-2" asChild>
+              <Link to={`/executive/${id}`}>
+                <BarChart3 className="h-4 w-4" aria-hidden="true" />
+                Executive dashboard
+              </Link>
             </Button>
-          </Link>
-        </div>
+          }
+        />
 
         <Tabs defaultValue={initialTab} className="space-y-6">
-          <TabsList className="bg-muted/50 p-1">
-            <TabsTrigger value="overview" className="data-[state=active]:bg-background">
-              Overview
-            </TabsTrigger>
-            <TabsTrigger value="alerts" className="data-[state=active]:bg-background">
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="alerts">
               Alerts
               {openAlerts.length > 0 && (
                 <Badge variant="destructive" className="ml-2 h-5 px-1.5" aria-label={`${openAlerts.length} open`}>
@@ -287,149 +277,106 @@ export default function OrganizationDetail() {
                 </Badge>
               )}
             </TabsTrigger>
-            <TabsTrigger value="teams" className="data-[state=active]:bg-background">
-              Teams ({teams.length})
-            </TabsTrigger>
-            <TabsTrigger value="repositories" className="data-[state=active]:bg-background">
-              Repositories ({repositories.length})
-            </TabsTrigger>
-            <TabsTrigger value="settings" className="data-[state=active]:bg-background">
-              Settings
-            </TabsTrigger>
+            <TabsTrigger value="teams">Teams ({teams.length})</TabsTrigger>
+            <TabsTrigger value="repositories">Repositories ({repositories.length})</TabsTrigger>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
 
-          {/* Overview Tab */}
+          {/* Overview: what this organization holds. Health, risk and team
+              rankings live on the executive dashboard, linked below, rather
+              than being repeated here. */}
           <TabsContent value="overview" className="space-y-6">
-            {/* Stats Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <Card className="relative overflow-hidden border-0 bg-gradient-to-br from-blue-500/10 to-blue-600/5">
-                <div className="absolute top-0 right-0 w-20 h-20 bg-blue-500/10 rounded-full -mr-10 -mt-10" />
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Teams
-                  </CardTitle>
-                  <div className="p-2 bg-blue-500/20 rounded-lg">
-                    <Users className="h-4 w-4 text-blue-500" />
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-3xl font-bold">{teams.length}</div>
-                  <p className="text-xs text-muted-foreground mt-1">Active teams</p>
-                </CardContent>
-              </Card>
-
-              <Card className="relative overflow-hidden border-0 bg-gradient-to-br from-green-500/10 to-green-600/5">
-                <div className="absolute top-0 right-0 w-20 h-20 bg-green-500/10 rounded-full -mr-10 -mt-10" />
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Repositories
-                  </CardTitle>
-                  <div className="p-2 bg-green-500/20 rounded-lg">
-                    <FolderGit2 className="h-4 w-4 text-green-500" />
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-3xl font-bold">{repositories.length}</div>
-                  <p className="text-xs text-muted-foreground mt-1">Assigned repos</p>
-                </CardContent>
-              </Card>
-
-              <Card className="relative overflow-hidden border-0 bg-gradient-to-br from-purple-500/10 to-purple-600/5">
-                <div className="absolute top-0 right-0 w-20 h-20 bg-purple-500/10 rounded-full -mr-10 -mt-10" />
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Health Score
-                  </CardTitle>
-                  <div className="p-2 bg-purple-500/20 rounded-lg">
-                    <Activity className="h-4 w-4 text-purple-500" />
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-3xl font-bold">--</div>
-                  <p className="text-xs text-muted-foreground mt-1">Analyze repos to see</p>
-                </CardContent>
-              </Card>
-
-              <Card className="relative overflow-hidden border-0 bg-gradient-to-br from-orange-500/10 to-orange-600/5">
-                <div className="absolute top-0 right-0 w-20 h-20 bg-orange-500/10 rounded-full -mr-10 -mt-10" />
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Plan
-                  </CardTitle>
-                  <div className="p-2 bg-orange-500/20 rounded-lg">
-                    <Zap className="h-4 w-4 text-orange-500" />
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-3xl font-bold">Free</div>
-                  <p className="text-xs text-muted-foreground mt-1">Current plan</p>
-                </CardContent>
-              </Card>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <StatCard title="Teams" value={teams.length} caption="In this organization" icon={Users} />
+              <StatCard
+                title="Repositories"
+                value={repositories.length}
+                caption="Assigned to its teams"
+                icon={FolderGit2}
+              />
+              <StatCard
+                title="Open alerts"
+                value={
+                  <span className={openAlerts.length > 0 ? "text-destructive" : undefined}>{openAlerts.length}</span>
+                }
+                caption={openAlerts.length > 0 ? "See the Alerts tab" : "Nothing needs attention"}
+                icon={AlertTriangle}
+              />
             </div>
 
-            {/* Quick Actions */}
+            <Card>
+              <CardContent className="p-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <BarChart3 className="h-5 w-5 mt-0.5 text-muted-foreground shrink-0" aria-hidden="true" />
+                  <div>
+                    <p className="font-medium">Health, risk and team performance</p>
+                    <p className="text-sm text-muted-foreground">
+                      The organization's health score, business risk and team leaderboard are on the executive
+                      dashboard.
+                    </p>
+                  </div>
+                </div>
+                <Button className="gap-2 shrink-0" asChild>
+                  <Link to={`/executive/${id}`}>
+                    Open executive dashboard
+                    <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
+
             <Card>
               <CardHeader>
-                <CardTitle className="text-lg">Quick Actions</CardTitle>
-                <CardDescription>Common tasks for managing your organization</CardDescription>
+                <CardTitle className="text-lg">Quick actions</CardTitle>
+                <CardDescription>Common tasks for managing this organization</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <Link to={`/teams?org=${id}`} className="block">
-                    <Button variant="outline" className="w-full h-auto py-4 flex flex-col items-center gap-2 hover:bg-primary/5 hover:border-primary/50">
-                      <Plus className="h-5 w-5 text-primary" />
-                      <span>Create Team</span>
-                      <span className="text-xs text-muted-foreground">Add a new team</span>
-                    </Button>
-                  </Link>
-                  <Link to="/repos" className="block">
-                    <Button variant="outline" className="w-full h-auto py-4 flex flex-col items-center gap-2 hover:bg-green-500/5 hover:border-green-500/50">
-                      <FolderGit2 className="h-5 w-5 text-green-500" />
-                      <span>Assign Repository</span>
-                      <span className="text-xs text-muted-foreground">Link repos to teams</span>
-                    </Button>
-                  </Link>
-                  <Link to={`/executive/${id}`} className="block">
-                    <Button variant="outline" className="w-full h-auto py-4 flex flex-col items-center gap-2 hover:bg-purple-500/5 hover:border-purple-500/50">
-                      <BarChart3 className="h-5 w-5 text-purple-500" />
-                      <span>View Dashboard</span>
-                      <span className="text-xs text-muted-foreground">Executive metrics</span>
-                    </Button>
-                  </Link>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Button variant="outline" className="h-auto py-4 flex flex-col items-center gap-1" asChild>
+                    <Link to={`/teams?org=${id}`}>
+                      <Plus className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+                      <span>Create team</span>
+                      <span className="text-xs font-normal text-muted-foreground">Add a new team</span>
+                    </Link>
+                  </Button>
+                  <Button variant="outline" className="h-auto py-4 flex flex-col items-center gap-1" asChild>
+                    <Link to="/repos">
+                      <FolderGit2 className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+                      <span>Assign repository</span>
+                      <span className="text-xs font-normal text-muted-foreground">Link repositories to teams</span>
+                    </Link>
+                  </Button>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Recent Teams */}
             {teams.length > 0 && (
               <Card>
-                <CardHeader className="flex flex-row items-center justify-between">
-                  <div>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0">
+                  <div className="space-y-1.5">
                     <CardTitle className="text-lg">Teams</CardTitle>
-                    <CardDescription>Your organization's teams</CardDescription>
+                    <CardDescription>This organization's teams</CardDescription>
                   </div>
-                  <Link to={`/teams?org=${id}`}>
-                    <Button variant="ghost" size="sm">
-                      View All <ExternalLink className="h-3 w-3 ml-1" />
-                    </Button>
-                  </Link>
+                  <Button variant="ghost" size="sm" asChild>
+                    <Link to={`/teams?org=${id}`}>
+                      View all <ChevronRight className="h-3 w-3 ml-1" aria-hidden="true" />
+                    </Link>
+                  </Button>
                 </CardHeader>
                 <CardContent>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {teams.slice(0, 3).map((team) => (
-                      <Link key={team.id} to={`/teams/${team.id}`}>
-                        <div className="p-4 border rounded-lg hover:bg-muted/50 transition-colors cursor-pointer">
-                          <div className="flex items-center gap-3">
-                            <div className="p-2 bg-primary/10 rounded-lg">
-                              <Users className="h-4 w-4 text-primary" />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="font-medium truncate">{team.name}</p>
-                              <p className="text-xs text-muted-foreground">
-                                {team.description || "No description"}
-                              </p>
-                            </div>
-                          </div>
+                      <Link
+                        key={team.id}
+                        to={`/teams/${team.id}`}
+                        className="flex items-center gap-3 p-4 border rounded-lg hover:bg-muted/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <Users className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium truncate">{team.name}</p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {team.description || "No description"}
+                          </p>
                         </div>
                       </Link>
                     ))}
@@ -446,53 +393,46 @@ export default function OrganizationDetail() {
 
           {/* Teams Tab */}
           <TabsContent value="teams" className="space-y-4">
-            <div className="flex justify-between items-center">
+            <div className="flex flex-wrap justify-between items-center gap-4">
               <div>
-                <h2 className="text-2xl font-semibold">Teams</h2>
-                <p className="text-muted-foreground">Manage your organization's teams</p>
+                <h2 className="text-xl font-semibold">Teams</h2>
+                <p className="text-sm text-muted-foreground">Manage this organization's teams</p>
               </div>
-              <Link to={`/teams?org=${id}`}>
-                <Button className="gap-2">
-                  <Plus className="h-4 w-4" />
-                  Create Team
-                </Button>
-              </Link>
+              <Button className="gap-2" asChild>
+                <Link to={`/teams?org=${id}`}>
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                  Create team
+                </Link>
+              </Button>
             </div>
             {/* Loading first: the empty state below reads as a real answer. */}
             {teamsLoading && teams.length === 0 ? (
-              <Card>
-                <CardContent className="py-16 flex justify-center" aria-label="Loading teams">
-                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
-                </CardContent>
-              </Card>
+              <LoadingCard label="Loading teams…" />
+            ) : teamsError && teams.length === 0 ? (
+              <ErrorState
+                title="Couldn't load teams"
+                error={teamsError}
+                onRetry={() => refetchTeams()}
+                retrying={teamsFetching}
+              />
             ) : teams.length === 0 ? (
               <Card>
                 <CardContent className="py-16 text-center">
-                  <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-muted flex items-center justify-center">
-                    <Users className="h-8 w-8 text-muted-foreground" />
-                  </div>
+                  <Users className="h-8 w-8 text-muted-foreground mx-auto mb-4" aria-hidden="true" />
                   <h3 className="text-lg font-semibold mb-2">No teams yet</h3>
-                  <p className="text-muted-foreground mb-4 max-w-sm mx-auto">
-                    Create teams to organize developers and track their code quality metrics.
+                  <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+                    Create teams to organize developers and track their code quality. Use Create team above.
                   </p>
-                  <Link to={`/teams?org=${id}`}>
-                    <Button>
-                      <Plus className="h-4 w-4 mr-2" />
-                      Create Your First Team
-                    </Button>
-                  </Link>
                 </CardContent>
               </Card>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {teams.map((team) => (
-                  <Card key={team.id} className="hover:shadow-md transition-shadow">
+                  <Card key={team.id}>
                     <CardHeader>
                       <div className="flex items-start gap-3">
-                        <div className="p-2 bg-primary/10 rounded-lg">
-                          <Users className="h-5 w-5 text-primary" />
-                        </div>
-                        <div className="flex-1 min-w-0">
+                        <Users className="h-5 w-5 mt-0.5 text-muted-foreground shrink-0" aria-hidden="true" />
+                        <div className="flex-1 min-w-0 space-y-1.5">
                           <CardTitle className="text-lg">{team.name}</CardTitle>
                           {team.description && (
                             <CardDescription className="line-clamp-2">{team.description}</CardDescription>
@@ -501,11 +441,9 @@ export default function OrganizationDetail() {
                       </div>
                     </CardHeader>
                     <CardContent>
-                      <Link to={`/teams/${team.id}`}>
-                        <Button variant="outline" className="w-full">
-                          View Team
-                        </Button>
-                      </Link>
+                      <Button variant="outline" className="w-full" asChild>
+                        <Link to={`/teams/${team.id}`}>View team</Link>
+                      </Button>
                     </CardContent>
                   </Card>
                 ))}
@@ -515,58 +453,50 @@ export default function OrganizationDetail() {
 
           {/* Repositories Tab */}
           <TabsContent value="repositories" className="space-y-4">
-            <div className="flex justify-between items-center">
-              <div>
-                <h2 className="text-2xl font-semibold">Repositories</h2>
-                <p className="text-muted-foreground">Repositories assigned to this organization</p>
-              </div>
+            <div>
+              <h2 className="text-xl font-semibold">Repositories</h2>
+              <p className="text-sm text-muted-foreground">Repositories assigned to this organization's teams</p>
             </div>
             {/* Loading first: the empty state below reads as a real answer. */}
             {reposLoading && repositories.length === 0 ? (
-              <Card>
-                <CardContent className="py-16 flex justify-center" aria-label="Loading repositories">
-                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
-                </CardContent>
-              </Card>
+              <LoadingCard label="Loading repositories…" />
+            ) : reposError && repositories.length === 0 ? (
+              <ErrorState
+                title="Couldn't load repositories"
+                error={reposError}
+                onRetry={() => refetchRepos()}
+                retrying={reposFetching}
+              />
             ) : repositories.length === 0 ? (
               <Card>
                 <CardContent className="py-16 text-center">
-                  <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-muted flex items-center justify-center">
-                    <FolderGit2 className="h-8 w-8 text-muted-foreground" />
-                  </div>
+                  <FolderGit2 className="h-8 w-8 text-muted-foreground mx-auto mb-4" aria-hidden="true" />
                   <h3 className="text-lg font-semibold mb-2">No repositories assigned</h3>
-                  <p className="text-muted-foreground mb-4 max-w-sm mx-auto">
+                  <p className="text-sm text-muted-foreground mb-4 max-w-sm mx-auto">
                     Assign repositories to teams to start tracking code quality.
                   </p>
-                  <Link to="/repos">
-                    <Button>
-                      <FolderGit2 className="h-4 w-4 mr-2" />
-                      Go to Repositories
-                    </Button>
-                  </Link>
+                  <Button variant="outline" asChild>
+                    <Link to="/repos">Go to repositories</Link>
+                  </Button>
                 </CardContent>
               </Card>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {repositories.map((repo) => (
-                  <Card key={repo.id} className="hover:shadow-md transition-shadow">
+                  <Card key={repo.id}>
                     <CardHeader>
                       <div className="flex items-start gap-3">
-                        <div className="p-2 bg-green-500/10 rounded-lg">
-                          <FolderGit2 className="h-5 w-5 text-green-500" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <CardTitle className="text-lg">{repo.name}</CardTitle>
-                          <CardDescription>{repo.full_name}</CardDescription>
+                        <FolderGit2 className="h-5 w-5 mt-0.5 text-muted-foreground shrink-0" aria-hidden="true" />
+                        <div className="flex-1 min-w-0 space-y-1.5">
+                          <CardTitle className="text-lg truncate">{repo.name}</CardTitle>
+                          <CardDescription className="font-mono text-xs truncate">{repo.full_name}</CardDescription>
                         </div>
                       </div>
                     </CardHeader>
                     <CardContent>
-                      <Link to={`/dashboard/${repo.id}`}>
-                        <Button variant="outline" className="w-full">
-                          View Dashboard
-                        </Button>
-                      </Link>
+                      <Button variant="outline" className="w-full" asChild>
+                        <Link to={`/dashboard/${repo.id}`}>Open dashboard</Link>
+                      </Button>
                     </CardContent>
                   </Card>
                 ))}
@@ -577,22 +507,21 @@ export default function OrganizationDetail() {
           {/* Settings Tab */}
           <TabsContent value="settings" className="space-y-6">
             <div>
-              <h2 className="text-2xl font-semibold">Settings</h2>
-              <p className="text-muted-foreground">Manage your organization settings</p>
+              <h2 className="text-xl font-semibold">Settings</h2>
+              <p className="text-sm text-muted-foreground">Manage this organization's settings</p>
             </div>
 
-            {/* General Settings */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Settings className="h-5 w-5" />
-                  General Settings
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Settings className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+                  General
                 </CardTitle>
                 <CardDescription>Basic organization information</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="space-y-2">
-                  <Label className="text-sm font-medium">Organization Name</Label>
+                  <Label className="text-sm font-medium">Organization name</Label>
                   <div className="flex items-center gap-2">
                     {editingName ? (
                       <>
@@ -613,7 +542,11 @@ export default function OrganizationDetail() {
                           disabled={updateOrgMutation.isPending || !trimmedName}
                           size="sm"
                         >
-                          {updateOrgMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+                          {updateOrgMutation.isPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" aria-label="Saving" />
+                          ) : (
+                            "Save"
+                          )}
                         </Button>
                         <Button variant="ghost" onClick={() => setEditingName(false)} size="sm">
                           Cancel
@@ -623,7 +556,7 @@ export default function OrganizationDetail() {
                       <>
                         <span className="text-lg">{organization.name}</span>
                         <Button variant="ghost" size="icon" onClick={startEditingName} aria-label="Rename organization">
-                          <Edit2 className="h-4 w-4" />
+                          <Edit2 className="h-4 w-4" aria-hidden="true" />
                         </Button>
                       </>
                     )}
@@ -643,71 +576,66 @@ export default function OrganizationDetail() {
               </CardContent>
             </Card>
 
-            {/* Plan */}
+            {/* Plan. Organizations are free-plan only: the backend ignores
+                plan_type and there is no billing, so this is a statement of
+                fact, not a choice. */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Zap className="h-5 w-5" />
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Zap className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
                   Plan
                 </CardTitle>
                 <CardDescription>Every organization is on the free plan</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="flex items-center gap-4 p-4 border rounded-lg bg-muted/30">
-                  <div className="p-3 rounded-xl bg-slate-500">
-                    <Zap className="h-6 w-6 text-white" />
-                  </div>
-                  <div>
-                    <p className="font-semibold text-lg">{PLAN_LABEL}</p>
-                    <p className="text-sm text-muted-foreground">There is nothing to upgrade or pay for.</p>
-                  </div>
+                <div className="p-4 border rounded-lg">
+                  <p className="font-semibold">Free plan</p>
+                  <p className="text-sm text-muted-foreground">There is nothing to upgrade or pay for.</p>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Quick Links */}
             <Card>
               <CardHeader>
-                <CardTitle>Quick Links</CardTitle>
-                <CardDescription>Navigate to related pages</CardDescription>
+                <CardTitle className="text-lg">Quick links</CardTitle>
+                <CardDescription>Pages related to this organization</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <Link to={`/teams?org=${id}`}>
-                    <Button variant="outline" className="w-full justify-start gap-2">
-                      <Users className="h-4 w-4" />
-                      Manage Teams
-                    </Button>
-                  </Link>
-                  <Link to={`/executive/${id}`}>
-                    <Button variant="outline" className="w-full justify-start gap-2">
-                      <BarChart3 className="h-4 w-4" />
-                      Executive Dashboard
-                    </Button>
-                  </Link>
-                  <Link to="/repos">
-                    <Button variant="outline" className="w-full justify-start gap-2">
-                      <FolderGit2 className="h-4 w-4" />
-                      All Repositories
-                    </Button>
-                  </Link>
+                  <Button variant="outline" className="w-full justify-start gap-2" asChild>
+                    <Link to={`/teams?org=${id}`}>
+                      <Users className="h-4 w-4" aria-hidden="true" />
+                      Manage teams
+                    </Link>
+                  </Button>
+                  <Button variant="outline" className="w-full justify-start gap-2" asChild>
+                    <Link to={`/executive/${id}`}>
+                      <BarChart3 className="h-4 w-4" aria-hidden="true" />
+                      Executive dashboard
+                    </Link>
+                  </Button>
+                  <Button variant="outline" className="w-full justify-start gap-2" asChild>
+                    <Link to="/repos">
+                      <FolderGit2 className="h-4 w-4" aria-hidden="true" />
+                      All repositories
+                    </Link>
+                  </Button>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Danger Zone */}
             <Card className="border-destructive/50">
               <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-destructive">
-                  <AlertTriangle className="h-5 w-5" />
-                  Danger Zone
+                <CardTitle className="text-lg flex items-center gap-2 text-destructive">
+                  <AlertTriangle className="h-5 w-5" aria-hidden="true" />
+                  Danger zone
                 </CardTitle>
                 <CardDescription>Irreversible actions</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="flex items-center justify-between p-4 border border-destructive/30 rounded-lg bg-destructive/5">
+                <div className="flex flex-wrap items-center justify-between gap-4 p-4 border border-destructive/30 rounded-lg">
                   <div>
-                    <p className="font-medium">Delete Organization</p>
+                    <p className="font-medium">Delete organization</p>
                     <p className="text-sm text-muted-foreground">
                       Permanently delete this organization and all its data
                     </p>
@@ -715,17 +643,16 @@ export default function OrganizationDetail() {
                   <AlertDialog>
                     <AlertDialogTrigger asChild>
                       <Button variant="destructive">
-                        <Trash2 className="h-4 w-4 mr-2" />
+                        <Trash2 className="h-4 w-4 mr-2" aria-hidden="true" />
                         Delete
                       </Button>
                     </AlertDialogTrigger>
                     <AlertDialogContent>
                       <AlertDialogHeader>
-                        <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                        <AlertDialogTitle>Delete {organization.name}?</AlertDialogTitle>
                         <AlertDialogDescription>
-                          This action cannot be undone. This will permanently delete the
-                          organization <strong>"{organization.name}"</strong> and all associated
-                          teams and settings.
+                          This can't be undone. It permanently deletes the organization{" "}
+                          <strong>"{organization.name}"</strong> and all its teams and settings.
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>
@@ -736,11 +663,11 @@ export default function OrganizationDetail() {
                           disabled={deleteOrgMutation.isPending}
                         >
                           {deleteOrgMutation.isPending ? (
-                            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                            <Loader2 className="h-4 w-4 animate-spin mr-2" aria-hidden="true" />
                           ) : (
-                            <Trash2 className="h-4 w-4 mr-2" />
+                            <Trash2 className="h-4 w-4 mr-2" aria-hidden="true" />
                           )}
-                          Delete Organization
+                          Delete organization
                         </AlertDialogAction>
                       </AlertDialogFooter>
                     </AlertDialogContent>
@@ -750,7 +677,32 @@ export default function OrganizationDetail() {
             </Card>
           </TabsContent>
         </Tabs>
-      </div>
+      </main>
     </div>
+  );
+}
+
+function StatCard({
+  title,
+  value,
+  caption,
+  icon: Icon,
+}: {
+  title: string;
+  value: ReactNode;
+  caption: string;
+  icon: ComponentType<{ className?: string }>;
+}) {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        <Icon className="h-4 w-4 text-muted-foreground" />
+      </CardHeader>
+      <CardContent>
+        <div className="text-3xl font-bold tabular-nums">{value}</div>
+        <p className="text-xs text-muted-foreground mt-1">{caption}</p>
+      </CardContent>
+    </Card>
   );
 }
