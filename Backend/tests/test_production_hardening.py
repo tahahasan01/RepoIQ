@@ -78,6 +78,7 @@ class TestProductionConfigValidation:
         "https://app.repoiq.dev,http://localhost:8080",
         "https://127.0.0.1:8443",
         "https://localhost",
+        "https://app.your-domain.com",  # copied from .env.example unchanged
     ])
     def test_dev_wildcard_and_plain_http_origins_are_refused(self, origins):
         _refused("ALLOWED_ORIGINS", ALLOWED_ORIGINS=origins)
@@ -103,6 +104,23 @@ class TestProductionConfigValidation:
 
     def test_the_oauth_redirect_must_be_public_https(self):
         _refused("GITHUB_REDIRECT_URI", GITHUB_REDIRECT_URI="http://localhost:8080/auth/github/callback")
+        _refused("GITHUB_REDIRECT_URI", GITHUB_REDIRECT_URI="https://app.your-domain.com/auth/github/callback")
+
+    def test_the_env_example_cannot_boot_production_unedited(self):
+        """Every REQUIRED blank and placeholder in the template is caught."""
+        from pathlib import Path
+
+        from app.core.config import Settings
+
+        template = Path(__file__).resolve().parent.parent / ".env.example"
+        with pytest.raises(ValidationError) as excinfo:
+            Settings(_env_file=str(template), SECRET_KEY="", ANTHROPIC_API_KEY=None,
+                     ALLOWED_ORIGINS="https://app.your-domain.com",
+                     GITHUB_REDIRECT_URI="https://app.your-domain.com/auth/github/callback")
+        message = str(excinfo.value)
+        for setting in ("SECRET_KEY", "TOKEN_ENCRYPTION_KEY", "ALLOWED_ORIGINS", "ANTHROPIC_API_KEY",
+                        "GITHUB_REDIRECT_URI"):
+            assert setting in message
 
     def test_every_problem_is_reported_at_once(self):
         with pytest.raises(ValidationError) as excinfo:

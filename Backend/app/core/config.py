@@ -41,7 +41,7 @@ def _origin_problems(allowed_origins: str) -> List[str]:
         return ["ALLOWED_ORIGINS must list the frontend's https:// origin(s)"]
     # Credentialed CORS: an allowed origin can read every authenticated
     # response, so a leftover dev origin is a real exposure, not just noise.
-    bad = [o for o in origins if o == "*" or not _is_public_https(o)]
+    bad = [o for o in origins if o == "*" or not _is_public_https(o) or _looks_like_placeholder(o)]
     if bad:
         return [
             "ALLOWED_ORIGINS must contain only public https:// origins; "
@@ -346,7 +346,7 @@ class Settings(BaseSettings):
             ]
             if missing:
                 problems.append(f"GITHUB_AUTH_MODE=app needs {', '.join(missing)}")
-        if not _is_public_https(self.GITHUB_REDIRECT_URI):
+        if not _is_public_https(self.GITHUB_REDIRECT_URI) or _looks_like_placeholder(self.GITHUB_REDIRECT_URI):
             problems.append("GITHUB_REDIRECT_URI must be a public https:// URL in production")
 
         if problems:

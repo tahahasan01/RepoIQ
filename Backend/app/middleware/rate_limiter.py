@@ -223,7 +223,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.default_refill_rate = default_refill_rate
         
         try:
-            self.redis = Redis.from_url(redis_url, decode_responses=True)
+            # Bounded timeouts: redis-py's default is to block forever, so an
+            # unresponsive (not refused) Redis hung every request on its rate
+            # check instead of falling back to the in-memory limiter.
+            self.redis = Redis.from_url(
+                redis_url,
+                decode_responses=True,
+                socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
+                socket_connect_timeout=settings.REDIS_SOCKET_CONNECT_TIMEOUT,
+            )
             self.redis.ping()  # Test connection
             self.redis_available = True
             logger.info("✅ Redis connected for rate limiting")
