@@ -80,8 +80,20 @@ export const queryKeys = {
     ['topRiskAreas', orgId, limit] as const,
   complianceStatus: (orgId: string) => 
     ['complianceStatus', orgId] as const,
-  teamLeaderboard: (orgId: string, metric?: string) => 
+  teamLeaderboard: (orgId: string, metric?: string) =>
     ['teamLeaderboard', orgId, metric] as const,
+
+  // Alerts, notification settings, invitations, webhooks
+  // (hooks in hooks/useNotificationQueries.ts)
+  organizationAlerts: (orgId: string, includeAcknowledged?: boolean) =>
+    ['organizationAlerts', orgId, includeAcknowledged] as const,
+  notificationSettings: ['notificationSettings'] as const,
+  myInvitations: ['myInvitations'] as const,
+  teamInvitations: (teamId: string) =>
+    ['teamInvitations', teamId] as const,
+  webhooks: ['webhooks'] as const,
+  webhookDeliveries: (webhookId: string) =>
+    ['webhookDeliveries', webhookId] as const,
 };
 
 // ============================================

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useAuth, type AuthUser } from "@/hooks/useAuth";
@@ -10,6 +10,8 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
 import NotificationBell from "@/components/NotificationBell";
 import { DeleteAccountDialog } from "@/components/DeleteAccountDialog";
+import { NotificationSettingsCard } from "@/components/settings/NotificationSettingsCard";
+import { WebhooksCard } from "@/components/settings/WebhooksCard";
 import {
   Zap,
   User,
@@ -37,6 +39,14 @@ export default function UserSettings() {
   const githubKnown = typeof user?.github_connected === "boolean";
   const githubConnected = user?.github_connected === true;
   const [connecting, setConnecting] = useState(false);
+
+  // Links such as /settings#webhooks land on that section. The router does
+  // not scroll to a hash by itself.
+  useEffect(() => {
+    if (!location.hash) return;
+    const target = document.getElementById(location.hash.slice(1));
+    target?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [location.hash]);
 
   const handleConnectGitHub = async () => {
     setConnecting(true);
@@ -247,11 +257,31 @@ export default function UserSettings() {
             </div>
           </motion.section>
 
+          {/* Notifications: persisted through /users/me/settings */}
+          <motion.div
+            id="notifications"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.35 }}
+          >
+            <NotificationSettingsCard />
+          </motion.div>
+
+          {/* Webhooks */}
+          <motion.div
+            id="webhooks"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.4 }}
+          >
+            <WebhooksCard />
+          </motion.div>
+
           {/* Danger Zone */}
           <motion.section
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.4 }}
+            transition={{ delay: 0.45 }}
             className="glass-panel rounded-xl p-6 border-destructive/20"
           >
             <h2 className="text-xl font-semibold text-destructive mb-4">Danger Zone</h2>

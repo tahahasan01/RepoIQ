@@ -1,11 +1,10 @@
 import { motion } from "framer-motion";
 import { useState } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import {
   User,
   Github,
@@ -45,13 +44,6 @@ export default function Settings() {
   const repoNames: string[] = githubConnected
     ? (repoList || []).map((r: { name?: string; full_name?: string }) => r.full_name || r.name || "")
     : [];
-
-  const [notifications, setNotifications] = useState({
-    email: true,
-    security: true,
-    weekly: false,
-    slack: false,
-  });
 
   // null = not edited, so the field shows the saved name and follows refetches.
   // (Seeding local state from the query and resetting it on every render is
@@ -369,45 +361,30 @@ export default function Settings() {
           </div>
         </motion.div>
 
-        {/* Notifications */}
+        {/* Notifications and webhooks are account-wide and live on /settings;
+            this page used to show switches here that saved nothing. */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}
           className="glass-panel rounded-xl p-6"
         >
-          <div className="flex items-center gap-3 mb-6">
+          <div className="flex items-center gap-3 mb-4">
             <Bell className="h-5 w-5 text-primary" />
-            <h2 className="text-lg font-semibold">Notifications</h2>
+            <h2 className="text-lg font-semibold">Notifications and webhooks</h2>
           </div>
-          <div className="space-y-4">
-            {[
-              { key: "email", label: "Email notifications", desc: "Receive scan results via email" },
-              { key: "security", label: "Security alerts", desc: "Get notified about critical vulnerabilities" },
-              { key: "weekly", label: "Weekly digest", desc: "Summary of all repository activity" },
-              { key: "slack", label: "Slack alerts", desc: "Send critical alerts to Slack" },
-            ].map((item) => (
-              <div key={item.key} className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium">{item.label}</p>
-                  <p className="text-sm text-muted-foreground">{item.desc}</p>
-                </div>
-                <Switch
-                  checked={notifications[item.key as keyof typeof notifications]}
-                  onCheckedChange={(checked) =>
-                    setNotifications({ ...notifications, [item.key]: checked })
-                  }
-                />
-              </div>
-            ))}
-
-            <div className="pt-2 border-t border-border mt-2">
-              <label className="text-sm font-medium">Alert threshold</label>
-              <div className="mt-2 flex gap-2">
-                <button className="px-3 py-1 rounded border">critical</button>
-                <button className="px-3 py-1 rounded border">high</button>
-                <button className="px-3 py-1 rounded border">medium</button>
-              </div>
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <p className="text-sm text-muted-foreground max-w-xl">
+              Notification preferences and webhooks apply to your whole account, not just this repository. Manage
+              them in account settings.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/settings#notifications">Notification settings</Link>
+              </Button>
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/settings#webhooks">Webhooks</Link>
+              </Button>
             </div>
           </div>
         </motion.div>

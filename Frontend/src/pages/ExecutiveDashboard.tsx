@@ -39,6 +39,7 @@ import {
   RadialBar,
 } from "recharts";
 import apiClient from "@/lib/api";
+import { useOrganizationAlerts } from "@/hooks/useNotificationQueries";
 import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
 import { 
@@ -54,6 +55,7 @@ const COLORS = ["#0ea5e9", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6"];
 export default function ExecutiveDashboard() {
   const { orgId } = useParams<{ orgId: string }>();
   const { toast } = useToast();
+  const { data: openAlerts = [] } = useOrganizationAlerts(orgId, false);
   
   // Use React Query for instant loading with cached data
   const { data: overview, isLoading: overviewLoading } = useOrganizationOverview(orgId || "", {
@@ -189,10 +191,21 @@ export default function ExecutiveDashboard() {
               </div>
             </div>
           </div>
-          <Badge variant="outline" className="text-sm">
-            <Activity className="h-3 w-3 mr-1" />
-            Live Data
-          </Badge>
+          <div className="flex items-center gap-2">
+            {/* Alerts are managed on the organization page; this is the count. */}
+            {openAlerts.length > 0 && (
+              <Link to={`/organizations/${orgId}?tab=alerts`}>
+                <Badge variant="outline" className="text-sm gap-1 border-destructive/40 text-destructive hover:bg-destructive/10">
+                  <AlertTriangle className="h-3 w-3" />
+                  {openAlerts.length} open alert{openAlerts.length === 1 ? "" : "s"}
+                </Badge>
+              </Link>
+            )}
+            <Badge variant="outline" className="text-sm">
+              <Activity className="h-3 w-3 mr-1" />
+              Live Data
+            </Badge>
+          </div>
         </div>
 
         {/* Hero Metrics */}

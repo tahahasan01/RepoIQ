@@ -30,6 +30,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import apiClient from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
+import { InvitationsBanner } from "@/components/teams/InvitationList";
 import { useTeams, useOrganizations, usePrefetchTeam, queryKeys } from "@/hooks/useApiQueries";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -280,6 +281,7 @@ export default function Teams() {
     <div className="min-h-screen bg-background">
       <Navbar />
       <div className="container mx-auto px-4 py-8 max-w-7xl pt-24">
+        <InvitationsBanner />
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-3xl font-bold">Teams</h1>
