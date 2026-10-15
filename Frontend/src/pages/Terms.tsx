@@ -2,7 +2,35 @@ import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 import { motion } from "framer-motion";
 import { FileText } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
+import { Link } from "react-router-dom";
+import {
+  COMPANY_ADDRESS,
+  COMPANY_LEGAL_NAME,
+  DISPUTE_VENUE,
+  EFFECTIVE_DATE,
+  GOVERNING_LAW,
+  LAST_UPDATED,
+  LEGAL_DOCS_ARE_DRAFTS,
+  LEGAL_EMAIL,
+  LIABILITY_CAP,
+  MINIMUM_AGE,
+  PRODUCT_NAME,
+  TERMS_CHANGE_NOTICE_DAYS,
+} from "@/content/legal";
+
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div>
+      <h2 className="text-2xl font-bold text-foreground mb-4">{title}</h2>
+      <div className="space-y-4">{children}</div>
+    </div>
+  );
+}
+
+function List({ children }: { children: ReactNode }) {
+  return <ul className="list-disc list-inside space-y-2 ml-4">{children}</ul>;
+}
 
 export default function Terms() {
   useEffect(() => {
@@ -13,7 +41,7 @@ export default function Terms() {
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
-      
+
       <main className="pt-24 pb-16">
         {/* Header */}
         <section className="container mx-auto px-4 py-16">
@@ -30,7 +58,7 @@ export default function Terms() {
               Terms of <span className="gradient-text">Service</span>
             </h1>
             <p className="text-muted-foreground">
-              Last updated: January 27, 2026
+              Effective {EFFECTIVE_DATE}. Last updated {LAST_UPDATED}.
             </p>
           </motion.div>
         </section>
@@ -41,155 +69,284 @@ export default function Terms() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.2 }}
-            className="max-w-4xl mx-auto glass-panel p-12 rounded-2xl prose prose-invert max-w-none"
+            className="max-w-4xl mx-auto glass-panel p-6 md:p-12 rounded-2xl prose prose-invert max-w-none"
           >
             <div className="space-y-8 text-muted-foreground">
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">1. Agreement to Terms</h2>
-                <p>
-                  By accessing or using RepoIQ ("Service"), you agree to be bound by these Terms of Service ("Terms"). If you disagree with any part of these terms, you may not access the Service.
+              {LEGAL_DOCS_ARE_DRAFTS && (
+                <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-600 dark:text-amber-400">
+                  Draft. These terms are pending legal review and may change before launch.
                 </p>
-              </div>
+              )}
 
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">2. Description of Service</h2>
+              <Section title="1. Agreement">
                 <p>
-                  RepoIQ is a code intelligence platform that analyzes GitHub repositories to provide insights on code quality, security vulnerabilities, architecture, and best practices. The Service includes web-based dashboards, API access, and automated analysis features.
+                  These Terms of Service ("Terms") are an agreement between you and {COMPANY_LEGAL_NAME} ("we",
+                  "us") for your use of {PRODUCT_NAME}, including the website, web app and API (the "Service").
+                  By creating an account or using the Service you agree to these Terms. If you do not agree, do
+                  not use the Service.
                 </p>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">3. User Accounts</h2>
-                
-                <h3 className="text-xl font-semibold text-foreground mb-3">3.1 Account Creation</h3>
-                <p>You must create an account to use the Service. You agree to:</p>
-                <ul className="list-disc list-inside space-y-2 ml-4 mt-2">
-                  <li>Provide accurate, current, and complete information</li>
-                  <li>Maintain and promptly update your account information</li>
-                  <li>Maintain the security of your account credentials</li>
-                  <li>Accept responsibility for all activities under your account</li>
-                  <li>Notify us immediately of any unauthorized use</li>
-                </ul>
-
-                <h3 className="text-xl font-semibold text-foreground mb-3 mt-6">3.2 Account Eligibility</h3>
-                <p>You must be at least 13 years old to use the Service. By using the Service, you represent that you meet this requirement.</p>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">4. Acceptable Use</h2>
-                <p className="mb-4">You agree not to:</p>
-                <ul className="list-disc list-inside space-y-2 ml-4">
-                  <li>Violate any applicable laws or regulations</li>
-                  <li>Infringe on intellectual property rights of others</li>
-                  <li>Transmit malware, viruses, or harmful code</li>
-                  <li>Attempt to gain unauthorized access to the Service</li>
-                  <li>Interfere with or disrupt the Service or servers</li>
-                  <li>Use the Service for any illegal or unauthorized purpose</li>
-                  <li>Reverse engineer, decompile, or disassemble the Service</li>
-                  <li>Use automated systems to access the Service without permission</li>
-                  <li>Share your account credentials with others</li>
-                </ul>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">5. GitHub Integration</h2>
-                <p className="mb-4">The Service integrates with GitHub. By using the Service, you acknowledge that:</p>
-                <ul className="list-disc list-inside space-y-2 ml-4">
-                  <li>You grant RepoIQ permission to access your GitHub repositories</li>
-                  <li>You are responsible for managing GitHub access permissions</li>
-                  <li>We process your code in accordance with our Privacy Policy</li>
-                  <li>We do not permanently store your source code</li>
-                  <li>You comply with GitHub's Terms of Service</li>
-                </ul>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">6. Subscription and Payments</h2>
-                
-                <h3 className="text-xl font-semibold text-foreground mb-3">6.1 Pricing</h3>
-                <p>Certain features require a paid subscription. Current pricing is available on our pricing page and may change with notice.</p>
-
-                <h3 className="text-xl font-semibold text-foreground mb-3 mt-6">6.2 Billing</h3>
-                <p className="mb-2">For paid subscriptions:</p>
-                <ul className="list-disc list-inside space-y-2 ml-4">
-                  <li>Subscriptions automatically renew unless cancelled</li>
-                  <li>You authorize us to charge your payment method</li>
-                  <li>Refunds are provided in accordance with our refund policy</li>
-                  <li>We may suspend access for non-payment</li>
-                </ul>
-
-                <h3 className="text-xl font-semibold text-foreground mb-3 mt-6">6.3 Free Trial</h3>
-                <p>Free trials may be offered. At the end of the trial period, your subscription will begin unless cancelled.</p>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">7. Intellectual Property</h2>
-                
-                <h3 className="text-xl font-semibold text-foreground mb-3">7.1 Service Content</h3>
-                <p>The Service and its original content, features, and functionality are owned by RepoIQ and are protected by copyright, trademark, and other laws.</p>
-
-                <h3 className="text-xl font-semibold text-foreground mb-3 mt-6">7.2 Your Content</h3>
-                <p>You retain all rights to your code and repositories. You grant us a limited license to process and analyze your code to provide the Service.</p>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">8. Disclaimers</h2>
-                <p className="mb-4">THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTIES OF ANY KIND. We do not guarantee that:</p>
-                <ul className="list-disc list-inside space-y-2 ml-4">
-                  <li>The Service will be uninterrupted or error-free</li>
-                  <li>Defects will be corrected</li>
-                  <li>The Service is free of viruses or harmful components</li>
-                  <li>Analysis results are 100% accurate or complete</li>
-                </ul>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">9. Limitation of Liability</h2>
                 <p>
-                  TO THE MAXIMUM EXTENT PERMITTED BY LAW, REPOIQ SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS OR REVENUES, WHETHER INCURRED DIRECTLY OR INDIRECTLY, OR ANY LOSS OF DATA, USE, GOODWILL, OR OTHER INTANGIBLE LOSSES.
+                  If you use the Service on behalf of an organization, such as your employer, you confirm that you
+                  are authorized to accept these Terms for it, and "you" includes that organization.
                 </p>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">10. Indemnification</h2>
                 <p>
-                  You agree to indemnify and hold harmless RepoIQ from any claims, damages, losses, liabilities, and expenses arising from your use of the Service or violation of these Terms.
+                  Our <Link to="/privacy" className="text-primary hover:underline">Privacy Policy</Link> explains
+                  how we handle personal information and your source code.
                 </p>
-              </div>
+              </Section>
 
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">11. Termination</h2>
-                <p className="mb-4">We may terminate or suspend your account and access to the Service:</p>
-                <ul className="list-disc list-inside space-y-2 ml-4">
-                  <li>For violations of these Terms</li>
-                  <li>For fraudulent, abusive, or illegal activity</li>
-                  <li>At our sole discretion with or without notice</li>
-                </ul>
-                <p className="mt-4">You may terminate your account at any time through your account settings.</p>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">12. Changes to Terms</h2>
+              <Section title="2. The Service">
                 <p>
-                  We reserve the right to modify these Terms at any time. We will notify you of material changes. Continued use of the Service after changes constitutes acceptance of the updated Terms.
+                  {PRODUCT_NAME} connects to your GitHub account and uses AI models to review repositories. It
+                  can:
                 </p>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">13. Governing Law</h2>
+                <List>
+                  <li>analyse a repository and report findings and scores for security, quality, architecture and documentation;</li>
+                  <li>answer questions about a repository in a chat;</li>
+                  <li>generate architecture diagrams and improvement roadmaps;</li>
+                  <li>propose fixes for selected findings and, once you approve them, open them as draft pull requests;</li>
+                  <li>show team, organization and developer views, alerts and webhooks.</li>
+                </List>
                 <p>
-                  These Terms shall be governed by and construed in accordance with the laws of the State of California, without regard to its conflict of law provisions.
+                  An analysis reviews a sample of a repository's files, not necessarily all of them, and the
+                  results say how many files were reviewed. We may add, change or remove features at any time.
                 </p>
-              </div>
+              </Section>
 
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-4">14. Contact Information</h2>
-                <p className="mb-4">For questions about these Terms, contact us:</p>
+              <Section title="3. Your account">
+                <List>
+                  <li>
+                    You sign in with a GitHub account. You must be at least {MINIMUM_AGE} years old and able to
+                    form a binding contract to use the Service.
+                  </li>
+                  <li>
+                    You are responsible for keeping your GitHub account secure and for activity that happens under
+                    your {PRODUCT_NAME} account. Tell us promptly at{" "}
+                    <a href={`mailto:${LEGAL_EMAIL}`} className="text-primary hover:underline">{LEGAL_EMAIL}</a>{" "}
+                    if you believe it has been misused.
+                  </li>
+                  <li>
+                    You authorize us to access GitHub on your behalf within the permissions you grant when you
+                    connect. You can revoke that access at any time in your GitHub settings, after which features
+                    that need it will stop working.
+                  </li>
+                </List>
+              </Section>
+
+              <Section title="4. Your content">
+                <p>
+                  "Your Content" means the repositories, source code and other material the Service accesses
+                  through your GitHub account, the questions and information you submit, and the results the
+                  Service generates for you (findings, answers, diagrams, roadmaps and proposed fixes).
+                </p>
+                <List>
+                  <li>
+                    <strong>You keep ownership.</strong> You, or whoever licensed it to you, keep all rights in your
+                    code and Your Content. These Terms do not transfer any ownership to us.
+                  </li>
+                  <li>
+                    <strong>Licence to us.</strong> You give us a non-exclusive, worldwide, royalty-free licence to
+                    access, copy, process, store, transmit and display Your Content only as needed to provide,
+                    secure and support the Service for you, including sending it to the service providers listed in
+                    our Privacy Policy. This licence ends when Your Content is deleted from the Service, except for
+                    copies kept as the Privacy Policy describes (for example, in backups).
+                  </li>
+                  <li>
+                    <strong>No training.</strong> We do not use Your Content to train AI models.
+                  </li>
+                  <li>
+                    <strong>Your permission to connect code.</strong> You confirm that you are allowed to give the
+                    Service access to the repositories you connect, including any code owned by your employer or a
+                    third party.
+                  </li>
+                  <li>
+                    <strong>Results.</strong> As between you and us, you may use the results generated for you
+                    for any lawful purpose. Similar results may be generated for other users.
+                  </li>
+                </List>
+              </Section>
+
+              <Section title="5. AI output">
+                <p>
+                  Findings, scores, explanations, diagrams and fixes are produced automatically by AI models. They
+                  may be wrong, incomplete or out of date. The Service can miss real problems, including security
+                  vulnerabilities, and can report problems that do not exist. A proposed fix can introduce new bugs
+                  or security issues.
+                </p>
+                <List>
+                  <li>
+                    The Service does not replace your own code review, testing or a professional security audit.
+                  </li>
+                  <li>
+                    Auto-fix changes are shown to you as a diff and pushed only after you approve them, as a draft
+                    pull request on a new branch. You are responsible for reviewing and testing any change before
+                    you merge or deploy it.
+                  </li>
+                  <li>You decide how to act on the results, and you are responsible for those decisions.</li>
+                </List>
+              </Section>
+
+              <Section title="6. Acceptable use">
+                <p>You agree not to:</p>
+                <List>
+                  <li>connect repositories or use code you are not authorized to use;</li>
+                  <li>use the Service to break the law or to infringe anyone's rights;</li>
+                  <li>
+                    access, or try to access, another user's data, or get around access controls, rate limits or
+                    usage limits;
+                  </li>
+                  <li>
+                    probe, scan or test the Service for vulnerabilities, except as described in the responsible
+                    disclosure section of our{" "}
+                    <Link to="/security" className="text-primary hover:underline">Security</Link> page;
+                  </li>
+                  <li>
+                    interfere with or overload the Service, or use automated means to create accounts or send
+                    excessive requests;
+                  </li>
+                  <li>
+                    plant instructions or content in a repository intended to manipulate the Service's AI into
+                    acting against another user;
+                  </li>
+                  <li>
+                    copy, resell or offer the Service to others, or use it to build a competing product or train
+                    AI models, without our written permission;
+                  </li>
+                  <li>reverse engineer the Service, except where the law allows it despite this restriction.</li>
+                </List>
+              </Section>
+
+              <Section title="7. Free service and usage limits">
+                <List>
+                  <li>The Service is currently provided free of charge. We do not charge fees or collect payment details.</li>
+                  <li>
+                    We do not offer any service level agreement, uptime commitment or guaranteed support. The
+                    Service may be unavailable, slow or interrupted at times.
+                  </li>
+                  <li>
+                    Usage limits apply, for example limits on requests, on daily AI usage per user and on how many
+                    files an analysis reviews. We may change these limits.
+                  </li>
+                  <li>
+                    If we introduce paid plans, we will tell you in advance and you will not be charged unless you
+                    agree to the new terms.
+                  </li>
+                </List>
+              </Section>
+
+              <Section title="8. Third-party services">
+                <p>
+                  The Service depends on GitHub and on Anthropic, which provides the AI models. Your use of GitHub
+                  is governed by GitHub's own terms. We are not responsible for third-party services, their
+                  availability or their changes, which may affect the Service.
+                </p>
+              </Section>
+
+              <Section title="9. Feedback">
+                <p>
+                  If you send us suggestions or feedback, we may use them without any obligation to you.
+                </p>
+              </Section>
+
+              <Section title="10. Suspension and termination">
+                <List>
+                  <li>
+                    You can stop using the Service at any time, and you can delete your account from your account
+                    settings.
+                  </li>
+                  <li>
+                    We may suspend or end your access if you breach these Terms, if your use creates a security or
+                    legal risk for us or other users, or if the law requires it. Where practical we will tell you
+                    first.
+                  </li>
+                  <li>
+                    We may discontinue the Service. If we do, we will give reasonable notice where practical.
+                  </li>
+                </List>
+                <p>
+                  When your account ends, your right to use the Service ends, and your data is deleted as described
+                  in our Privacy Policy. Sections 4 (ownership), 5, 11, 12, 13, 15 and 16 continue to apply.
+                </p>
+              </Section>
+
+              <Section title="11. Disclaimers">
+                <p>
+                  To the extent permitted by law, the Service and all results are provided "as is" and "as
+                  available", without warranties of any kind, whether express or implied, including warranties of
+                  merchantability, fitness for a particular purpose, accuracy and non-infringement. We do not
+                  warrant that the Service will be uninterrupted, error free or secure, or that it will find every
+                  problem in your code.
+                </p>
+              </Section>
+
+              <Section title="12. Limitation of liability">
+                <p>
+                  To the extent permitted by law, we will not be liable for any indirect, incidental, special,
+                  consequential or punitive damages, or for any loss of profits, revenue, data or goodwill, arising
+                  from or related to the Service or these Terms, including losses caused by acting on AI output or
+                  by merging a proposed fix.
+                </p>
+                <p>
+                  To the extent permitted by law, our total liability for all claims relating to the Service or
+                  these Terms is limited to {LIABILITY_CAP}.
+                </p>
+                <p>
+                  Nothing in these Terms limits liability that cannot be limited under applicable law, such as
+                  liability for fraud, or for death or personal injury caused by negligence, or your rights as a
+                  consumer that cannot be waived.
+                </p>
+              </Section>
+
+              <Section title="13. Indemnity">
+                <p>
+                  To the extent permitted by law, you will defend and indemnify us against third-party claims
+                  arising from Your Content or from your breach of these Terms.
+                </p>
+              </Section>
+
+              <Section title="14. Changes to these terms">
+                <p>
+                  We may update these Terms. We will post the new version on this page and update the date at the
+                  top. For material changes we will give at least {TERMS_CHANGE_NOTICE_DAYS} days' notice in the app
+                  or by email before they take effect. If you keep using the Service after a change takes effect,
+                  the updated Terms apply. If you do not agree, stop using the Service and delete your account.
+                </p>
+              </Section>
+
+              <Section title="15. Governing law and disputes">
+                <p>
+                  These Terms are governed by {GOVERNING_LAW}, without regard to its conflict of law rules. Disputes
+                  will be resolved in {DISPUTE_VENUE}, unless the law of the place where you live gives you the
+                  right to bring proceedings there.
+                </p>
+              </Section>
+
+              <Section title="16. General">
+                <List>
+                  <li>These Terms and the Privacy Policy are the entire agreement between you and us about the Service.</li>
+                  <li>If any part of these Terms is found unenforceable, the rest remains in effect.</li>
+                  <li>If we do not enforce a provision, that is not a waiver of our right to do so later.</li>
+                  <li>
+                    You may not transfer these Terms without our consent. We may transfer them in connection with a
+                    merger, acquisition or sale of assets.
+                  </li>
+                </List>
+              </Section>
+
+              <Section title="17. Contact">
+                <p>Questions about these Terms:</p>
                 <ul className="space-y-2">
-                  <li>Email: <a href="mailto:legal@repoiq.dev" className="text-primary hover:underline">legal@repoiq.dev</a></li>
-                  <li>Address: RepoIQ Inc., 123 Code Street, San Francisco, CA 94105</li>
+                  <li>
+                    Email:{" "}
+                    <a href={`mailto:${LEGAL_EMAIL}`} className="text-primary hover:underline">
+                      {LEGAL_EMAIL}
+                    </a>
+                  </li>
+                  <li>
+                    Post: {COMPANY_LEGAL_NAME}, {COMPANY_ADDRESS}
+                  </li>
                 </ul>
-              </div>
+              </Section>
             </div>
           </motion.div>
         </section>
