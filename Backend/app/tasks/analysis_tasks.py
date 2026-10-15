@@ -7,6 +7,7 @@ from app.services.token_optimizer import get_token_optimizer
 from app.services.toon_service import get_toon_service
 from app.services.incremental_analysis import partition_files, record_batch_findings
 from app.services.redis_service import get_redis_service
+from app.services.webhook_service import emit_analysis_completed, emit_analysis_failed
 from app.core.concurrency import run_blocking
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -99,6 +100,7 @@ async def run_analysis_sync(repo_id: str, user_id: str, github_token: str, analy
         except Exception as update_error:
             logger.error(f"Failed to update analysis status: {str(update_error)}")
 
+        await emit_analysis_failed(user_id, repo_id, analysis_id, e)  # never raises
         raise
     finally:
         # Every exit path - success, cancellation, failure - releases the slot.
@@ -112,6 +114,8 @@ class CallbackTask(Task):
         analysis_id = kwargs.get("analysis_id")
         if analysis_id:
             asyncio.run(self._mark_analysis_failed(analysis_id, str(exc)))
+            if not isinstance(exc, AnalysisCancelled):  # a cancellation is not a failure event
+                asyncio.run(emit_analysis_failed(kwargs.get("user_id"), kwargs.get("repo_id"), analysis_id, exc))
     
     async def _mark_analysis_failed(self, analysis_id: str, error: str):
         try:
@@ -535,6 +539,7 @@ async def _run_followups(
         )
 
     steps = [
+        ("analysis.completed webhooks", lambda: emit_analysis_completed(repo, analysis_id)),
         ("improvement roadmap", roadmap),
         ("resolved-issue detection", lambda: mark_resolved_issues(repo["id"], analysis_id, analysed_paths)),
         ("developer insights", lambda: refresh_repository_insights(repo, github_token, analysis_id, analysed_paths)),

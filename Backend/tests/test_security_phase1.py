@@ -416,7 +416,9 @@ class TestWebhookUrlGuard:
         import inspect
         from app.services.webhook_service import WebhookService
 
-        source = inspect.getsource(WebhookService.send_webhook)
+        # deliver() is where the request is made; send_webhook and the Celery
+        # task both go through it.
+        source = inspect.getsource(WebhookService.deliver)
         assert "follow_redirects=False" in source
 
 

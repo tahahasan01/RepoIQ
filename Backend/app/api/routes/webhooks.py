@@ -5,13 +5,17 @@ Allows users to:
 - Register webhook endpoints
 - List their webhooks
 - Delete webhooks
-- View webhook delivery history
+- View webhook delivery history (GET /webhooks/{id}/deliveries)
+
+Events are emitted by app.services.webhook_service.emit_event; the delivery
+request format and the payload of each event are documented there.
 """
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, Query, status, Depends
 from pydantic import BaseModel, ConfigDict, HttpUrl
 from typing import List, Optional
 from app.services.webhook_service import get_webhook_service, WebhookEvents
 from app.api.dependencies import get_current_user
+from app.api.errors import safe_detail
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -197,10 +201,10 @@ async def test_webhook(
         "user_id": current_user["id"]
     }
     
-    # max_attempts=1: the default ladder sleeps 5s + 30s + 300s between retries.
-    # On a request-path endpoint that holds the connection open for over five
-    # minutes per call - a cheap way to exhaust the connection pool. A test
-    # delivery should report the first attempt's result and nothing more.
+    # max_attempts=1: a test delivery reports the first attempt's result and
+    # nothing more. The retry ladder (5s + 30s + 300s) used to run inline here,
+    # holding the request open for over five minutes; retries now exist only on
+    # Celery, and send_webhook refuses more than one in-process attempt.
     success = await service.send_webhook(
         webhook, "test.ping", test_payload, max_attempts=1
     )
@@ -212,3 +216,63 @@ async def test_webhook(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to deliver test webhook"
         )
+
+
+@router.get("/{webhook_id}/deliveries")
+async def list_webhook_deliveries(
+    webhook_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delivery history for one of the caller's webhooks, newest first. One entry
+    per ATTEMPT: a delivery retried twice and then delivered is three entries
+    sharing a delivery_id (status retrying, retrying, success).
+
+    Query: limit (1-100, default 20), offset (default 0).
+    Response 200:
+        {
+          "webhook_id": "uuid",
+          "deliveries": [
+            {
+              "id": "uuid",
+              "delivery_id": "uuid" | null,   # null on rows from before retries were tracked
+              "event_type": "analysis.completed",
+              "status": "success" | "retrying" | "failed" | "blocked",
+              "response_code": 200,            # 0 when no HTTP response was received
+              "attempt": 1,
+              "error": null | "timeout" | "connection_error" | "http_503"
+                       | "unsafe_destination" | "request_error",
+              "delivered_at": "ISO-8601"
+            }
+          ],
+          "limit": 20,
+          "offset": 0,
+          "has_more": false
+        }
+    404 when the webhook does not exist or belongs to someone else.
+    """
+    service = get_webhook_service()
+
+    try:
+        # Ownership first, deactivated webhooks included: their history is still
+        # the owner's to read. A deleted webhook takes its history with it.
+        webhook = await service.get_webhook(webhook_id, current_user["id"], active_only=False)
+        # One extra row answers "is there another page" without a COUNT.
+        rows = await service.get_deliveries(webhook_id, limit + 1, offset) if webhook else []
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=safe_detail(e, "Failed to load webhook deliveries", context="webhooks.deliveries"),
+        )
+    if not webhook:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook not found")
+
+    return {
+        "webhook_id": webhook_id,
+        "deliveries": rows[:limit],
+        "limit": limit,
+        "offset": offset,
+        "has_more": len(rows) > limit,
+    }
