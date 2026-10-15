@@ -15,11 +15,13 @@ import {
   Clock,
   Loader2,
   History,
+  MessageSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
 import NotificationBell from "@/components/NotificationBell";
+import { Chatbot } from "@/components/Chatbot";
 import { useState, useEffect } from "react";
 import apiClient from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -66,6 +68,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanHistory, setScanHistory] = useState<ScanResult[]>([]);
+  const [chatOpen, setChatOpen] = useState(false);
   const location = useLocation();
 
   // Function to load repo and history (will be reused for real-time updates)
@@ -441,6 +444,19 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
             {/* Role toggle removed: app is owner-only */}
 
+            {repoId && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => setChatOpen(true)}
+                aria-haspopup="dialog"
+              >
+                <MessageSquare className="h-4 w-4" aria-hidden="true" />
+                Ask about this repo
+              </Button>
+            )}
+
             <NotificationBell />
             <ThemeToggle />
             <AccountDropdown />
@@ -450,6 +466,15 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         {/* Page content */}
         <div className="p-6">{children}</div>
       </main>
+
+      {repoId && (
+        <Chatbot
+          repoId={repoId}
+          repoName={repoName === "Loading..." ? "this repository" : repoName}
+          open={chatOpen}
+          onOpenChange={setChatOpen}
+        />
+      )}
     </div>
   );
 }
