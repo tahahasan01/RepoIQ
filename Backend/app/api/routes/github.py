@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, status, Depends, Query
-from typing import List
+from typing import List, Optional
 import re
 from github import GithubException
 from app.schemas import RepositoryResponse
@@ -94,15 +94,17 @@ async def sync_repositories(
 async def get_repositories(
     page: int = Query(1, ge=1),
     per_page: int = Query(30, ge=1, le=100),
+    search: Optional[str] = Query(None, max_length=100),
     current_user: dict = Depends(get_current_user)
 ):
     repo_service = RepositoryService()
-    
+
     try:
         repos = await repo_service.get_user_repositories(
             current_user["id"],
             page=page,
-            per_page=per_page
+            per_page=per_page,
+            search=search,
         )
         return repos
     except Exception as e:

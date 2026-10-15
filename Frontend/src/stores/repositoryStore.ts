@@ -37,6 +37,8 @@ interface RepositoryState {
    * missing, instead of showing an empty list.
    */
   errorKind: ApiErrorKind | null;
+  /** The name search the current list was loaded with ('' for none). */
+  activeSearch: string;
 
   // Actions
   setRepositories: (repos: Repository[]) => void;
@@ -48,7 +50,12 @@ interface RepositoryState {
   setError: (error: string | null) => void;
   
   // Async actions
-  loadRepositories: (page?: number, forceRefresh?: boolean) => Promise<void>;
+  /**
+   * Load one page. `search` filters by name across ALL repositories on the
+   * server; omitted, the last search is kept (so a sync or refresh reloads
+   * the same results).
+   */
+  loadRepositories: (page?: number, forceRefresh?: boolean, search?: string) => Promise<void>;
   backgroundRefresh: (page: number) => Promise<void>;
   syncRepositories: () => Promise<void>;
   refreshRepositories: () => Promise<void>;
@@ -62,6 +69,10 @@ interface RepositoryState {
 const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
 const REPOS_CACHE_KEY = 'repoiq_repositories_cache';
 const BATCH_ANALYSIS_CACHE_KEY = 'repoiq_batch_analysis_cache';
+
+// Each load takes a number; a response that arrives after a newer load
+// started is dropped, so typing quickly cannot leave stale results on screen.
+let loadSequence = 0;
 
 function getCachedReposForPage(page: number): Repository[] | null {
   try {
@@ -130,8 +141,9 @@ export const useRepositoryStore = create<RepositoryState>()(
       lastSyncTime: null,
       error: null,
       errorKind: null,
+      activeSearch: '',
 
-      setRepositories: (repos) => set({ repositories: repos }),
+      setRepositories:(repos) => set({ repositories: repos }),
       setCurrentPage: (page) => set({ currentPage: page }),
       setSearchQuery: (query) => set({ searchQuery: query }),
       setLoading: (loading) => set({ isLoading: loading }),
@@ -139,12 +151,15 @@ export const useRepositoryStore = create<RepositoryState>()(
       setHasMorePages: (hasMore) => set({ hasMorePages: hasMore }),
       setError: (error) => set({ error, errorKind: null }),
 
-      loadRepositories: async (page?: number, forceRefresh = false) => {
+      loadRepositories: async (page?: number, forceRefresh = false, search?: string) => {
         const state = get();
         const targetPage = page ?? state.currentPage;
-        
-        // Check cache first (unless force refresh) - BEFORE setting loading state
-        if (!forceRefresh) {
+        const term = (search ?? state.activeSearch).trim();
+        const requestId = ++loadSequence;
+
+        // Check cache first (unless force refresh) - BEFORE setting loading state.
+        // Only unsearched pages are cached.
+        if (!forceRefresh && !term) {
           const cached = getCachedReposForPage(targetPage);
           const cachedAnalysis = getCachedBatchAnalysis();
           
@@ -164,9 +179,10 @@ export const useRepositoryStore = create<RepositoryState>()(
             }
             
             // Set repos IMMEDIATELY without loading state
-            set({ 
-              repositories: reposWithAnalysis, 
+            set({
+              repositories: reposWithAnalysis,
               currentPage: targetPage,
+              activeSearch: '',
               isLoading: false, // Explicitly set to false for instant display
               hasMorePages: cached.length === state.reposPerPage
             });
@@ -192,14 +208,15 @@ export const useRepositoryStore = create<RepositoryState>()(
         }
 
         // Only set loading if we don't have cache
-        set({ isLoading: true, error: null, errorKind: null });
+        set({ isLoading: true, error: null, errorKind: null, activeSearch: term });
 
         try {
           // Fetch repos and batch analysis IN PARALLEL for speed
           const [data, batchResults] = await Promise.all([
-            apiClient.getRepositories(targetPage, state.reposPerPage),
+            apiClient.getRepositories(targetPage, state.reposPerPage, term || undefined),
             apiClient.getBatchAnalysisResults().catch(() => null) // Don't fail if batch fails
           ]);
+          if (requestId !== loadSequence) return; // superseded by a newer load
           
           let reposList: Repository[] = [];
           if (Array.isArray(data)) {
@@ -220,8 +237,8 @@ export const useRepositoryStore = create<RepositoryState>()(
             });
           }
 
-          setCachedReposForPage(targetPage, reposList);
-          
+          if (!term) setCachedReposForPage(targetPage, reposList);
+
           set({
             repositories: reposList,
             currentPage: targetPage,
@@ -231,8 +248,9 @@ export const useRepositoryStore = create<RepositoryState>()(
             errorKind: null
           });
         } catch (err: any) {
+          if (requestId !== loadSequence) return;
           console.error('[RepositoryStore] Failed to load repos', err);
-          set({ 
+          set({
             isLoading: false, 
             error: err?.message || 'Failed to load repositories',
             errorKind: getErrorKind(err),

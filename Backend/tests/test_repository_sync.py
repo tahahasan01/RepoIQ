@@ -157,3 +157,32 @@ class TestListingReportsCompleteness:
         from app.core.config import get_settings
 
         assert get_settings().GITHUB_SYNC_MAX_REPOS >= 100
+
+
+@requires_db
+class TestSearch:
+
+    def _list(self, user_id, **kwargs):
+        import asyncio
+        from app.services.repository_service import RepositoryService
+
+        service = RepositoryService()
+        service.redis = MagicMock()
+        service.redis.get.return_value = None
+        return asyncio.run(service.get_user_repositories(user_id, **kwargs))
+
+    def test_search_covers_every_page(self, db, user):  # noqa: F811
+        repos = [_github_repo(i) for i in range(10)] + [dict(_github_repo(99), name="Frameless_Scraper")]
+        _sync(user["id"], repos, complete=True)
+
+        # Without a search, page 1 of 3 does not necessarily hold it...
+        assert len(self._list(user["id"], page=1, per_page=3)) == 3
+        # ...with one, it is found wherever it sits, case-insensitively.
+        found = self._list(user["id"], page=1, per_page=3, search="frameless")
+        assert [r["name"] for r in found] == ["Frameless_Scraper"]
+
+    def test_wildcards_are_literal(self, db, user):  # noqa: F811
+        _sync(user["id"], [dict(_github_repo(1), name="a_b"), dict(_github_repo(2), name="axb")], complete=True)
+
+        assert [r["name"] for r in self._list(user["id"], search="a_b")] == ["a_b"]
+        assert self._list(user["id"], search="%") == []

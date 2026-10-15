@@ -303,7 +303,9 @@ class RepositoryService:
             logger.error(f"Batch analysis fetch failed: {str(e)}")
             return {}
     
-    async def get_user_repositories(self, user_id: str, page: int = 1, per_page: int = 30) -> List[Dict[str, Any]]:
+    async def get_user_repositories(
+        self, user_id: str, page: int = 1, per_page: int = 30, search: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Get repositories for a user with analysis data.
         
@@ -318,9 +320,17 @@ class RepositoryService:
             start_time = time.time()
             offset = (page - 1) * per_page
             
+            # A search covers every repository, not only one page of them.
+            # The term is matched literally: LIKE wildcards in it are escaped.
+            search = (search or "").strip()
+            pattern = None
+            if search:
+                escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                pattern = f"%{escaped}%"
+
             # Check Redis cache for first page (most common case after login)
             cache_key = f"db:repos:{user_id}:page:{page}:per:{per_page}"
-            if page == 1:
+            if page == 1 and not pattern:
                 cached_repos = self.redis.get(cache_key)
                 if cached_repos:
                     logger.info(f"⚡ INSTANT: Returning {len(cached_repos)} cached repos for user (page {page})")
@@ -328,9 +338,10 @@ class RepositoryService:
             
             # Fetch repositories
             logger.info(f"📂 Fetching repositories for user (page {page})...")
-            result = (await run_blocking(self.db.table("repositories")\
-                .select("*")\
-                .eq("user_id", user_id)\
+            query = self.db.table("repositories").select("*").eq("user_id", user_id)
+            if pattern:
+                query = query.ilike("name", pattern)
+            result = (await run_blocking(query\
                 .order("github_updated_at", desc=True)\
                 .limit(per_page)\
                 .offset(offset)\
@@ -390,7 +401,7 @@ class RepositoryService:
                     repo["score"] = None
 
             # Cache first page for 5 minutes (updated on sync or new analysis)
-            if page == 1:
+            if page == 1 and not pattern:
                 self.redis.set(cache_key, repos, ttl=300)
                 logger.info(f"💾 Cached first page of repos for user")
             

@@ -674,8 +674,10 @@ class ApiClient {
     });
   }
 
-  async getRepositories(page = 1, per_page = 30) {
-    return this.request<any[]>(`/github/repositories?page=${page}&per_page=${per_page}`);
+  async getRepositories(page = 1, per_page = 30, search?: string) {
+    const query = new URLSearchParams({ page: String(page), per_page: String(per_page) });
+    if (search) query.set('search', search);
+    return this.request<any[]>(`/github/repositories?${query}`);
   }
 
   async getRepository(repoId: string) {

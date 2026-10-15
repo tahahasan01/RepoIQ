@@ -153,10 +153,15 @@ export default function Repositories() {
     });
   }, []); // Only on mount
 
-  // Load repositories when page changes
+  // Load repositories when the page or the search changes. A search runs on
+  // the server across every repository, starting from page 1.
   useEffect(() => {
-    loadRepositories(currentPage);
-  }, [currentPage, loadRepositories]);
+    if (searchQuery && currentPage !== 1) {
+      setCurrentPage(1);
+      return;
+    }
+    loadRepositories(currentPage, false, searchQuery);
+  }, [currentPage, searchQuery, loadRepositories, setCurrentPage]);
   
   // Listen for analysis completion events
   useEffect(() => {
@@ -506,12 +511,29 @@ export default function Repositories() {
         ) : filteredRepos.length === 0 && isGitHubAccessKind(repoErrorKind) ? null : filteredRepos.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center">
             <p className="text-muted-foreground mb-4">
-              {repoError || "No repositories found. Click Refresh to sync from GitHub."}
+              {repoError
+                || (searchQuery || activeFilterCount > 0
+                  ? searchQuery
+                    ? `No repositories match "${searchQuery}"${activeFilterCount > 0 ? " with these filters" : ""}.`
+                    : "No repositories on this page match these filters."
+                  : "No repositories yet. Sync to bring them in from GitHub.")}
             </p>
-            <Button onClick={handleRefresh} disabled={isSyncing} className="gap-2">
-              <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} />
-              {isSyncing ? 'Syncing...' : 'Sync Repositories'}
-            </Button>
+            {!repoError && (searchQuery || activeFilterCount > 0) ? (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  clearFilters();
+                  setSearchInput("");
+                }}
+              >
+                Clear search and filters
+              </Button>
+            ) : (
+              <Button onClick={handleRefresh} disabled={isSyncing} className="gap-2">
+                <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} />
+                {isSyncing ? 'Syncing...' : 'Sync Repositories'}
+              </Button>
+            )}
           </div>
         ) : (
         <>
