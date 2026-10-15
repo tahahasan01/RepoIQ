@@ -90,7 +90,7 @@ export default function Terms() {
                   are authorized to accept these Terms for it, and "you" includes that organization.
                 </p>
                 <p>
-                  Our <Link to="/privacy" className="text-primary hover:underline">Privacy Policy</Link> explains
+                  Our <Link to="/privacy" className="text-link hover:underline">Privacy Policy</Link> explains
                   how we handle personal information and your source code.
                 </p>
               </Section>
@@ -122,7 +122,7 @@ export default function Terms() {
                   <li>
                     You are responsible for keeping your GitHub account secure and for activity that happens under
                     your {PRODUCT_NAME} account. Tell us promptly at{" "}
-                    <a href={`mailto:${LEGAL_EMAIL}`} className="text-primary hover:underline">{LEGAL_EMAIL}</a>{" "}
+                    <a href={`mailto:${LEGAL_EMAIL}`} className="text-link hover:underline">{LEGAL_EMAIL}</a>{" "}
                     if you believe it has been misused.
                   </li>
                   <li>
@@ -198,7 +198,7 @@ export default function Terms() {
                   <li>
                     probe, scan or test the Service for vulnerabilities, except as described in the responsible
                     disclosure section of our{" "}
-                    <Link to="/security" className="text-primary hover:underline">Security</Link> page;
+                    <Link to="/security" className="text-link hover:underline">Security</Link> page;
                   </li>
                   <li>
                     interfere with or overload the Service, or use automated means to create accounts or send
@@ -338,7 +338,7 @@ export default function Terms() {
                 <ul className="space-y-2">
                   <li>
                     Email:{" "}
-                    <a href={`mailto:${LEGAL_EMAIL}`} className="text-primary hover:underline">
+                    <a href={`mailto:${LEGAL_EMAIL}`} className="text-link hover:underline">
                       {LEGAL_EMAIL}
                     </a>
                   </li>

@@ -40,17 +40,17 @@ export default function SignUp() {
   };
 
   return (
-    <div className="min-h-screen grid md:grid-cols-2 bg-gradient-to-br from-background via-background to-purple-950/20">
+    <div className="min-h-screen grid md:grid-cols-2 bg-gradient-to-br from-background via-background to-primary/10">
       <div className="relative overflow-hidden bg-gradient-to-br from-teal-600/20 via-teal-500/10 to-transparent hidden md:flex items-center justify-center">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_50%,rgba(6,182,212,0.15),transparent_50%)]" />
         <div className="relative w-full max-w-xl px-12 space-y-8">
           <div className="space-y-2">
-            <div className="flex items-center gap-3 text-cyan-400 mb-2">
+            <div className="flex items-center gap-3 text-cyan-600 dark:text-cyan-400 mb-2">
               <span className="text-3xl font-bold">{`</>`}</span>
-              <span className="text-3xl font-bold text-white">Welcome to <span className="text-cyan-400">RepoIQ</span></span>
+              <span className="text-3xl font-bold text-foreground">Welcome to <span className="text-cyan-600 dark:text-cyan-400">RepoIQ</span></span>
             </div>
-            <p className="text-base text-gray-400 ml-12">
-              AI-Powered Code Intelligence Platform
+            <p className="text-base text-muted-foreground ml-12">
+              AI code review for GitHub repositories
             </p>
           </div>
           <motion.div
@@ -58,34 +58,34 @@ export default function SignUp() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4 }}
-            className="w-full max-w-md p-6 bg-gray-900/60 backdrop-blur-sm rounded-xl border border-gray-800/50 ml-12"
+            className="w-full max-w-md p-6 bg-card/70 backdrop-blur-sm rounded-xl border border-border ml-12"
           >
-            <div className="flex items-center gap-3 text-cyan-400 mb-4">
+            <div className="flex items-center gap-3 text-cyan-600 dark:text-cyan-400 mb-4">
               <Quote className="h-5 w-5" />
               <span className="text-xs uppercase tracking-wider font-semibold">Daily dev note</span>
             </div>
-            <p className="text-xl font-semibold leading-relaxed text-white">
+            <p className="text-xl font-semibold leading-relaxed text-foreground">
               "{codingQuotes[quoteIndex].text}"
             </p>
-            <p className="mt-4 text-sm text-gray-400">— {codingQuotes[quoteIndex].author}</p>
+            <p className="mt-4 text-sm text-muted-foreground">— {codingQuotes[quoteIndex].author}</p>
           </motion.div>
         </div>
       </div>
 
-      <div className="flex items-center justify-center px-6 py-12">
+      <div className="flex items-center justify-center px-4 sm:px-6 py-12 min-w-0">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           className="w-full max-w-md"
         >
-          <div className="bg-gray-900/40 backdrop-blur-sm rounded-2xl border border-gray-800/50 p-10 shadow-2xl">
-            <h2 className="text-3xl font-bold text-white">Sign up</h2>
-            <p className="text-base text-gray-400 mt-2">Create your RepoIQ account</p>
+          <div className="bg-card/80 backdrop-blur-sm rounded-2xl border border-border p-6 sm:p-10 shadow-2xl">
+            <h2 className="text-3xl font-bold text-foreground">Sign up</h2>
+            <p className="text-base text-muted-foreground mt-2">Create your RepoIQ account</p>
             <div className="mt-8 space-y-6">
               <Button
                 variant="outline"
                 size="lg"
-                className="w-full gap-3 bg-white hover:bg-gray-100 text-gray-900 border-0 h-12 text-base font-medium"
+                className="w-full gap-3 bg-foreground hover:bg-foreground/90 text-background border-0 h-12 text-base font-medium"
                 onClick={handleGitHubOnly}
                 disabled={isLoading}
               >
@@ -102,12 +102,12 @@ export default function SignUp() {
                 )}
               </Button>
 
-              <p className="text-center text-xs text-gray-500">
-                You'll install the RepoIQ GitHub App and choose which repositories it can read.
+              <p className="text-center text-xs text-muted-foreground">
+                You'll install the RepoIQ GitHub App and choose which repositories it can access.
               </p>
 
-              <div className="text-center text-sm text-gray-400">
-                Already have an account? <Link to="/login" className="text-cyan-400 hover:text-cyan-300 hover:underline font-medium">Log in</Link>
+              <div className="text-center text-sm text-muted-foreground">
+                Already have an account? <Link to="/login" className="text-cyan-600 dark:text-cyan-400 hover:underline font-medium">Log in</Link>
               </div>
             </div>
           </div>
