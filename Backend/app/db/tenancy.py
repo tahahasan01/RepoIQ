@@ -62,6 +62,7 @@ TENANT_OWNED_TABLES: Set[str] = {
     "code_ownership",
     "issue_blame",
     "audit_logs",
+    "autofix_runs",
 }
 
 # Columns that constitute an acceptable tenant constraint.

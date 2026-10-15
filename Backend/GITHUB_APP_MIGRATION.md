@@ -53,7 +53,7 @@ the credential can do rather than how carefully it is handled.
 
 | | OAuth App (today) | GitHub App |
 |---|---|---|
-| Scope granularity | All-or-nothing `repo` | Per-permission: `Contents: read`, `Pull requests: write` |
+| Scope granularity | All-or-nothing `repo` | Per-permission: `Contents`, `Pull requests` |
 | Repository granularity | Every repo the user can reach | Only repos the user selects at install time |
 | Credential lifetime | Long-lived user token | Installation token, expires in 1 hour |
 | Revocation | User must revoke the whole app | Per-repository, from the GitHub UI |
@@ -86,7 +86,7 @@ Permissions granted (nothing else):
 
 | Permission | Level | Why |
 |---|---|---|
-| Repository → Contents | Read-only | Reading files to analyse |
+| Repository → Contents | Read and write | Reading files to analyse; auto-fix commits to a new `repoiq/fix-…` branch (never an existing one). Read-only disables auto-fix only |
 | Repository → Metadata | Read-only | Mandatory, granted automatically |
 | Repository → Pull requests | Read and write | Auto-fix opens PRs |
 | Account → Email addresses | Read-only | Sign-in identity |
@@ -101,6 +101,16 @@ Other settings:
   webhook feature is outbound to user-supplied endpoints, which is unrelated.
 - **Callback URL** — `http://localhost:8080/auth/github/callback`. Add the
   production URL under "Identifying and authorizing users" before deploying.
+
+## Enabling auto-fix on the registered app
+
+The app was registered with Contents: Read-only. Auto-fix needs Read and write:
+
+1. https://github.com/settings/apps/repoiq-code-intelligence/permissions →
+   Repository permissions → **Contents: Read and write** → Save.
+2. GitHub asks every installation to approve the change. Until an installation
+   approves it, auto-fix on its repositories fails with a message naming the
+   missing permission; analysis is unaffected.
 
 ## What you still need to do
 
@@ -134,7 +144,7 @@ Other settings:
 
 1. **Settings → Developer settings → GitHub Apps → New GitHub App**
 2. Permissions — request only these:
-   - Repository → **Contents: Read-only** (reading files to analyse)
+   - Repository → **Contents: Read and write** (reading files; auto-fix branches)
    - Repository → **Metadata: Read-only** (mandatory)
    - Repository → **Pull requests: Read and write** (auto-fix only)
    - Account → **Email addresses: Read-only** (sign-in)

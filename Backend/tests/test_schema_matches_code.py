@@ -33,7 +33,7 @@ def _schema_columns():
     )
     tables = {}
     for match in re.finditer(
-        r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);", text, re.DOTALL
+        r"CREATE TABLE IF NOT EXISTS (?:public\.)?(\w+) \((.*?)\n\);", text, re.DOTALL
     ):
         name, body = match.groups()
         columns = set()

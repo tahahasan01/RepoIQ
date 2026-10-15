@@ -566,32 +566,3 @@ Accuracy over volume. An empty issues array is an acceptable answer."""
                 "auto_fixable": len([i for i in issues if i.get("auto_fixable")]),
             }
         }
-    
-    async def auto_fix_issues(self, issues: List[Dict[str, Any]], code_files: Dict[str, str]) -> List[Dict[str, Any]]:
-        fixes = []
-        
-        for issue in issues:
-            if not issue.get("auto_fixable"):
-                continue
-            
-            file_path = issue.get("file_path")
-            if file_path not in code_files:
-                continue
-            
-            code = code_files[file_path]
-            
-            try:
-                if issue.get("agent_type") == "security":
-                    fixed_code = await self.security_agent.generate_fix(issue, code)
-                    if fixed_code:
-                        fixes.append({
-                            "issue_id": issue.get("id"),
-                            "file_path": file_path,
-                            "original_code": code,
-                            "fixed_code": fixed_code,
-                            "description": issue["description"]
-                        })
-            except Exception as e:
-                logger.error(f"Auto-fix failed for issue: {str(e)}")
-        
-        return fixes

@@ -117,3 +117,29 @@ def dispatch_analysis(
         analysis_id=analysis_id,
     )
     return DispatchMode.INLINE
+
+
+def dispatch_autofix(
+    run_id: str,
+    github_token: str,
+    add_background_task: Optional[Callable[..., Any]] = None,
+) -> str:
+    """
+    Start an auto-fix run, on the same terms as an analysis: Celery when a
+    worker is listening, otherwise in-process. It used to call .delay()
+    unconditionally, so without a worker the request sat in Redis forever
+    while the UI said "check the repository for a new pull request".
+    """
+    if resolve_mode() == DispatchMode.QUEUE:
+        from app.tasks.autofix_tasks import autofix_task
+
+        autofix_task.delay(run_id=run_id)
+        return DispatchMode.QUEUE
+
+    if add_background_task is None:
+        raise RuntimeError("No Celery worker is available and no in-process fallback was provided")
+
+    from app.tasks.autofix_tasks import run_autofix_inline
+
+    add_background_task(run_autofix_inline, run_id=run_id, github_token=github_token)
+    return DispatchMode.INLINE

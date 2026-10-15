@@ -272,32 +272,3 @@ Identify all security issues and return them in JSON format."""
             "command_injection": "Avoid shell=True, use subprocess with list arguments and input validation",
         }
         return suggestions.get(category, "Review and fix this security issue")
-    
-    async def generate_fix(self, issue: Dict[str, Any], code: str) -> Optional[str]:
-        if not issue.get("auto_fixable"):
-            return None
-        
-        system_prompt = "You are a security expert. Generate a secure fix for the code issue."
-        user_prompt = f"""Fix this security issue:
-
-Issue: {issue['description']}
-Category: {issue['category']}
-Suggestion: {issue['suggestion']}
-
-Original code around line {issue['line_number']}:
-```
-{code}
-```
-
-Provide only the fixed code without explanation."""
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        
-        try:
-            return await self._call_llm(messages)
-        except Exception as e:
-            logger.error(f"Fix generation failed: {str(e)}")
-            return None

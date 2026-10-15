@@ -16,7 +16,7 @@ celery_app = Celery(
     "coderabbit",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.tasks.analysis_tasks"]
+    include=["app.tasks.analysis_tasks", "app.tasks.autofix_tasks"]
 )
 
 celery_app.conf.update(

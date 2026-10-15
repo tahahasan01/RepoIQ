@@ -102,6 +102,16 @@ def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0):
     return decorator
 
 
+class GitHubWriteError(Exception):
+    """A write to GitHub (branch, commit, pull request) failed. Message is user-facing."""
+
+    user_facing = True
+
+    def __init__(self, message: str, permission: bool = False):
+        super().__init__(message)
+        self.permission = permission
+
+
 class GitHubService:
     def __init__(self, access_token: str):
         self.client = Github(access_token, per_page=100)  # Optimize pagination
@@ -611,51 +621,84 @@ class GitHubService:
             logger.error(f"Failed to fetch repository structure: {str(e)}")
             raise
     
+    def _write_error(self, action: str, e: GithubException) -> "GitHubWriteError":
+        if e.status in (403, 404) and (e.status == 404 or _is_permission_error(e)):
+            # GitHub answers 404 rather than 403 for some writes the token may not
+            # make, so both mean "not allowed" here.
+            return GitHubWriteError(
+                "RepoIQ does not have write access to this repository. In the GitHub App's "
+                "settings, set the repository permission 'Contents' to 'Read and write', then "
+                "approve the updated permissions for this installation.",
+                permission=True,
+            )
+        return GitHubWriteError(f"GitHub rejected the {action} (HTTP {e.status})")
+
+    def get_branch_head(self, repo_full_name: str, branch: str) -> str:
+        return self.client.get_repo(repo_full_name).get_branch(branch).commit.sha
+
+    def get_file_at(self, repo_full_name: str, file_path: str, ref: str) -> Optional[str]:
+        """
+        A file's exact content at commit `ref`. Deliberately uncached.
+
+        Auto-fix commits onto a branch cut from `ref`; building the change from
+        a cached copy older than `ref` would silently revert whatever was pushed
+        in between. None when the file is missing or not UTF-8 text.
+        """
+        try:
+            item = self.client.get_repo(repo_full_name).get_contents(file_path, ref=ref)
+        except GithubException as e:
+            if e.status == 404:
+                return None
+            raise
+        if isinstance(item, list):
+            return None
+        try:
+            return item.decoded_content.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
     def create_pull_request(self, repo_full_name: str, title: str, body: str, head: str, base: str = "main") -> Dict[str, Any]:
         try:
             repo = self.client.get_repo(repo_full_name)
             pr = repo.create_pull(title=title, body=body, head=head, base=base)
-            
-            return {
-                "number": pr.number,
-                "title": pr.title,
-                "url": pr.html_url,
-                "state": pr.state
-            }
+            return {"number": pr.number, "title": pr.title, "url": pr.html_url, "state": pr.state}
         except GithubException as e:
-            logger.error(f"Failed to create pull request: {str(e)}")
-            raise
-    
-    def create_branch(self, repo_full_name: str, branch_name: str, from_branch: str = "main") -> bool:
+            logger.error(f"Failed to create pull request: {e.status}")
+            raise self._write_error("pull request", e) from e
+
+    def create_branch(self, repo_full_name: str, branch_name: str, from_branch: str) -> str:
+        """
+        Create `branch_name` at the head of `from_branch`. Returns the base SHA.
+
+        Raises GitHubWriteError. This used to swallow every failure and return
+        False - including "no write permission" - and the caller ignored it, so
+        the next step failed with an unrelated error.
+        """
         try:
             repo = self.client.get_repo(repo_full_name)
-            
-            try:
-                source = repo.get_branch(from_branch)
-            except:
-                source = repo.get_branch("master")
-            
-            repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=source.commit.sha)
-            return True
+            sha = repo.get_branch(from_branch).commit.sha
+            repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=sha)
+            return sha
         except GithubException as e:
-            logger.error(f"Failed to create branch: {str(e)}")
-            return False
-    
-    def update_file(self, repo_full_name: str, file_path: str, content: str, message: str, branch: str = "main") -> bool:
+            logger.error(f"Failed to create branch: {e.status}")
+            raise self._write_error("branch creation", e) from e
+
+    def update_file(self, repo_full_name: str, file_path: str, content: str, message: str, branch: str) -> None:
+        """
+        Commit new content for an EXISTING file on `branch`.
+
+        Raises GitHubWriteError. This used to fall back to create_file after any
+        error at all, so a transient failure reading the file could commit a
+        second copy, and a permission error was reported as success.
+        """
         try:
             repo = self.client.get_repo(repo_full_name)
-            
-            try:
-                file = repo.get_contents(file_path, ref=branch)
-                repo.update_file(file.path, message, content, file.sha, branch=branch)
-            except:
-                repo.create_file(file_path, message, content, branch=branch)
-            
-            return True
+            existing = repo.get_contents(file_path, ref=branch)
+            repo.update_file(existing.path, message, content, existing.sha, branch=branch)
         except GithubException as e:
-            logger.error(f"Failed to update file: {str(e)}")
-            return False
-    
+            logger.error(f"Failed to update {file_path}: {e.status}")
+            raise self._write_error("commit", e) from e
+
     def _format_repository(self, repo: Any) -> Dict[str, Any]:
         return {
             "id": repo.id,

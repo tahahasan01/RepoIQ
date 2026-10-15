@@ -482,15 +482,21 @@ Frontend runs on `http://localhost:8080`.
 
 RepoIQ uses a **GitHub App**, not an OAuth App. An OAuth App can only ask for
 `repo` — full read *and write* access to every repository you can reach. A
-GitHub App is installed per-repository with read-only contents, so RepoIQ can
-never push, and it gets 5,000 requests/hour per installation instead of sharing
-your personal rate limit.
+GitHub App is installed only on the repositories you choose, with exactly the
+permissions below, and gets 5,000 requests/hour per installation instead of
+sharing your personal rate limit.
+
+Write access exists for one feature: **auto-fix**, which commits a proposed fix
+to a new `repoiq/fix-…` branch and opens a pull request. RepoIQ never pushes to
+an existing branch. Leave Contents at `Read-only` if you do not want auto-fix;
+everything else works, and an auto-fix attempt fails with a message saying the
+permission is missing.
 
 1. Go to **Settings → Developer settings → GitHub Apps → New GitHub App**
 2. **Callback URL**: `http://localhost:8080/auth/github/callback`
 3. Enable **Request user authorization (OAuth) during installation**
-4. **Repository permissions**: Contents `Read-only`, Metadata `Read-only`,
-   Pull requests `Read-only`
+4. **Repository permissions**: Contents `Read and write` (auto-fix; `Read-only`
+   otherwise), Metadata `Read-only`, Pull requests `Read and write`
 5. **Account permissions**: Email addresses `Read-only`
 6. Create the app, then note the **App ID**, **slug**, and **Client ID**
 7. **Generate a client secret** and a **private key** (`.pem`) — GitHub shows

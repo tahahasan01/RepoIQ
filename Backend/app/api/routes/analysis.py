@@ -2,7 +2,6 @@ from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks, 
 from loguru import logger
 from app.schemas import AutoFixRequest
 from app.services.repository_service import RepositoryService
-from app.tasks.analysis_tasks import auto_fix_issues_task
 from app.api.dependencies import get_current_user, get_github_token
 from app.api.errors import safe_detail
 from app.core.concurrency import run_blocking
@@ -395,44 +394,67 @@ async def get_analysis_history(
         )
 
 
-@router.post("/repositories/{repo_id}/fix")
+@router.post("/repositories/{repo_id}/fix", status_code=status.HTTP_202_ACCEPTED)
 async def auto_fix_issues(
     repo_id: str,
     fix_request: AutoFixRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
-    # Kept as a dependency purely as a precondition check: it 403s when the user
-    # has no connected GitHub account, before we queue work that would fail in
-    # the worker. The value is deliberately unused - the worker resolves its own.
-    _github_connected: str = Depends(get_github_token)
+    github_token: str = Depends(get_github_token)
 ):
-    repo_service = RepositoryService()
-    
-    repo = await repo_service.get_repository(repo_id, current_user["id"])
+    """
+    Open a pull request fixing the selected findings.
+
+    Request: {"issue_ids": [...]} - at most 20, all from this repository.
+    Response (202): {"run_id", "status": "pending", "execution_mode"}. Poll
+    GET /analysis/autofix/{run_id} until status is completed or failed.
+    """
+    from app.services import autofix
+    from app.services.analysis_dispatch import dispatch_autofix
+
+    repo = await RepositoryService().get_repository(repo_id, current_user["id"])
     if not repo:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Repository not found"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+
     try:
-        # SECURITY: no github_token here. Celery kwargs are serialised into the
-        # Redis broker in plaintext; the worker resolves and decrypts the token
-        # from user_id instead. See app/services/github_token.py.
-        auto_fix_issues_task.delay(
-            repo_id=repo["id"],
-            user_id=current_user["id"],
-            issue_ids=fix_request.issue_ids
-        )
-        
-        return {
-            "message": "Auto-fix started. Check the repository for a new pull request.",
-            "issue_count": len(fix_request.issue_ids)
-        }
+        run = await autofix.create_run(repo, current_user["id"], fix_request.issue_ids)
+    except ValueError as e:  # autofix.AutofixError: an authored validation message
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    try:
+        mode = dispatch_autofix(run["id"], github_token, background_tasks.add_task)
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_detail(e)
-        )
+        logger.error(f"Auto-fix dispatch failed: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=safe_detail(e))
+
+    return {"run_id": run["id"], "status": run["status"], "execution_mode": mode}
+
+
+@router.get("/autofix/{run_id}")
+async def get_autofix_run(run_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    One auto-fix run: {id, repository_id, status (pending|running|completed|failed),
+    issue_ids, fixed_issue_ids, skipped: [{file_path, reason}], branch, pr_number,
+    pr_url, error_message, created_at, completed_at}. A completed run with no
+    pr_url means nothing could be fixed safely; `skipped` says why.
+    """
+    from app.services import autofix
+
+    run = await autofix.get_run(run_id, current_user["id"])
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auto-fix run not found")
+    return run
+
+
+@router.get("/repositories/{repo_id}/autofix")
+async def list_autofix_runs(repo_id: str, current_user: dict = Depends(get_current_user)):
+    """The caller's recent auto-fix runs for a repository, newest first."""
+    from app.services import autofix
+
+    repo = await RepositoryService().get_repository(repo_id, current_user["id"])
+    if not repo:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+    return await autofix.list_runs(repo["id"], current_user["id"])
 
 
 @router.get("/repositories/{repo_id}/roadmap")

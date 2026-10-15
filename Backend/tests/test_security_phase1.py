@@ -435,13 +435,13 @@ class TestNoTokensInTaskArguments:
         assert "user_id" in params
         assert "github_token" not in params
 
-    def test_auto_fix_task_takes_user_id_not_token(self):
+    def test_auto_fix_task_takes_a_run_id_not_a_token(self):
+        """The worker resolves the run owner's token itself."""
         import inspect
-        from app.tasks.analysis_tasks import auto_fix_issues_task
+        from app.tasks.autofix_tasks import autofix_task
 
-        params = inspect.signature(auto_fix_issues_task).parameters
-        assert "user_id" in params
-        assert "github_token" not in params
+        params = inspect.signature(autofix_task).parameters
+        assert list(params) == ["run_id"]
 
     def test_route_does_not_enqueue_a_token(self):
         import inspect
