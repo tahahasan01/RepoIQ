@@ -54,9 +54,14 @@ class TestHasPasswordLookup:
 
 @pytest.mark.parametrize("path", ["/api/v1/users/me", "/api/v1/auth/me"])
 @pytest.mark.parametrize("stored", [True, False])
-def test_me_endpoints_report_has_password_without_the_hash(app, client, path, stored):
+@pytest.mark.parametrize("enabled", [True, False])
+def test_me_endpoints_report_has_password_without_the_hash(app, client, path, stored, enabled, monkeypatch):
     from app.api.dependencies import get_current_user
+    from app.core.config import get_settings
     from app.services.auth_service import AuthService
+
+    # With password auth off a stored password is unusable, so it is reported absent.
+    monkeypatch.setattr(get_settings(), "PASSWORD_AUTH_ENABLED", enabled)
 
     # A record that (wrongly) carried the hash must still not leak it.
     app.dependency_overrides[get_current_user] = lambda: {**USER, "password_hash": "$2b$12$hash"}
@@ -69,5 +74,5 @@ def test_me_endpoints_report_has_password_without_the_hash(app, client, path, st
 
     assert response.status_code == 200
     body = response.json()
-    assert body["has_password"] is stored
+    assert body["has_password"] is (stored and enabled)
     assert "password_hash" not in body

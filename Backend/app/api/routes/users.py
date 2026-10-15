@@ -8,7 +8,7 @@ from app.schemas import (
 )
 from app.services.auth_service import AuthService
 from app.services.user_settings_service import get_user_settings, update_user_settings
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, password_auth_enabled, require_password_auth
 from app.api.errors import safe_detail
 from app.core.concurrency import run_blocking
 
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/users", tags=["Users"])
 
 @router.get("/me", response_model=UserResponse)
 async def get_profile(current_user: dict = Depends(get_current_user)):
-    has_password = await AuthService().has_password(current_user["id"])
+    has_password = password_auth_enabled() and await AuthService().has_password(current_user["id"])
     return {**current_user, "has_password": has_password}
 
 
@@ -127,7 +127,7 @@ async def upload_avatar(
         )
 
 
-@router.put("/me/password")
+@router.put("/me/password", dependencies=[Depends(require_password_auth)])
 async def change_password(
     password_data: PasswordChange,
     current_user: dict = Depends(get_current_user)

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from app.schemas import UserCreate, UserResponse, TokenResponse, PublicUser
 from app.services.auth_service import AuthService
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, password_auth_enabled, require_password_auth
 from app.core.logging import get_logger
 from pydantic import BaseModel
 from typing import Optional
@@ -60,7 +60,12 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
-@router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/signup",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_password_auth)],
+)
 async def signup(user_data: UserCreate):
     auth_service = AuthService()
     
@@ -83,7 +88,7 @@ async def signup(user_data: UserCreate):
         )
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=TokenResponse, dependencies=[Depends(require_password_auth)])
 async def login(login_data: LoginRequest):
     auth_service = AuthService()
     
@@ -341,5 +346,7 @@ async def logout(current_user: dict = Depends(get_current_user)):
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(current_user: dict = Depends(get_current_user)):
-    has_password = await AuthService().has_password(current_user["id"])
+    # With password auth off a stored password cannot be used, so the
+    # account is reported as GitHub-only and Settings hides the form.
+    has_password = password_auth_enabled() and await AuthService().has_password(current_user["id"])
     return {**current_user, "has_password": has_password}

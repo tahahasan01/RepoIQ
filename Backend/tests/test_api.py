@@ -44,8 +44,21 @@ async def test_health_check(app):
 
 
 @pytest.mark.asyncio
-async def test_signup_validation(app):
-    """Test signup with invalid data"""
+async def test_password_auth_is_off_by_default(app):
+    """GitHub is the only sign-in: no email delivery means no password reset."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for path in ("/api/v1/auth/signup", "/api/v1/auth/login"):
+            response = await client.post(path, json={"email": "a@example.com", "password": "long-enough-1"})
+            assert response.status_code == 404
+            assert "GitHub" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_signup_validation(app, monkeypatch):
+    """Test signup with invalid data (password auth switched on)"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "PASSWORD_AUTH_ENABLED", True)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
             "/api/v1/auth/signup",

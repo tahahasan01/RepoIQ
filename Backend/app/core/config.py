@@ -250,6 +250,11 @@ class Settings(BaseSettings):
     # The interactive API docs publish every route, parameter and schema. Off
     # in production unless deliberately enabled; always on in development.
     ENABLE_API_DOCS: bool = False
+    # Email + password accounts. Off: RepoIQ signs in with GitHub only. There is
+    # no email delivery, so a password account has no reset or verification -
+    # one forgotten password is a permanently locked account. Turning this on
+    # also re-enables password login and change for accounts that have one.
+    PASSWORD_AUTH_ENABLED: bool = False
 
     @property
     def allowed_methods_list(self) -> List[str]:
