@@ -23,7 +23,7 @@ import NotificationBell from "@/components/NotificationBell";
 import { useState, useEffect } from "react";
 import apiClient from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { runScan, scanStorage, ScanResult } from "@/services/scanService";
+import type { ScanResult } from "@/types/scan";
 import { formatRelativeTime } from "@/lib/timeUtils";
 import { useNotificationStore, startBackgroundAnalysisPolling } from "@/stores/notificationStore";
 // role is owner-only now; no role hook needed here
@@ -180,20 +180,23 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
     load();
     
-    // Listen for scan completion events to auto-refresh
-    const handleScanComplete = (event: any) => {
-      console.log('[DashboardLayout] 🎉 Scan completed event received:', event.detail);
-      if (event.detail && event.detail.repository_id === repoId) {
-        console.log('[DashboardLayout] ♻️ Refreshing data after scan completion');
+    // Refresh the sidebar history when an analysis of this repository
+    // finishes. This listened for "scanCompleted", which only the removed mock
+    // scanner dispatched (and checked a `repository_id` field it never had), so
+    // the history never refreshed. The notification store's polling dispatches
+    // "analysisCompleted" with `repoId`.
+    const handleAnalysisCompleted = (event: Event) => {
+      const completedRepoId = (event as CustomEvent<{ repoId?: string }>).detail?.repoId;
+      if (repoId && String(completedRepoId) === String(repoId)) {
         loadRepoAndHistory();
       }
     };
-    
-    window.addEventListener('scanCompleted', handleScanComplete as EventListener);
-    
+
+    window.addEventListener('analysisCompleted', handleAnalysisCompleted);
+
     return () => {
       mounted = false;
-      window.removeEventListener('scanCompleted', handleScanComplete as EventListener);
+      window.removeEventListener('analysisCompleted', handleAnalysisCompleted);
     };
   }, [repoId]);
 
