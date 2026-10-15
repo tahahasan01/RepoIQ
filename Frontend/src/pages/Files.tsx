@@ -448,13 +448,13 @@ export default function Files() {
   return (
     <DashboardLayout>
       {/* Negative margin to reclaim parent padding for full-width layout */}
-      <div className="-mx-3 -mt-3">
-        <div className="flex gap-1.5 h-[calc(100vh-5.5rem)] w-full overflow-hidden px-1.5">
+      <div className="overflow-x-hidden md:overflow-visible md:-mx-3 md:-mt-3">
+        <div className="flex flex-col md:flex-row gap-1.5 md:h-[calc(100vh-5.5rem)] w-full md:overflow-hidden md:px-1.5">
           {/* File tree - compact, can shrink */}
           <motion.div
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
-            className="w-44 min-w-[160px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
+            className="w-full max-h-64 md:max-h-none md:w-44 md:min-w-[160px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
           >
           <div className="p-2.5 border-b border-border">
             <h3 className="font-semibold text-xs">Files</h3>
@@ -505,7 +505,7 @@ export default function Files() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="flex-1 glass-panel rounded-xl overflow-hidden flex flex-col min-w-0"
+          className="flex-1 glass-panel rounded-xl overflow-hidden flex flex-col min-w-0 h-[70vh] md:h-auto"
         >
           {/* Header */}
           <div className="p-2.5 border-b border-border flex items-center justify-between gap-2">
@@ -612,7 +612,7 @@ export default function Files() {
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.2 }}
-          className="w-60 min-w-[220px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
+          className="w-full max-h-[70vh] md:max-h-none md:w-60 md:min-w-[220px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
         >
           <div className="p-2.5 border-b border-border flex items-center justify-between">
             <h3 className="font-semibold text-xs">Analysis</h3>

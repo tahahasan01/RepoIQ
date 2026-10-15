@@ -208,7 +208,7 @@ export default function Settings() {
             <User className="h-5 w-5 text-primary" />
             <h2 className="text-lg font-semibold">Profile</h2>
           </div>
-          <div className="flex items-start gap-6">
+          <div className="flex flex-col sm:flex-row items-start gap-6">
             <div className="relative">
               <div className="w-20 h-20 rounded-full bg-muted/10 flex items-center justify-center overflow-hidden">
                 {avatar ? (
@@ -226,7 +226,7 @@ export default function Settings() {
                 <input type="file" accept="image/*" className="hidden" onChange={handleAvatarUpload} />
               </label>
             </div>
-            <div className="flex-1 space-y-4">
+            <div className="flex-1 min-w-0 w-full space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label htmlFor="settings-name" className="text-sm font-medium mb-2 block">Name</label>

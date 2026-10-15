@@ -144,7 +144,7 @@ export default function Documentation() {
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 border-b border-border">
+        <div className="flex gap-1 border-b border-border overflow-x-auto">
           {[
             { id: "report", label: "Full Analysis Report", icon: FileText },
             { id: "bugreport", label: "Bug Report", icon: Bug },
@@ -155,7 +155,7 @@ export default function Documentation() {
               key={tab.id}
               onClick={() => setActiveTab(tab.id as DocsTab)}
               aria-pressed={activeTab === tab.id} 
-              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-all ${
+              className={`flex shrink-0 items-center gap-2 px-4 sm:px-6 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-all ${
                 activeTab === tab.id 
                   ? "border-primary text-primary bg-primary/5" 
                   : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50"

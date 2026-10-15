@@ -16,6 +16,7 @@ import {
   Loader2,
   History,
   MessageSquare,
+  Menu,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -24,6 +25,7 @@ import NotificationBell from "@/components/NotificationBell";
 import { useState, useEffect, lazy, Suspense } from "react";
 import apiClient from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useIsMobile } from "@/hooks/use-mobile";
 import type { ScanResult } from "@/types/scan";
 import { formatRelativeTime } from "@/lib/timeUtils";
 import { useNotificationStore, startBackgroundAnalysisPolling } from "@/stores/notificationStore";
@@ -70,6 +72,12 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const [branch, setBranch] = useState<string>("main");
   const [lastScan, setLastScan] = useState<string>("Never");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Below 768px the sidebar is a drawer: open from the menu button, closed
+  // on navigation, Escape or a tap outside. It used to stay open at 240px,
+  // leaving phones a ~150px column for the page.
+  const isMobile = useIsMobile();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const collapsed = !isMobile && sidebarCollapsed;
   const [isScanning, setIsScanning] = useState(false);
   const [scanHistory, setScanHistory] = useState<ScanResult[]>([]);
   const [chatOpen, setChatOpen] = useState(false);
@@ -79,6 +87,19 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     if (chatOpen) setChatMounted(true);
   }, [chatOpen]);
   const location = useLocation();
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileNavOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mobileNavOpen]);
 
   // Function to load repo and history (will be reused for real-time updates)
   const loadRepoAndHistory = async () => {
@@ -281,13 +302,34 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
   // role toggle removed for owner-only app
 
+  const drawerHidden = isMobile && !mobileNavOpen;
+
   return (
     <div className="min-h-screen bg-background flex">
+      {isMobile && mobileNavOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50"
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
       {/* Sidebar */}
       <motion.aside
+        id="dashboard-nav"
         initial={false}
-        animate={{ width: sidebarCollapsed ? 64 : 240 }}
-        className="fixed top-0 left-0 h-full bg-card border-r border-border z-40 flex flex-col"
+        animate={
+          drawerHidden
+            ? {
+                width: 240,
+                x: -240,
+                // Hidden once off-screen, so its links leave the tab order.
+                visibility: "hidden",
+                transition: { duration: 0.2, visibility: { delay: 0.2, duration: 0 } },
+              }
+            : { width: collapsed ? 64 : 240, x: 0, visibility: "visible", transition: { duration: 0.2 } }
+        }
+        aria-hidden={drawerHidden || undefined}
+        className="fixed top-0 left-0 h-full bg-card border-r border-border z-50 flex flex-col"
       >
         {/* Logo */}
         <div className="h-16 flex items-center justify-between px-4 border-b border-border">
@@ -295,7 +337,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
             <div className="w-8 h-8 min-w-[32px] rounded-lg bg-gradient-to-br from-primary to-cyan-400 flex items-center justify-center">
               <Zap className="h-4 w-4 text-primary-foreground" />
             </div>
-            {!sidebarCollapsed && (
+            {!collapsed && (
               <motion.span
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -323,7 +365,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 )}
               >
                 <link.icon className="h-5 w-5 min-w-[20px]" />
-                {!sidebarCollapsed && (
+                {!collapsed && (
                   <span className="text-sm font-medium">{link.label}</span>
                 )}
               </Link>
@@ -338,11 +380,11 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               variant="ghost"
               className={cn(
                 "w-full justify-start gap-3",
-                sidebarCollapsed && "justify-center"
+                collapsed && "justify-center"
               )}
             >
               <ChevronLeft className="h-4 w-4" />
-              {!sidebarCollapsed && <span>All Repos</span>}
+              {!collapsed && <span>All Repos</span>}
             </Button>
           </Link>
         </div>
@@ -350,7 +392,8 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         {/* Collapse toggle */}
         <button
           onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          className="absolute top-20 -right-3 w-6 h-6 rounded-full bg-card border border-border flex items-center justify-center hover:bg-muted transition-colors"
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          className="absolute top-20 -right-3 w-6 h-6 rounded-full bg-card border border-border hidden md:flex items-center justify-center hover:bg-muted transition-colors"
         >
           {sidebarCollapsed ? (
             <ChevronRight className="h-3 w-3" />
@@ -364,18 +407,29 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       <main
         className={cn(
           "flex-1 min-w-0 transition-all duration-300",
-          sidebarCollapsed ? "ml-16" : "ml-60"
+          collapsed ? "md:ml-16" : "md:ml-60"
         )}
       >
         {/* Top bar */}
         {/* The left side gives way (repo name truncates) and the button labels
             shorten below 2xl: at 1280px the full header was ~75px wider than
             the content column, so the whole page scrolled sideways. */}
-        <header className="sticky top-0 z-30 glass-panel border-b h-16 flex items-center justify-between gap-4 px-6">
-          <div className="flex items-center gap-4 min-w-0">
+        <header className="sticky top-0 z-30 glass-panel border-b h-16 flex items-center justify-between gap-2 sm:gap-4 px-4 md:px-6">
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="md:hidden shrink-0 -ml-2"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="Open navigation"
+              aria-controls="dashboard-nav"
+              aria-expanded={mobileNavOpen}
+            >
+              <Menu className="h-5 w-5" aria-hidden="true" />
+            </Button>
             <div className="flex items-center gap-2 min-w-0">
               <h1 className="text-lg font-semibold truncate" title={repoName}>{repoName}</h1>
-              <span className="flex shrink-0 items-center gap-1 text-sm text-muted-foreground px-2 py-1 bg-muted rounded-md">
+              <span className="hidden sm:flex shrink-0 items-center gap-1 text-sm text-muted-foreground px-2 py-1 bg-muted rounded-md">
                 <GitBranch className="h-3 w-3" />
                 {branch}
               </span>
@@ -390,7 +444,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
             {/* Scan history dropdown */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-2" aria-label={`Scan history (${scanHistory.length})`}>
+                <Button variant="outline" size="sm" className="gap-2 hidden sm:inline-flex" aria-label={`Scan history (${scanHistory.length})`}>
                   <History className="h-4 w-4" aria-hidden="true" />
                   <span className="hidden 2xl:inline">History</span>
                   <span>({scanHistory.length})</span>
@@ -442,14 +496,16 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               {isScanning || isAnalysisRunning ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  {activeAnalysis?.status === 'prefetching' 
-                    ? 'Loading...' 
-                    : `Analyzing... ${activeAnalysis?.elapsedSeconds || 0}s`}
+                  <span className="hidden sm:inline">
+                    {activeAnalysis?.status === 'prefetching'
+                      ? 'Loading...'
+                      : `Analyzing... ${activeAnalysis?.elapsedSeconds || 0}s`}
+                  </span>
                 </>
               ) : (
                 <>
-                  <Play className="h-4 w-4" />
-                  Run Scan
+                  <Play className="h-4 w-4" aria-hidden="true" />
+                  <span className="sr-only sm:not-sr-only">Run Scan</span>
                 </>
               )}
             </Button>
@@ -470,19 +526,21 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 aria-label="Ask about this repo"
               >
                 <MessageSquare className="h-4 w-4" aria-hidden="true" />
-                <span className="2xl:hidden">Ask</span>
+                <span className="hidden sm:inline 2xl:hidden">Ask</span>
                 <span className="hidden 2xl:inline">Ask about this repo</span>
               </Button>
             )}
 
             <NotificationBell />
-            <ThemeToggle />
+            <div className="hidden sm:block">
+              <ThemeToggle />
+            </div>
             <AccountDropdown />
           </div>
         </header>
 
         {/* Page content */}
-        <div className="p-6">{children}</div>
+        <div className="p-4 md:p-6">{children}</div>
       </main>
 
       {repoId && chatMounted && (
