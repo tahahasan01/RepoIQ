@@ -4,7 +4,6 @@ import {
   Users,
   FolderGit2,
   UserPlus,
-  ArrowLeft,
   Loader2,
   Trash2,
   Activity,
@@ -13,7 +12,6 @@ import {
   Plus,
   ChevronRight,
   BarChart3,
-  Building2,
   Lock,
   Unlink,
 } from "lucide-react";
@@ -53,6 +51,8 @@ import { useCurrentUser, useRepositories, useTeam, queryKeys } from "@/hooks/use
 import { teamSummaryKey, useTeamSummary } from "@/hooks/useTeamSummary";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { TeamInvitationsCard } from "@/components/teams/TeamInvitationsCard";
+import { PageHeader, type Crumb } from "@/components/organizations/PageHeader";
+import { ErrorState, LoadingState } from "@/components/organizations/PageStates";
 
 // The backend's team_members.role CHECK allows exactly these. The picker used
 // to offer "admin", which the database rejected on every attempt.
@@ -62,11 +62,13 @@ const ROLES = [
   { value: "manager", label: "Manager" },
 ] as const;
 
-const roleBadge: Record<string, string> = {
-  manager: "bg-purple-500/15 text-purple-600 dark:text-purple-300 border-purple-500/30",
-  lead: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
-  member: "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30",
-};
+// A role is not a severity or a score, so it carries no colour: the word is
+// the information.
+const ROLE_LABEL: Record<string, string> = Object.fromEntries(ROLES.map((r) => [r.value, r.label]));
+
+// The summary's team carries its organization (id and name) for the
+// breadcrumb; TeamSummary in the API client doesn't declare it yet.
+type SummaryTeam = TeamSummary["team"] & { organization?: { id: string; name: string } | null };
 
 type Member = TeamSummary["members"][number];
 type TeamRepo = TeamSummary["repositories"][number];
@@ -235,7 +237,7 @@ function AssignRepositoryDialog({
           <div className="max-h-64 overflow-y-auto rounded-md border divide-y" role="listbox" aria-label="Repositories">
             {isLoading ? (
               <div className="p-4 text-sm text-muted-foreground flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" /> Loading your repositories
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Loading your repositories…
               </div>
             ) : candidates.length === 0 ? (
               <p className="p-4 text-sm text-muted-foreground">
@@ -251,7 +253,7 @@ function AssignRepositoryDialog({
                   role="option"
                   aria-selected={selected === repo.id}
                   onClick={() => setSelected(repo.id)}
-                  className={`w-full text-left px-4 py-2.5 text-sm flex items-center gap-2 hover:bg-muted focus-visible:outline-none focus-visible:bg-muted ${
+                  className={`w-full text-left px-4 py-2.5 text-sm flex items-center gap-2 hover:bg-muted focus-visible:outline-none focus-visible:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
                     selected === repo.id ? "bg-primary/10" : ""
                   }`}
                 >
@@ -284,8 +286,20 @@ export default function TeamDetail() {
   const { toast } = useToast();
 
   const { data: me } = useCurrentUser();
-  const { data: team, isLoading: teamLoading, error: teamError } = useTeam(id || "");
-  const { data: summary, isLoading: summaryLoading } = useTeamSummary(id);
+  const {
+    data: team,
+    isLoading: teamLoading,
+    error: teamError,
+    refetch: refetchTeam,
+    isFetching: teamFetching,
+  } = useTeam(id || "");
+  const {
+    data: summary,
+    isLoading: summaryLoading,
+    error: summaryError,
+    refetch: refetchSummary,
+    isFetching: summaryFetching,
+  } = useTeamSummary(id);
 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
@@ -369,10 +383,9 @@ export default function TeamDetail() {
     return (
       <div className="min-h-screen bg-background">
         <Navbar />
-        <div className="flex items-center justify-center min-h-[80vh]" role="status">
-          <Loader2 className="h-8 w-8 animate-spin text-primary mr-3" />
-          <p className="text-muted-foreground">Loading team</p>
-        </div>
+        <main className="container mx-auto px-4 py-8 max-w-7xl pt-24">
+          <LoadingState label="Loading team…" className="min-h-[60vh]" />
+        </main>
       </div>
     );
   }
@@ -381,21 +394,22 @@ export default function TeamDetail() {
     return (
       <div className="min-h-screen bg-background">
         <Navbar />
-        <div className="container mx-auto px-4 py-8 pt-24">
-          <Card>
-            <CardContent className="py-16 text-center">
-              <Users className="h-10 w-10 text-muted-foreground mx-auto mb-4" />
-              <p className="font-medium mb-1">This team doesn't exist or you're not on it</p>
-              <p className="text-muted-foreground text-sm mb-6">Teams are visible to their organization's members.</p>
-              <Button variant="outline" asChild>
-                <Link to="/teams">
-                  <ArrowLeft className="h-4 w-4 mr-2" />
-                  Back to teams
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
+        <main className="container mx-auto px-4 py-8 max-w-7xl pt-24">
+          <PageHeader
+            breadcrumb={[{ label: "Teams", to: "/teams" }, { label: "Not found" }]}
+            title="Team unavailable"
+          />
+          <ErrorState
+            title="This team doesn't exist or you're not on it. Teams are visible to their organization's members."
+            error={teamError}
+            onRetry={teamError ? () => refetchTeam() : undefined}
+            retrying={teamFetching}
+          >
+            <Button variant="ghost" asChild>
+              <Link to="/teams">Back to teams</Link>
+            </Button>
+          </ErrorState>
+        </main>
       </div>
     );
   }
@@ -411,73 +425,69 @@ export default function TeamDetail() {
 
   const scored = repositories.filter((r) => r.latest_analysis?.overall_score != null);
 
+  const orgId = team.organization_id as string | undefined;
+  const orgName = (summary?.team as SummaryTeam | undefined)?.organization?.name || team.organization?.name;
+  const breadcrumb: Crumb[] = orgId
+    ? [
+        { label: "Organizations", to: "/organizations" },
+        { label: orgName || "Organization", to: `/organizations/${orgId}` },
+        { label: team.name },
+      ]
+    : [{ label: "Teams", to: "/teams" }, { label: team.name }];
+
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
       <main className="container mx-auto px-4 py-8 max-w-7xl pt-24">
-        {/* Header */}
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between mb-8">
-          <div className="flex items-start gap-3">
-            <Button variant="ghost" size="icon" className="rounded-full shrink-0" asChild>
-              <Link to="/teams" aria-label="Back to teams">
-                <ArrowLeft className="h-5 w-5" />
-              </Link>
-            </Button>
-            <div className="min-w-0">
-              <h1 className="text-3xl font-bold truncate">{team.name}</h1>
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 text-sm text-muted-foreground">
-                {team.organization_id && (
-                  <Link
-                    to={`/organizations/${team.organization_id}`}
-                    className="inline-flex items-center gap-1 hover:text-primary"
-                  >
-                    <Building2 className="h-4 w-4" />
-                    {team.organization?.name || "Organization"}
-                  </Link>
-                )}
-                <span>
-                  {members.length} member{members.length !== 1 ? "s" : ""}, {repositories.length} repositor
-                  {repositories.length !== 1 ? "ies" : "y"}
-                </span>
-              </div>
-              {team.description && <p className="text-muted-foreground mt-2 max-w-xl">{team.description}</p>}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button className="gap-2" onClick={() => setInviteOpen(true)}>
-              <UserPlus className="h-4 w-4" />
-              Invite member
-            </Button>
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="outline" className="gap-2 text-destructive hover:bg-destructive hover:text-destructive-foreground">
-                  <Trash2 className="h-4 w-4" />
-                  Delete team
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Delete {team.name}?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Members leave the team and its repositories are unassigned. The repositories and their analyses are
-                    not deleted. This can't be undone.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={() => deleteTeam.mutate()}
-                    disabled={deleteTeam.isPending}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  >
-                    {deleteTeam.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+        <PageHeader
+          breadcrumb={breadcrumb}
+          title={team.name}
+          description={
+            <>
+              <p>
+                {members.length} member{members.length !== 1 ? "s" : ""}, {repositories.length} repositor
+                {repositories.length !== 1 ? "ies" : "y"}
+              </p>
+              {team.description && <p className="mt-2 max-w-xl text-base">{team.description}</p>}
+            </>
+          }
+          actions={
+            <>
+              <Button className="gap-2" onClick={() => setInviteOpen(true)}>
+                <UserPlus className="h-4 w-4" aria-hidden="true" />
+                Invite member
+              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="outline" className="gap-2 text-destructive hover:bg-destructive hover:text-destructive-foreground">
+                    <Trash2 className="h-4 w-4" />
                     Delete team
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </div>
-        </div>
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete {team.name}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Members leave the team and its repositories are unassigned. The repositories and their analyses are
+                      not deleted. This can't be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() => deleteTeam.mutate()}
+                      disabled={deleteTeam.isPending}
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    >
+                      {deleteTeam.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Delete team
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </>
+          }
+        />
 
         {/* Invite dialog */}
         <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
@@ -531,6 +541,17 @@ export default function TeamDetail() {
 
         <AssignRepositoryDialog open={assignOpen} onOpenChange={setAssignOpen} teamId={id!} assignedIds={assignedIds} />
 
+        {summaryError && !summary && (
+          <div className="mb-8">
+            <ErrorState
+              title="Couldn't load this team's members, repositories and scores"
+              error={summaryError}
+              onRetry={() => refetchSummary()}
+              retrying={summaryFetching}
+            />
+          </div>
+        )}
+
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8" aria-busy={summaryLoading}>
           <StatCard title="Members" value={members.length} caption="On this team" icon={Users} />
@@ -580,8 +601,8 @@ export default function TeamDetail() {
                   <p className="text-muted-foreground mb-6 max-w-sm mx-auto">
                     Invite people to see their contributions to the team's repositories.
                   </p>
-                  <Button onClick={() => setInviteOpen(true)}>
-                    <UserPlus className="h-4 w-4 mr-2" />
+                  <Button variant="outline" onClick={() => setInviteOpen(true)}>
+                    <UserPlus className="h-4 w-4 mr-2" aria-hidden="true" />
                     Invite member
                   </Button>
                 </CardContent>
@@ -605,8 +626,8 @@ export default function TeamDetail() {
                           </div>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
-                          <Badge variant="outline" className={roleBadge[member.role] || ""}>
-                            {member.role}
+                          <Badge variant="outline" className="font-normal text-muted-foreground">
+                            {ROLE_LABEL[member.role] ?? member.role}
                           </Badge>
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
