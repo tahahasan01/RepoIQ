@@ -354,7 +354,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       {/* Main content */}
       <main
         className={cn(
-          "flex-1 transition-all duration-300",
+          "flex-1 min-w-0 transition-all duration-300",
           sidebarCollapsed ? "ml-16" : "ml-60"
         )}
       >
@@ -368,7 +368,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 {branch}
               </span>
             </div>
-            <span className="flex items-center gap-1 text-sm text-muted-foreground">
+            <span className="hidden md:flex items-center gap-1 text-sm text-muted-foreground whitespace-nowrap">
               <Clock className="h-3 w-3" />
               Last scan: {formatRelativeTime(lastScan === "Never" ? null : lastScan)}
             </span>

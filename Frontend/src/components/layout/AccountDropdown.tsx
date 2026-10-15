@@ -60,7 +60,7 @@ export default function AccountDropdown() {
         className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-accent transition-colors"
         type="button"
       >
-        <span className="hidden sm:inline-block text-sm font-medium">{auth.user?.name || auth.user?.full_name || auth.user?.github_username || "Account"}</span>
+        <span className="hidden xl:inline-block text-sm font-medium whitespace-nowrap max-w-[10rem] truncate">{auth.user?.name || auth.user?.full_name || auth.user?.github_username || "Account"}</span>
         <Avatar className="h-8 w-8">
           <AvatarImage src={auth.user?.avatar_url || auth.user?.avatar || "/placeholder.svg"} alt={auth.user?.name || auth.user?.full_name || "User"} />
           <AvatarFallback className="bg-primary text-primary-foreground">{(auth.user?.name || auth.user?.full_name || auth.user?.github_username || "U").slice(0,2).toUpperCase()}</AvatarFallback>

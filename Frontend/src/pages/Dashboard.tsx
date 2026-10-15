@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import apiClient from "@/lib/api";
 import { scoreColor, scoreLabel } from '@/lib/scoreColor';
+import { buildTrend } from "@/lib/trend";
 
 const severityColors: Record<string, string> = {
   critical: "severity-critical",
@@ -196,11 +197,7 @@ export default function Dashboard() {
 
           if (cached.history) {
             setAnalysisHistory(cached.history);
-            const trend = [...cached.history].reverse().map((item: any, index: number) => ({
-              date: item.completed_at ? new Date(item.completed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : `Run ${index + 1}`,
-              score: item.overall_score || 0,
-            }));
-            setTrendData(trend);
+            setTrendData(buildTrend(cached.history));
           }
         }
 
@@ -341,14 +338,7 @@ export default function Dashboard() {
           console.log('[Dashboard] Loaded analysis history:', historyData.history.length, 'runs');
           setAnalysisHistory(historyData.history);
           
-          // Build trend data from history (reverse to show oldest to newest)
-          const trend = [...historyData.history].reverse().map((item: any, index: number) => ({
-            date: item.completed_at 
-              ? new Date(item.completed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-              : `Run ${index + 1}`,
-            score: item.overall_score || 0,
-          }));
-          setTrendData(trend);
+          setTrendData(buildTrend(historyData.history));
         }
       } catch (error) {
         console.error('[Dashboard] Error loading analysis:', error);
@@ -464,7 +454,7 @@ export default function Dashboard() {
         )}
         
         {/* Score cards */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           {scoreData.map((item, index) => (
             <motion.div
               key={item.name}
