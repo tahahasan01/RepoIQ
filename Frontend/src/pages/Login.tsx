@@ -58,6 +58,8 @@ export default function Login() {
         return "Your request to install RepoIQ was sent to the organization's owners. Sign in once it has been approved.";
       case "logout_incomplete":
         return "You're signed out on this device, but the server couldn't confirm your session was ended. It will expire on its own.";
+      case "state_mismatch":
+        return "That GitHub sign-in link wasn't started from this browser, so it was ignored. Please sign in again.";
       case "github_unavailable":
         return "Couldn't reach GitHub sign-in. Please try again.";
       default:

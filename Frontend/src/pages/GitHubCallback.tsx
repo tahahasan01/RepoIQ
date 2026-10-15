@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import apiClient from "@/lib/api";
 import { ApiRequestError, detailMessage } from "@/lib/apiErrors";
-import { startGitHubFlow } from "@/lib/githubAuth";
+import { consumeOAuthState, rememberOAuthState, startGitHubFlow, stateFromUrl } from "@/lib/githubAuth";
 import { consumePostLoginRedirect } from "@/lib/redirect";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
@@ -59,11 +59,14 @@ function markSetupResume(active: boolean) {
  *  - It returned early whenever a token already existed, so a signed-in user
  *    coming back from installing the app or re-authorising never had their
  *    `code`/`installation_id` sent, and the installation was never recorded.
- *    A callback carrying `code` is now always processed.
+ *    A callback carrying `code` is now processed for signed-in users too -
+ *    but only when its `state` matches a flow this tab started (login CSRF),
+ *    and never to replace the session with a different account.
  *  - Arriving with only `installation_id`/`setup_action` (GitHub's setup
  *    redirect after an install or a repository-access change) went to
- *    /login?error=no_code. It now goes through sign-in once more, which
- *    returns a code so the backend can record the installation.
+ *    /login?error=no_code. Signed out, it now goes through sign-in once more,
+ *    which returns a code so the backend can record the installation; signed
+ *    in, it re-syncs repositories and leaves the session alone.
  *  - Errors were read as `err.response.data.detail` (an axios shape apiClient
  *    never produces), so "expired" was never detected.
  *  - It always went to /repos; it now honours the page the user was heading to.
@@ -129,17 +132,32 @@ export default function GitHubCallback() {
         }
 
         if (installationId || setupAction) {
-          // Back from installing or reconfiguring the app, without an
-          // authorization code. Sign in once more: GitHub skips the prompt for
-          // a user who has already authorised, and the code it returns lets the
-          // backend record the installation against this account.
+          if (signedIn) {
+            // Back from configuring the app (repositories added or removed)
+            // while signed in. This path never touches the session: anyone
+            // can craft a link like this, and the installation id in it is
+            // not trusted for anything. Re-sync the repository list - which
+            // repositories are reachable may have changed - and go back. If
+            // the installation itself still has to be recorded, the
+            // repositories page offers "Connect GitHub", a flow this tab
+            // starts and can verify.
+            clearRepositoryCaches(queryClient);
+            setTimeout(() => {
+              useRepositoryStore.getState().syncRepositories().catch(() => {});
+            }, 0);
+            goToDestination();
+            return;
+          }
+
+          // Signed out, back from installing the app without an authorization
+          // code. Sign in once more: GitHub skips the prompt for a user who has
+          // already authorised, and the code it returns (with a state this tab
+          // stores) lets the backend record the installation. There is no
+          // session here to swap, and the sign-in is for whoever is signed in
+          // to GitHub in this browser.
           if (recentlyResumedSetup()) {
             markSetupResume(false);
-            if (signedIn) {
-              failSignedIn("Couldn't finish GitHub setup", "Please try connecting GitHub again.");
-            } else {
-              navigate("/login?error=no_code", { replace: true });
-            }
+            navigate("/login?error=no_code", { replace: true });
             return;
           }
           try {
@@ -149,11 +167,7 @@ export default function GitHubCallback() {
           } catch (err) {
             markSetupResume(false);
             console.error("[GitHub OAuth] Could not restart sign-in:", err);
-            if (signedIn) {
-              failSignedIn("Couldn't finish GitHub setup", "Please try connecting GitHub again.");
-            } else {
-              navigate("/login?error=callback_failed", { replace: true });
-            }
+            navigate("/login?error=callback_failed", { replace: true });
           }
           return;
         }
@@ -172,23 +186,48 @@ export default function GitHubCallback() {
       const resumedSetup = recentlyResumedSetup();
       markSetupResume(false);
 
+      // SECURITY: exchange a code only if this tab started the flow. The
+      // backend's state check alone proves the state is RepoIQ's and unused,
+      // not that it was issued to this browser - an attacker can fetch one and
+      // send a victim /auth/github/callback?code=<attacker's code>&state=...,
+      // which would sign the victim into the attacker's account. The stored
+      // state is consumed here, so it is good for one exchange.
+      if (!consumeOAuthState(state)) {
+        console.warn("[GitHub OAuth] Callback state does not match a flow started in this tab; not exchanging the code");
+        if (signedIn) {
+          failSignedIn(
+            "GitHub sign-in link not recognised",
+            "This GitHub link was not started from this browser, so it was ignored. You are still signed in as before."
+          );
+        } else {
+          navigate("/login?error=state_mismatch", { replace: true });
+        }
+        return;
+      }
+
       try {
         setStatus("Authenticating...");
         const response = await apiClient.githubCallback(code, state, installationId);
 
-        // Read before anything below clears session storage.
-        const destination = consumePostLoginRedirect();
-
-        // A different GitHub identity than the current session: drop the
-        // previous user's local data before storing the new session, and load
-        // the destination with a full page load so nothing of theirs survives
-        // in memory either.
-        const previousUserId = tokenUserId(existingToken);
-        const newUserId = response.user?.id || tokenUserId(response.access_token);
-        const switchedAccount = Boolean(previousUserId && newUserId && previousUserId !== newUserId);
-        if (switchedAccount) {
-          apiClient.clearLocalSession();
+        // SECURITY: a signed-in user's session is never replaced by a
+        // different account. Re-authorising, connecting GitHub or changing
+        // repository access must come back as the same RepoIQ user; anything
+        // else is refused and the new tokens are discarded unused. Switching
+        // accounts means signing out first.
+        if (signedIn) {
+          const previousUserId = tokenUserId(existingToken);
+          const newUserId = response.user?.id || tokenUserId(response.access_token);
+          if (!previousUserId || !newUserId || previousUserId !== newUserId) {
+            const who = response.user?.github_username ? ` (@${response.user.github_username})` : "";
+            failSignedIn(
+              "That's a different GitHub account",
+              `The GitHub account you just used${who} belongs to a different RepoIQ account than the one you're signed in with. Nothing was changed. To switch accounts, sign out first.`
+            );
+            return;
+          }
         }
+
+        const destination = consumePostLoginRedirect();
 
         localStorage.setItem("token", response.access_token);
         if (response.refresh_token) {
@@ -196,11 +235,6 @@ export default function GitHubCallback() {
         }
         if (response.user) {
           login(response.user, response.access_token, response.refresh_token);
-        }
-
-        if (switchedAccount) {
-          window.location.assign(destination);
-          return;
         }
 
         // Which repositories are reachable may have changed (new installation,
@@ -234,6 +268,9 @@ export default function GitHubCallback() {
           const { action, install_url: installUrl } = detail as { action?: unknown; install_url?: unknown };
           if (action === "install" && typeof installUrl === "string" && installUrl) {
             setStatus("Redirecting to install RepoIQ on GitHub...");
+            // The backend issued a fresh state for the install URL; bind it to
+            // this tab so the code GitHub returns after installing is accepted.
+            rememberOAuthState(stateFromUrl(installUrl));
             window.location.assign(installUrl);
             return;
           }
