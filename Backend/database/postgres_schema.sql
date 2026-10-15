@@ -1,4 +1,9 @@
--- RepoIQ schema for plain PostgreSQL.
+-- RepoIQ schema for plain PostgreSQL - the BASELINE.
+--
+-- FROZEN. Change the schema by adding database/migrations/NNN_name.sql, never
+-- by editing this file. `python -m app.db.migrate` applies this baseline (a
+-- no-op when the tables exist) and then every pending migration in order; see
+-- app/db/migrate.py. The Supabase-era migrations 001-003 are folded in here.
 --
 -- Replaces database/schema.sql, which targeted Supabase and therefore:
 --   - made users.id a FK to auth.users(id), a table only Supabase provides
@@ -122,11 +127,9 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
-    context_files JSONB NOT NULL DEFAULT '[]',
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_chat_repo ON chat_messages(repository_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_chat_repo_user_created ON chat_messages(repository_id, user_id, created_at DESC);
 
 -- --------------------------------------------- improvement_roadmaps -------
 CREATE TABLE IF NOT EXISTS improvement_roadmaps (

@@ -28,6 +28,19 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: repoiq
+          POSTGRES_PASSWORD: repoiq_dev
+          POSTGRES_DB: repoiq_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U repoiq -d repoiq_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Checkout code
@@ -48,18 +61,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      # The same runner every deploy uses, so CI also proves the migrations
+      # apply cleanly to an empty database.
+      - name: Apply schema to the test database
+        working-directory: Backend
+        env:
+          DATABASE_URL: postgresql://repoiq:repoiq_dev@localhost:5432/repoiq_test
+          SECRET_KEY: test_secret_key_for_ci_testing_12345678901234567890
+          GITHUB_CLIENT_ID: test_client_id
+          GITHUB_CLIENT_SECRET: test_client_secret
+          GITHUB_REDIRECT_URI: http://localhost:8000/auth/callback
+        run: python -m app.db.migrate
+
+      # Placeholder credentials only: the suite never calls GitHub or Claude,
+      # and real secrets have no business in a test process.
       - name: Run tests with coverage
         working-directory: Backend
         env:
           REDIS_URL: redis://localhost:6379/0
+          TEST_DATABASE_URL: postgresql://repoiq:repoiq_dev@localhost:5432/repoiq_test
+          # Database tests fail instead of skipping when Postgres is missing.
+          REQUIRE_TEST_DATABASE: "1"
           SECRET_KEY: test_secret_key_for_ci_testing_12345678901234567890
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://test.supabase.co' }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY || 'test_key' }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || 'test_service_key' }}
-          GITHUB_CLIENT_ID: ${{ secrets.GH_CLIENT_ID || 'test_client_id' }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET || 'test_client_secret' }}
+          GITHUB_CLIENT_ID: test_client_id
+          GITHUB_CLIENT_SECRET: test_client_secret
           GITHUB_REDIRECT_URI: http://localhost:8000/auth/callback
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'test_openai_key' }}
+          ANTHROPIC_API_KEY: test_anthropic_key
           ALLOWED_ORIGINS: http://localhost:3000,http://localhost:8080
           PYTHONPATH: ${{ github.workspace }}/Backend
         run: |

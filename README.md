@@ -364,14 +364,11 @@ docker run -d --name repoiq-redis -p 6380:6379 \
   --restart unless-stopped redis:7-alpine
 ```
 
-Load the schema:
+The schema is created in step 3 by the migration runner — there is nothing to
+load by hand.
 
-```bash
-docker exec -i repoiq-postgres psql -U repoiq -d repoiq < Backend/database/postgres_schema.sql
-```
-
-If you are upgrading an existing database rather than creating a fresh one,
-apply the migrations in `Backend/database/migrations/` in numeric order.
+> Prefer one command? `cd Backend && docker compose up --build` runs Postgres,
+> Redis, the migrations, the API and a worker together.
 
 ### 3️⃣ Backend
 
@@ -422,6 +419,18 @@ ANTHROPIC_MODEL=claude-opus-5-5
 # CORS
 ALLOWED_ORIGINS=http://localhost:8080
 ```
+
+**Create or upgrade the schema** — run this after every pull, and it runs on
+every deploy:
+
+```bash
+python -m app.db.migrate
+```
+
+It applies `database/postgres_schema.sql` (the frozen baseline) and then any
+pending file in `database/migrations/`, recording each in `schema_migrations`.
+To change the schema, add `database/migrations/NNN_name.sql` — never edit the
+baseline.
 
 **Run the API:**
 
@@ -884,7 +893,8 @@ RepoIQ/
 │   │   │   └── cache_warming.py
 │   │   └── schemas/                # Pydantic models
 │   ├── database/
-│   │   └── schema.sql              # Database schema
+│   │   ├── postgres_schema.sql     # Frozen baseline schema
+│   │   └── migrations/             # NNN_name.sql, applied by app.db.migrate
 │   ├── main.py                     # FastAPI app
 │   └── requirements.txt
 │

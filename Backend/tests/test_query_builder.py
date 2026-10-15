@@ -38,8 +38,18 @@ def _database_available() -> bool:
         return False
 
 
+_DATABASE_AVAILABLE = _database_available()
+
+# CI sets REQUIRE_TEST_DATABASE so a missing database fails the run. Skipping
+# there is how the JSONB and chat-schema bugs reached main: every database
+# test was skipped and the job was green.
+if os.getenv("REQUIRE_TEST_DATABASE") and not _DATABASE_AVAILABLE:
+    raise RuntimeError(
+        "REQUIRE_TEST_DATABASE is set but no PostgreSQL is reachable at TEST_DATABASE_URL"
+    )
+
 requires_db = pytest.mark.skipif(
-    not _database_available(),
+    not _DATABASE_AVAILABLE,
     reason="no PostgreSQL reachable at TEST_DATABASE_URL",
 )
 

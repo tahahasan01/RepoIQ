@@ -30,9 +30,6 @@ os.environ["REPOIQ_ENV_FILE"] = str(backend_dir / "does-not-exist.env")
 
 # Set environment variables for testing
 os.environ.setdefault("SECRET_KEY", "test_secret_key_for_testing_12345678901234567890")
-os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
-os.environ.setdefault("SUPABASE_KEY", "test_key")
-os.environ.setdefault("SUPABASE_SERVICE_KEY", "test_service_key")
 os.environ.setdefault("GITHUB_CLIENT_ID", "test_client_id")
 os.environ.setdefault("GITHUB_CLIENT_SECRET", "test_client_secret")
 os.environ.setdefault("GITHUB_REDIRECT_URI", "http://localhost:8000/auth/callback")

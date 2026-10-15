@@ -71,7 +71,6 @@ logs/
 *.sqlite3
 
 # Alembic
-alembic/versions/*.pyc
 
 # mypy
 .mypy_cache/

@@ -14,7 +14,7 @@ Already implemented:
 | App JWT signing (RS256), installation-token minting and caching | `app/services/github_app.py` |
 | Token resolution routed through the app when enabled | `app/services/github_token.py` |
 | Install URL served from the login endpoint | `app/api/routes/auth.py` |
-| `users.github_installation_id` column | `database/migrations/003_github_app_installations.sql` |
+| `users.github_installation_id` column | `database/postgres_schema.sql` (applied by `python -m app.db.migrate`) |
 | Config | `GITHUB_AUTH_MODE`, `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY` |
 | Tests | `tests/test_github_app.py` — 26 tests |
 
@@ -114,8 +114,7 @@ Other settings:
    secret* → `GITHUB_APP_CLIENT_SECRET`. This is what exchanges the
    user-authorization code at sign-in.
 
-3. **Run the migration**:
-   `database/migrations/003_github_app_installations.sql`.
+3. **Bring the schema up to date**: `python -m app.db.migrate`.
 
 4. **Set the env vars** (staging first):
 
@@ -172,8 +171,8 @@ Step 2 is done. The rest:
 1. **Register the app** (above) and note the App ID, slug and private key.
 2. ~~Implement installation-token minting behind a feature flag~~ — **done**,
    `GITHUB_AUTH_MODE` defaults to `oauth`.
-3. **Run the migration**: `database/migrations/003_github_app_installations.sql`
-   (adds a nullable column; safe to run while still on the OAuth path).
+3. **Bring the schema up to date**: `python -m app.db.migrate` (the column is
+   nullable and unused on the OAuth path, so this is safe beforehand).
 4. **Set the secrets** and flip `GITHUB_AUTH_MODE=app` in a staging environment
    first:
 
@@ -193,8 +192,17 @@ Step 2 is done. The rest:
 6. **Prompt existing users to migrate.** A user with no
    `github_installation_id` gets an actionable error telling them to install,
    rather than an opaque failure.
-7. **Destroy the stored tokens.** The commented-out UPDATE at the bottom of the
-   migration file.
+7. **Destroy the stored tokens.** Run this ONLY once every active user has
+   installed the app - it is not reversible, and a user without an installation
+   will have to reconnect:
+
+   ```sql
+   UPDATE users SET github_access_token = NULL
+    WHERE github_installation_id IS NOT NULL;
+
+   -- Verify none remain:
+   SELECT count(*) FROM users WHERE github_access_token IS NOT NULL;
+   ```
 
 **Step 7 is the one that actually retires the risk.** Until the stored long-lived
 `repo`-scoped tokens are deleted, they remain a target regardless of what new

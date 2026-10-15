@@ -1,79 +1,41 @@
-# Database Migration Instructions
+# Database migrations
 
-## Running the Organizations and Teams Migration
-
-The migration file `002_organizations_and_teams.sql` creates the necessary tables for organizations, teams, developer tracking, and related features.
-
-### Option 1: Using Supabase SQL Editor (Recommended)
-
-1. Log in to your Supabase dashboard
-2. Navigate to **SQL Editor**
-3. Click **New Query**
-4. Copy the entire contents of `Backend/database/migrations/002_organizations_and_teams.sql`
-5. Paste into the SQL Editor
-6. Click **Run** or press `Ctrl+Enter` (Windows) / `Cmd+Enter` (Mac)
-7. Verify the tables were created by checking the **Table Editor** section
-
-### Option 2: Using Alembic (If configured)
-
-If you have Alembic configured for migrations:
+One command brings any database - empty or years old - to the current schema:
 
 ```bash
 cd Backend
-alembic upgrade head
+python -m app.db.migrate      # reads DATABASE_URL
 ```
 
-### Option 3: Using psql Command Line
+Every deploy runs it before the new code serves traffic (`railway.toml`
+`preDeployCommand`, the Procfile `release` phase, the `migrate` service in
+`docker-compose.yml`, and `start.sh`).
 
-```bash
-psql -h your-supabase-host -U postgres -d postgres -f Backend/database/migrations/002_organizations_and_teams.sql
-```
+## How it works
 
-### Verification
+- `database/postgres_schema.sql` is the **baseline**: the full schema as of the
+  move off Supabase. It is written entirely with `IF NOT EXISTS`, so it is
+  applied on every run - a no-op on an existing database.
+- Each file in `database/migrations/` is applied **once**, in numeric order, in
+  its own transaction, and recorded in `schema_migrations`. A failed migration
+  rolls back completely and is retried on the next run.
+- A Postgres advisory lock serialises concurrent runs, so two instances
+  deploying at once cannot apply a migration twice.
 
-After running the migration, verify the following tables exist:
+## Changing the schema
 
-- `public.organizations`
-- `public.teams`
-- `public.team_members`
-- `public.repository_assignments`
-- `public.developer_contributions`
-- `public.developer_metrics`
-- `public.code_ownership`
-- `public.issue_blame`
-- `public.audit_logs`
+1. Add `database/migrations/NNN_short_description.sql`, numbered after the
+   highest existing file.
+2. Write it idempotently: `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT
+   EXISTS`, `ADD COLUMN IF NOT EXISTS`. `tests/test_migrate.py` enforces this.
+3. **Do not edit the baseline.** Changing both writes every change twice and the
+   copies drift. `tests/test_schema_matches_code.py` reads the baseline plus
+   every migration and fails if the code uses a column neither defines.
+4. Run `python -m app.db.migrate` locally and the test suite.
 
-You can verify in Supabase by:
-1. Going to **Table Editor**
-2. Checking that all the above tables are listed
+## History
 
-### Troubleshooting
-
-**Error: "Could not find the table 'public.organizations'"**
-
-This means the migration hasn't been run yet. Follow the steps above to run the migration.
-
-**Error: "relation already exists"**
-
-This means the tables already exist. You can either:
-- Skip the migration (if tables are already set up correctly)
-- Drop and recreate (be careful - this will delete data):
-  ```sql
-  DROP TABLE IF EXISTS public.audit_logs CASCADE;
-  DROP TABLE IF EXISTS public.issue_blame CASCADE;
-  DROP TABLE IF EXISTS public.code_ownership CASCADE;
-  DROP TABLE IF EXISTS public.developer_metrics CASCADE;
-  DROP TABLE IF EXISTS public.developer_contributions CASCADE;
-  DROP TABLE IF EXISTS public.repository_assignments CASCADE;
-  DROP TABLE IF EXISTS public.team_members CASCADE;
-  DROP TABLE IF EXISTS public.teams CASCADE;
-  DROP TABLE IF EXISTS public.organizations CASCADE;
-  ```
-  Then run the migration again.
-
-### Important Notes
-
-- The migration includes Row Level Security (RLS) policies for data access control
-- All tables are created in the `public` schema
-- Foreign key constraints ensure data integrity
-- Indexes are created for performance optimization
+The Supabase-era files (`schema.sql`, migrations 001-003, and the Alembic
+setup) were removed. 001-003 are folded into the baseline; Alembic was never
+able to run against this database (its baseline was an empty "tables exist in
+Supabase" revision and its dependencies were not installed).

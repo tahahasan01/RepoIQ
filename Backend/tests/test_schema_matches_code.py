@@ -19,13 +19,18 @@ import re
 
 BACKEND = pathlib.Path(__file__).resolve().parent.parent
 SCHEMA = BACKEND / "database" / "postgres_schema.sql"
+MIGRATIONS = BACKEND / "database" / "migrations"
 
 _FILTERS = {"eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "in_", "is_", "order"}
 _WRITES = {"insert", "update", "upsert"}
 
 
 def _schema_columns():
-    text = SCHEMA.read_text(encoding="utf-8")
+    # The baseline plus every migration, in the order the runner applies them.
+    text = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in [SCHEMA, *sorted(MIGRATIONS.glob("*.sql"))]
+    )
     tables = {}
     for match in re.finditer(
         r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);", text, re.DOTALL
@@ -38,7 +43,7 @@ def _schema_columns():
                 continue
             columns.add(line.split()[0].strip('"'))
         tables[name] = columns
-    # ALTER TABLE ... ADD COLUMN in the schema file itself.
+    # ALTER TABLE ... ADD COLUMN, from the baseline or a migration.
     for table, column in re.findall(
         r"ALTER TABLE (?:public\.)?(\w+)\s+ADD COLUMN (?:IF NOT EXISTS )?(\w+)", text
     ):

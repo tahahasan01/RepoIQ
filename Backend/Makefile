@@ -51,7 +51,4 @@ lint:
 	pylint app/
 
 migrate:
-	alembic upgrade head
-
-migrate-create:
-	alembic revision --autogenerate -m "$(name)"
+	python -m app.db.migrate

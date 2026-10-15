@@ -366,15 +366,13 @@ class TestMigrationIsContained:
 
         assert "access_token" in inspect.signature(GitHubService.__init__).parameters
 
-    def test_migration_sql_exists(self):
+    def test_schema_has_the_installation_column(self):
         import pathlib
 
         backend = pathlib.Path(__file__).resolve().parent.parent
-        migration = backend / "database/migrations/003_github_app_installations.sql"
+        schema = (backend / "database/postgres_schema.sql").read_text(encoding="utf-8")
 
-        assert migration.exists()
-        text = migration.read_text(encoding="utf-8")
-        assert "github_installation_id" in text
+        assert "github_installation_id" in schema
 
 
 class TestAppClientCredentialsAreSeparate:
