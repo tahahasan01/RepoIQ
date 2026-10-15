@@ -633,6 +633,27 @@ class GitHubService:
             )
         return GitHubWriteError(f"GitHub rejected the {action} (HTTP {e.status})")
 
+    def get_user_permission(self, repo_full_name: str, username: str) -> Optional[str]:
+        """
+        The person's OWN permission on a repository: "admin", "write", "read" or
+        "none" (None if GitHub does not know them).
+
+        SECURITY: an installation token acts with the APP's permissions, not the
+        user's. On an organization installation, a member with read-only access
+        - or no access - to a repository would otherwise be able to read it and
+        push to it through RepoIQ. Callers check this before letting a user act.
+        """
+        response = httpx.get(
+            f"https://api.github.com/repos/{repo_full_name}/collaborators/{username}/permission",
+            headers=self._rest_headers(),
+            timeout=15.0,
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise GithubException(response.status_code, {"message": "Could not read repository permission"}, None)
+        return response.json().get("permission")
+
     def get_branch_head(self, repo_full_name: str, branch: str) -> str:
         return self.client.get_repo(repo_full_name).get_branch(branch).commit.sha
 
@@ -657,10 +678,12 @@ class GitHubService:
         except UnicodeDecodeError:
             return None
 
-    def create_pull_request(self, repo_full_name: str, title: str, body: str, head: str, base: str = "main") -> Dict[str, Any]:
+    def create_pull_request(
+        self, repo_full_name: str, title: str, body: str, head: str, base: str = "main", draft: bool = False
+    ) -> Dict[str, Any]:
         try:
             repo = self.client.get_repo(repo_full_name)
-            pr = repo.create_pull(title=title, body=body, head=head, base=base)
+            pr = repo.create_pull(title=title, body=body, head=head, base=base, draft=draft)
             return {"number": pr.number, "title": pr.title, "url": pr.html_url, "state": pr.state}
         except GithubException as e:
             logger.error(f"Failed to create pull request: {e.status}")

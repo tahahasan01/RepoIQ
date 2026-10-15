@@ -83,6 +83,10 @@ class RepositoryService:
                 github_service.list_all_repositories, settings.GITHUB_SYNC_MAX_REPOS
             )
 
+            if github_service._is_installation_token():
+                repos, checked = await self._visible_to_user(github_service, user_id, repos)
+                complete = complete and checked
+
             if not repos:
                 return []
 
@@ -156,6 +160,47 @@ class RepositoryService:
         except Exception as e:
             logger.error(f"Repository sync failed: {str(e)}")
             raise
+
+    async def _visible_to_user(self, github_service, user_id: str, repos: List[Dict[str, Any]]):
+        """
+        Keep the installation's repositories this user can see on GitHub.
+
+        SECURITY: an installation lists every repository it was granted, and its
+        token reads them with the APP's permissions. On an organization
+        installation that is every granted repository in the org - including
+        ones this member has no access to. Repositories under the user's own
+        account are theirs; anything else needs at least read permission of
+        their own. Returns (visible, all_checked); a repository whose permission
+        could not be checked is left out and pruning is skipped for this sync.
+        """
+        import asyncio
+        from app.services.auth_service import AuthService
+
+        user = await AuthService().get_user(user_id) or {}
+        login = (user.get("github_username") or "").lower()
+        if not login:
+            return [], False
+
+        own = [r for r in repos if r["full_name"].split("/", 1)[0].lower() == login]
+        others = [r for r in repos if r["full_name"].split("/", 1)[0].lower() != login]
+        semaphore = asyncio.Semaphore(8)
+        all_checked = True
+
+        async def allowed(repo):
+            nonlocal all_checked
+            async with semaphore:
+                try:
+                    permission = await run_blocking(
+                        github_service.get_user_permission, repo["full_name"], login
+                    )
+                except Exception as e:
+                    logger.warning(f"Permission check failed for {repo['full_name']}: {type(e).__name__}")
+                    all_checked = False
+                    return False
+            return permission in ("admin", "write", "read")
+
+        flags = await asyncio.gather(*(allowed(r) for r in others))
+        return own + [r for r, ok in zip(others, flags) if ok], all_checked
 
     async def _prune_revoked_repositories(
         self, user_id: str, visible_github_ids: List[int]

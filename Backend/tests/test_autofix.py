@@ -20,6 +20,7 @@ FIXED = "import ast\n\n\ndef f(x):\n    return ast.literal_eval(x)\n\n\ndef g():
 
 @pytest.fixture
 def repo(db, user):  # noqa: F811
+    db.table("users").update({"github_username": "alice"}).eq("id", user["id"]).execute()
     return db.table("repositories").insert({
         "user_id": user["id"], "github_repo_id": 5, "name": "r", "full_name": "alice/r",
         "default_branch": "main",
@@ -40,8 +41,9 @@ def issues(db, repo):  # noqa: F811
     ]).execute().data
 
 
-def _github(files):
+def _github(files, permission="write"):
     github = MagicMock()
+    github.get_user_permission.return_value = permission
     github.get_branch_head.return_value = "base-sha"
     github.get_file_at.side_effect = lambda full_name, path, ref: files.get(path)
     github.create_pull_request.return_value = {"number": 7, "url": "https://github.com/alice/r/pull/7"}
@@ -166,11 +168,70 @@ class TestRun:
         assert stored["status"] == "failed"
         assert "write access" in stored["error_message"]
 
+    def test_read_only_users_cannot_push(self, db, user, repo, issues):  # noqa: F811
+        """An installation token writes with the APP's permissions, not the user's."""
+        from app.services import autofix
+
+        run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
+        github = _github({"app.py": ORIGINAL}, permission="read")
+
+        with pytest.raises(autofix.AutofixError):
+            _run(run["id"], github, {"app.py": _good()})
+
+        github.create_branch.assert_not_called()
+        github.get_user_permission.assert_called_with("alice/r", "alice")
+        assert "write access" in asyncio.run(autofix.get_run(run["id"], user["id"]))["error_message"]
+
+    def test_pull_requests_are_drafts(self, db, user, repo, issues):  # noqa: F811
+        from app.services import autofix
+
+        run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
+        github = _github({"app.py": ORIGINAL})
+        _run(run["id"], github, {"app.py": _good()})
+
+        assert github.create_pull_request.call_args.args[-1] is True
+
+    def test_files_ci_executes_are_never_changed(self, db, user, repo):  # noqa: F811
+        from app.services import autofix
+
+        analysis = db.table("analysis_results").insert(
+            {"repository_id": repo["id"], "status": "completed"}
+        ).execute().data[0]
+        workflow = db.table("issues").insert({
+            "analysis_id": analysis["id"], "agent_type": "security", "severity": "high",
+            "category": "x", "file_path": ".github/workflows/ci.yml", "line_number": 1,
+        }).execute().data[0]
+        run = asyncio.run(autofix.create_run(repo, user["id"], [workflow["id"]]))
+        github = _github({".github/workflows/ci.yml": "on: push\n"})
+
+        result, agent = _run(run["id"], github, {})
+
+        agent.propose_fix.assert_not_called()
+        assert result["pull_request"] is None
+
     def test_runs_are_private_to_their_owner(self, db, user, repo, issues):  # noqa: F811
         from app.services import autofix
 
         run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
         assert asyncio.run(autofix.get_run(run["id"], "00000000-0000-0000-0000-000000000000")) is None
+
+
+class TestProtectedPaths:
+
+    @pytest.mark.parametrize("path", [
+        ".github/workflows/ci.yml", "sub/.github/actions/x.yml", "Makefile", "package.json",
+        "backend/requirements.txt", "scripts/deploy.sh", "Dockerfile", "pyproject.toml",
+    ])
+    def test_protected(self, path):
+        from app.services.autofix import is_protected_path
+
+        assert is_protected_path(path)
+
+    @pytest.mark.parametrize("path", ["app.py", "src/db/query.ts", "docs/guide.md"])
+    def test_ordinary(self, path):
+        from app.services.autofix import is_protected_path
+
+        assert not is_protected_path(path)
 
 
 class TestValidation:
@@ -188,6 +249,29 @@ class TestValidation:
         from app.services.autofix import validate_fix
 
         assert (validate_fix(ORIGINAL, proposal) is None) is ok
+
+    def test_a_change_far_from_the_finding_is_rejected(self):
+        """An injected payload elsewhere in the file must not ride along with the fix."""
+        from app.services.autofix import validate_fix
+
+        original = "\n".join(f"line{n}" for n in range(1, 101)) + "\n"
+        lines = original.splitlines()
+        lines[4] = "line5 fixed"          # near the finding at line 5
+        lines[89] = "exfiltrate(secrets)"  # line 90, far away
+        proposal = {"changed": True, "updated_file": "\n".join(lines) + "\n", "addressed": [1]}
+
+        reason = validate_fix(original, proposal, [5])
+        assert reason and "far from" in reason
+
+    def test_a_change_near_the_finding_is_accepted(self):
+        from app.services.autofix import validate_fix
+
+        original = "\n".join(f"line{n}" for n in range(1, 101)) + "\n"
+        lines = original.splitlines()
+        lines[49] = "line50 fixed"
+        proposal = {"changed": True, "updated_file": "\n".join(lines) + "\n", "addressed": [1]}
+
+        assert validate_fix(original, proposal, [52]) is None
 
 
 class TestDispatch:

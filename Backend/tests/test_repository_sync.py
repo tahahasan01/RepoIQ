@@ -6,7 +6,7 @@ cascade to analyses, issues and chat. It used to fetch at most 100
 repositories, so for any larger account it deleted the rest - and everything
 attached to them - on every sync.
 """
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -27,6 +27,7 @@ def _sync(user_id: str, repos, complete: bool):
     from app.services.repository_service import RepositoryService
 
     github = MagicMock()
+    github._is_installation_token.return_value = False  # OAuth path
     github.list_all_repositories.return_value = (repos, complete)
     with patch("app.services.repository_service.create_github_service", return_value=github):
         service = RepositoryService()
@@ -78,6 +79,57 @@ class TestSync:
         _sync(user["id"], [], complete=True)
 
         assert _repo_ids(db, user["id"]) == [1001]
+
+
+@requires_db
+class TestInstallationVisibility:
+    """
+    An installation token reads every repository the app was granted. On an
+    organization installation that includes repositories this member cannot
+    see on GitHub - they must not become rows the member can then open.
+    """
+
+    def _sync_installation(self, db, user, repos, permissions):  # noqa: F811
+        import asyncio
+        from app.services.repository_service import RepositoryService
+
+        db.table("users").update({"github_username": "alice"}).eq("id", user["id"]).execute()
+        github = MagicMock()
+        github._is_installation_token.return_value = True
+        github.list_all_repositories.return_value = (repos, True)
+
+        def permission(full_name, login):
+            value = permissions[full_name]
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        github.get_user_permission.side_effect = permission
+        with patch("app.services.repository_service.create_github_service", return_value=github):
+            service = RepositoryService()
+            service.redis = MagicMock()
+            with patch("app.services.auth_service.AuthService.get_user",
+                       new=AsyncMock(return_value={"github_username": "alice"})):
+                asyncio.run(service.sync_repositories(user["id"], "ghs_token"))
+
+    def test_only_repositories_the_member_can_see_are_kept(self, db, user):  # noqa: F811
+        own = dict(_github_repo(1), full_name="alice/mine")
+        shared = dict(_github_repo(2), full_name="acme/shared")
+        hidden = dict(_github_repo(3), full_name="acme/secret")
+
+        self._sync_installation(db, user, [own, shared, hidden], {
+            "acme/shared": "read", "acme/secret": "none",
+        })
+
+        assert _repo_ids(db, user["id"]) == [1001, 1002]
+
+    def test_an_unchecked_permission_blocks_pruning(self, db, user):  # noqa: F811
+        _sync(user["id"], [_github_repo(5)], complete=True)
+        other = dict(_github_repo(6), full_name="acme/x")
+
+        self._sync_installation(db, user, [other], {"acme/x": RuntimeError("github down")})
+
+        assert _repo_ids(db, user["id"]) == [1005]  # kept: the listing was not fully checked
 
 
 class TestListingReportsCompleteness:
