@@ -1,38 +1,41 @@
 import { motion, type Variants } from "framer-motion";
-import { Shield, Lock, ShieldCheck, Eye, Server, KeyRound } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Lock, ShieldCheck, Eye, Server, KeyRound, GitPullRequest } from "lucide-react";
 
+// A summary of src/pages/Security.tsx. Keep the two in step: nothing here may
+// claim more than that page does.
 const securityFeatures = [
   {
-    icon: Shield,
-    title: "End-to-End Encryption",
+    icon: KeyRound,
+    title: "Limited GitHub access",
     description:
-      "Your GitHub tokens and sensitive data are encrypted using AES-256-GCM. All API communications use TLS 1.3 for maximum security.",
+      "RepoIQ is a GitHub App installed only on the repositories you choose. Its GitHub tokens are short-lived or encrypted, and never sent to your browser.",
     highlights: [
-      "AES-256-GCM encryption at rest",
-      "TLS 1.3 for all communications",
-      "Secure token storage",
+      "You pick which repositories it can read",
+      "Installation tokens expire after one hour",
+      "Stored tokens encrypted with AES-256-GCM",
     ],
   },
   {
     icon: Eye,
-    title: "Data Privacy First",
+    title: "What RepoIQ keeps",
     description:
-      "We analyze your code in real-time and never retain it after processing. Your intellectual property remains yours alone.",
+      "Code is fetched from GitHub when you ask for an analysis, a chat answer or a fix. RepoIQ stores results, not a copy of your repository.",
     highlights: [
-      "Zero code retention post-analysis",
-      "No data sharing with third parties",
-      "GDPR compliant practices",
+      "File contents cached for up to 30 minutes",
+      "Per-file findings cached for up to 30 days",
+      "Findings, chat and auto-fix proposals kept until you delete them",
     ],
   },
   {
-    icon: ShieldCheck,
-    title: "Enterprise Ready",
+    icon: GitPullRequest,
+    title: "Nothing changes without you",
     description:
-      "Built with enterprise security requirements in mind. Role-based access control, comprehensive audit logging, and compliance-ready architecture.",
+      "Each account reaches only its own data, and RepoIQ writes to GitHub only for a fix you have reviewed and approved.",
     highlights: [
-      "Role-based access control",
-      "Full audit trail logging",
-      "SOC 2 ready architecture",
+      "Auto-fix opens a draft pull request after you approve the diff",
+      "Joining a team requires accepting an invitation",
+      "A test fails the build if a query skips its ownership check",
     ],
   },
 ];
@@ -83,12 +86,12 @@ export function SecuritySection() {
             <span className="text-sm font-medium text-primary">Security</span>
           </div>
           <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-4">
-            We Take Security{" "}
-            <span className="gradient-text">Seriously</span>
+            How RepoIQ handles{" "}
+            <span className="gradient-text">your code</span>
           </h2>
           <p className="text-lg text-muted-foreground">
-            Your code and data are protected with enterprise-grade security measures.
-            We believe security isn't a feature—it's a foundation.
+            What RepoIQ can reach on GitHub, what it stores, and what it never does without your
+            approval.
           </p>
         </motion.div>
 
@@ -151,19 +154,19 @@ export function SecuritySection() {
           className="mt-16 flex flex-wrap items-center justify-center gap-8 text-muted-foreground"
         >
           <div className="flex items-center gap-2">
-            <KeyRound className="h-5 w-5" />
-            <span className="text-sm">256-bit Encryption</span>
-          </div>
-          <div className="w-px h-6 bg-border hidden sm:block" />
-          <div className="flex items-center gap-2">
             <Server className="h-5 w-5" />
-            <span className="text-sm">Secure Infrastructure</span>
+            <span className="text-sm">HTTPS with HSTS in production</span>
           </div>
           <div className="w-px h-6 bg-border hidden sm:block" />
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-5 w-5" />
-            <span className="text-sm">Privacy Protected</span>
+            <span className="text-sm">Code not used to train AI models</span>
           </div>
+          <div className="w-px h-6 bg-border hidden sm:block" />
+          <Link to="/security" className="flex items-center gap-2 hover:text-foreground transition-colors">
+            <Lock className="h-5 w-5" />
+            <span className="text-sm underline-offset-4 hover:underline">Read the full security page</span>
+          </Link>
         </motion.div>
       </div>
     </section>

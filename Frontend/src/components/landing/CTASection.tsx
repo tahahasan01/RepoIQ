@@ -2,14 +2,17 @@ import { motion } from "framer-motion";
 import { Github, ArrowRight, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link } from "react-router-dom";
+import { useAuth } from "@/hooks/useAuth";
 
 export function CTASection() {
+  const { isAuthenticated } = useAuth();
+
   return (
     <section className="py-24 relative overflow-hidden">
       {/* Background */}
       <div className="absolute inset-0 hero-gradient" />
       <div className="absolute inset-0 bg-grid-pattern opacity-20" />
-      
+
       {/* Glow effects */}
       <motion.div
         animate={{
@@ -40,40 +43,52 @@ export function CTASection() {
           </motion.div>
 
           <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-6 text-foreground">
-            Ready to Improve Your{" "}
-            <span className="gradient-text">Code Quality</span>?
+            Review your first{" "}
+            <span className="gradient-text">repository</span>
           </h2>
-          
+
           <p className="text-lg text-muted-foreground mb-10 max-w-xl mx-auto">
-            Join thousands of developers who use RepoIQ to analyze, improve, and maintain high-quality codebases.
+            Sign up with GitHub, install the RepoIQ GitHub App on the repositories you choose, and
+            start an analysis. It's free.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <Link to="/signup">
-              <Button variant="hero" size="xl" className="gap-3 group">
-                <Github className="h-5 w-5" />
-                Start Free Analysis
-                <ArrowRight className="h-5 w-5 group-hover:translate-x-1 transition-transform" />
+            {isAuthenticated ? (
+              <Link to="/repos">
+                <Button variant="hero" size="xl" className="gap-3 group">
+                  Open your repositories
+                  <ArrowRight className="h-5 w-5 group-hover:translate-x-1 transition-transform" />
+                </Button>
+              </Link>
+            ) : (
+              <Link to="/signup">
+                <Button variant="hero" size="xl" className="gap-3 group">
+                  <Github className="h-5 w-5" />
+                  Sign up with GitHub
+                  <ArrowRight className="h-5 w-5 group-hover:translate-x-1 transition-transform" />
+                </Button>
+              </Link>
+            )}
+            <Link to="/docs">
+              <Button variant="heroOutline" size="lg">
+                Read the documentation
               </Button>
             </Link>
-            <Button variant="heroOutline" size="lg">
-              View Documentation
-            </Button>
           </div>
 
-          {/* Trust badges */}
-          <div className="mt-12 flex items-center justify-center gap-8 text-muted-foreground">
+          {/* Plain facts, not badges: each one must stay true of the product. */}
+          <div className="mt-12 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-muted-foreground">
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-success" />
-              <span className="text-sm">Free to start</span>
+              <span className="text-sm">Free, one plan</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-success" />
-              <span className="text-sm">No credit card required</span>
+              <span className="text-sm">No credit card</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-success" />
-              <span className="text-sm">SOC 2 compliant</span>
+              <span className="text-sm">Only the repositories you pick</span>
             </div>
           </div>
         </motion.div>
