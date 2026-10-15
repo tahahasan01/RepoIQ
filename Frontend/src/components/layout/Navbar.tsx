@@ -1,308 +1,154 @@
+import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
-import { Github, Menu, X, Zap } from "lucide-react";
+import { Github, Menu, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import AccountDropdown from "@/components/layout/AccountDropdown";
-import NotificationBell from "@/components/NotificationBell";
-import { useState } from "react";
+import { AppHeader, SkipLink } from "@/components/layout/AppHeader";
+import { Logo } from "@/components/Logo";
 import { useAuth } from "@/hooks/useAuth";
+import { cn } from "@/lib/utils";
 
+const linkClass = (active: boolean, mobile = false) =>
+  cn(
+    "rounded-md text-sm font-medium transition-colors text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+    mobile ? "px-4 py-3" : "px-3 py-2",
+    active ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted",
+  );
+
+/**
+ * The site header. Signed-in visitors get the app header (the same on the
+ * landing and marketing pages as everywhere else); signed-out visitors get the
+ * marketing links and sign-in actions.
+ */
 export function Navbar() {
+  const { isAuthenticated } = useAuth();
+  if (isAuthenticated) return <AppHeader position="fixed" />;
+  return <PublicNavbar />;
+}
+
+function PublicNavbar() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { isAuthenticated, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const hash = location.hash || "";
-  const isHomeActive = location.pathname === "/" && (hash === "" || hash === "#" || hash === "#home");
-  const isFeaturesActive = (location.pathname === "/" && hash === "#features") || false;
-  const isPricingActive = location.pathname === "/pricing" || (location.pathname === "/" && hash === "#pricing");
-  const isSecurityActive = (location.pathname === "/" && hash === "#security") || false;
-  const isDocsActive = location.pathname === "/docs";
+  const onLanding = location.pathname === "/";
 
-
-  function handleFeaturesClick() {
-    if (location.pathname === "/") {
-      const el = document.getElementById("features");
+  /** Scroll to a landing-page section, or go to the landing page with its hash. */
+  const goToSection = (id: "home" | "features" | "pricing" | "security") => {
+    setMobileMenuOpen(false);
+    if (onLanding) {
+      if (id === "home") {
+        window.scrollTo({ top: 0 });
+        return;
+      }
+      const el = document.getElementById(id);
       if (el) {
-        el.scrollIntoView({ behavior: "smooth" });
+        el.scrollIntoView();
         return;
       }
     }
+    // Landing handles scrolling to the hash.
+    navigate(id === "home" ? "/" : `/#${id}`);
+  };
 
-    // navigate to landing with hash; Landing will handle scrolling
-    navigate('/#features');
-  }
-
-  function handleHomeClick() {
-    if (location.pathname === "/") {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      return;
-    }
-
-    navigate('/');
-  }
-
-  function handlePricingClick() {
-    if (location.pathname === "/") {
-      const el = document.getElementById("pricing");
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth" });
-        return;
-      }
-    }
-
-    navigate('/#pricing');
-  }
-
-  function handleSecurityClick() {
-    if (location.pathname === "/") {
-      const el = document.getElementById("security");
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth" });
-        return;
-      }
-    }
-
-    navigate('/#security');
-  }
-
-  function handleLogout() {
-    // Revokes the session server-side, then reloads into the landing page.
-    void logout({ redirectTo: "/" });
-  }
+  const sections = [
+    { id: "home" as const, label: "Home", active: onLanding && (hash === "" || hash === "#" || hash === "#home") },
+    { id: "features" as const, label: "Features", active: onLanding && hash === "#features" },
+    { id: "pricing" as const, label: "Pricing", active: location.pathname === "/pricing" || (onLanding && hash === "#pricing") },
+    { id: "security" as const, label: "Security", active: onLanding && hash === "#security" },
+  ];
+  const docsActive = location.pathname === "/docs";
 
   return (
-    <motion.header
-      initial={{ y: -100, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      transition={{ duration: 0.5, ease: "easeOut" }}
-      className="fixed top-0 left-0 right-0 z-50 glass-panel border-b"
-    >
-      <nav className="container mx-auto px-4 h-16 flex items-center justify-between">
-        {/* Logo */}
-        <Link to={isAuthenticated ? "/repos" : "/"} className="flex items-center gap-2 group">
-          <div className="relative">
-            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary to-cyan-400 flex items-center justify-center shadow-lg group-hover:shadow-primary/25 transition-shadow">
-              <Zap className="h-5 w-5 text-primary-foreground" />
-            </div>
-            <div className="absolute inset-0 rounded-lg bg-gradient-to-br from-primary to-cyan-400 blur-lg opacity-30 group-hover:opacity-50 transition-opacity" />
-          </div>
-          <span className="font-bold text-xl">
-            Repo<span className="gradient-text">IQ</span>
-          </span>
+    <header className="fixed top-0 left-0 right-0 z-50 glass-panel border-b">
+      <SkipLink />
+      <nav aria-label="Main" className="container mx-auto px-4 h-16 flex items-center justify-between">
+        <Link to="/" className="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <Logo />
         </Link>
 
-        {/* Desktop Navigation: Show different links based on auth status */}
-        {isAuthenticated ? (
-          <div className="hidden md:flex items-center gap-1">
-            <Link
-              to="/repos"
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                location.pathname === "/repos" ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
-            >
-              Repositories
-            </Link>
-          </div>
-        ) : (
-          <div className="hidden md:flex items-center gap-1">
+        <div className="hidden md:flex items-center gap-1">
+          {sections.map((s) => (
             <button
-              onClick={handleHomeClick}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                isHomeActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
+              key={s.id}
+              type="button"
+              onClick={() => goToSection(s.id)}
+              aria-current={s.active ? "page" : undefined}
+              className={linkClass(s.active)}
             >
-              Home
+              {s.label}
             </button>
+          ))}
+          <Link to="/docs" aria-current={docsActive ? "page" : undefined} className={linkClass(docsActive)}>
+            Docs
+          </Link>
+        </div>
 
-            <button
-              onClick={handleFeaturesClick}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                isFeaturesActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
-            >
-              Features
-            </button>
-
-            <button
-              onClick={handlePricingClick}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                isPricingActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
-            >
-              Pricing
-            </button>
-
-            <button
-              onClick={handleSecurityClick}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                isSecurityActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
-            >
-              Security
-            </button>
-
-            <Link
-              to="/docs"
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                isDocsActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
-            >
-              Docs
-            </Link>
-          </div>
-        )}
-
-        {/* Right side actions */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <ThemeToggle />
-          
           <div className="hidden sm:flex items-center gap-2">
-            {/* Signed-in users get the same header on every page, the landing page included. */}
-            {isAuthenticated ? (
-              <>
-                <NotificationBell />
-                <Button variant="outline" onClick={handleLogout}>Logout</Button>
-                <AccountDropdown />
-              </>
-            ) : (
-              <>
-                <Link to="/login">
-                  <Button variant="outline">Login</Button>
-                </Link>
-                <Link to="/signup">
-                  <Button variant="hero" className="gap-2">
-                    <Github className="h-4 w-4" />
-                    Get Started
-                  </Button>
-                </Link>
-              </>
-            )}
+            <Button variant="outline" asChild>
+              <Link to="/login">Sign in</Link>
+            </Button>
+            <Button variant="hero" className="gap-2" asChild>
+              <Link to="/signup">
+                <Github className="h-4 w-4" aria-hidden="true" />
+                Get started
+              </Link>
+            </Button>
           </div>
-
-          {/* Mobile menu button */}
           <Button
             variant="ghost"
             size="icon"
             className="md:hidden"
-            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            onClick={() => setMobileMenuOpen((open) => !open)}
+            aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileMenuOpen}
+            aria-controls="public-mobile-menu"
           >
-            {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            {mobileMenuOpen ? <X className="h-5 w-5" aria-hidden="true" /> : <Menu className="h-5 w-5" aria-hidden="true" />}
           </Button>
         </div>
       </nav>
 
-      {/* Mobile menu */}
       {mobileMenuOpen && (
-        <motion.div
-          initial={{ opacity: 0, height: 0 }}
-          animate={{ opacity: 1, height: "auto" }}
-          exit={{ opacity: 0, height: 0 }}
-          className="md:hidden glass-panel border-t"
-        >
+        <div id="public-mobile-menu" className="md:hidden glass-panel border-t">
           <div className="container mx-auto px-4 py-4 flex flex-col gap-2">
-            {isAuthenticated ? (
-              <Link
-                to="/repos"
-                onClick={() => setMobileMenuOpen(false)}
-                className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                  location.pathname === "/repos" ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                }`}
+            {sections.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => goToSection(s.id)}
+                aria-current={s.active ? "page" : undefined}
+                className={linkClass(s.active, true)}
               >
-                Repositories
-              </Link>
-            ) : (
-              <>
-                <button
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    handleHomeClick();
-                  }}
-                  className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                      isHomeActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                    }`}
-                >
-                  Home
-                </button>
-
-                <button
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    handleFeaturesClick();
-                  }}
-                  className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                    isFeaturesActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  }`}
-                >
-                  Features
-                </button>
-
-                <button
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    handlePricingClick();
-                  }}
-                  className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                    isPricingActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  }`}
-                >
-                  Pricing
-                </button>
-
-                <button
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    handleSecurityClick();
-                  }}
-                  className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                    isSecurityActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  }`}
-                >
-                  Security
-                </button>
-
-                <Link
-                  to="/docs"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className={`px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                    isDocsActive ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  }`}
-                >
-                  Docs
-                </Link>
-              </>
-            )}
-            
+                {s.label}
+              </button>
+            ))}
+            <Link
+              to="/docs"
+              onClick={() => setMobileMenuOpen(false)}
+              aria-current={docsActive ? "page" : undefined}
+              className={linkClass(docsActive, true)}
+            >
+              Docs
+            </Link>
             <div className="flex gap-2 mt-2 pt-2 border-t border-border">
-              {isAuthenticated ? (
-                <>
-                  <Button variant="outline" onClick={() => { handleLogout(); setMobileMenuOpen(false); }} className="flex-1">
-                    Logout
-                  </Button>
-                  <div className="flex-1 flex justify-center">
-                    <AccountDropdown />
-                  </div>
-                </>
-              ) : (
-                <>
-                  <Link to="/login" className="flex-1" onClick={() => setMobileMenuOpen(false)}>
-                    <Button variant="outline" className="w-full">
-                      Login
-                    </Button>
-                  </Link>
-                  <Link to="/signup" className="flex-1" onClick={() => setMobileMenuOpen(false)}>
-                    <Button variant="hero" className="w-full gap-2">
-                      <Github className="h-4 w-4" />
-                      Get Started
-                    </Button>
-                  </Link>
-                </>
-              )}
+              <Button variant="outline" className="flex-1" asChild>
+                <Link to="/login" onClick={() => setMobileMenuOpen(false)}>
+                  Sign in
+                </Link>
+              </Button>
+              <Button variant="hero" className="flex-1 gap-2" asChild>
+                <Link to="/signup" onClick={() => setMobileMenuOpen(false)}>
+                  <Github className="h-4 w-4" aria-hidden="true" />
+                  Get started
+                </Link>
+              </Button>
             </div>
           </div>
-        </motion.div>
+        </div>
       )}
-    </motion.header>
+    </header>
   );
 }

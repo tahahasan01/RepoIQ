@@ -34,8 +34,8 @@ describe("Navbar", () => {
 
     expect(screen.getByTestId("account")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Repositories" })).toHaveAttribute("href", "/repos");
-    expect(screen.queryByRole("button", { name: "Login" })).not.toBeInTheDocument();
-    expect(screen.queryByText(/Get Started/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Get started/)).not.toBeInTheDocument();
   });
 
   it("shows the same signed-in header on other pages", () => {
@@ -43,13 +43,13 @@ describe("Navbar", () => {
     renderAt("/pricing");
 
     expect(screen.getByTestId("account")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Login" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Sign in" })).not.toBeInTheDocument();
   });
 
   it("offers sign-in to signed-out visitors", () => {
     renderAt("/");
 
-    expect(screen.getByRole("button", { name: "Login" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
     expect(screen.queryByTestId("account")).not.toBeInTheDocument();
   });
 });

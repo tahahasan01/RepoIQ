@@ -1,126 +1,82 @@
-import { useState, useRef, useEffect } from "react";
+import { useEffect } from "react";
+import { Link } from "react-router-dom";
+import { HelpCircle, LogOut, Settings } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { useNavigate } from "react-router-dom";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/hooks/useAuth";
 import { useCurrentUser } from "@/hooks/useApiQueries";
-import { Settings, LogOut, Building2, Users } from "lucide-react";
 
+/**
+ * The account menu: Settings, Help and Sign out. Organizations and Teams are
+ * in the header's primary navigation. Built on the Radix dropdown, so Escape,
+ * arrow keys, focus return and aria-expanded come with it.
+ */
 export default function AccountDropdown() {
-  const [open, setOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const navigate = useNavigate();
   const auth = useAuth();
-
-  useEffect(() => {
-    if (!open) return;
-
-    const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-
-    setTimeout(() => {
-      document.addEventListener("mousedown", handleClickOutside);
-    }, 0);
-
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, [open]);
-
-  const handleToggle = () => {
-    setOpen(!open);
-  };
-
-  const handleSettings = () => {
-    setOpen(false);
-    navigate("/settings");
-  };
-
-  const handleLogout = () => {
-    setOpen(false);
-    // Revokes the session server-side, then reloads into the landing page.
-    void auth.logout({ redirectTo: "/" });
-  };
 
   // The shared, token-gated query. This used to call /auth/me directly on
   // every mount - including signed out, where it drew a 403 and then a doomed
   // token refresh on the login page itself.
   const { data: currentUser } = useCurrentUser();
   useEffect(() => {
-    if (currentUser) auth.login(currentUser as any);
+    if (currentUser) auth.login(currentUser);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser]);
 
-  return (
-    <div className="relative" ref={dropdownRef}>
-      <button
-        onClick={handleToggle}
-        className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-accent transition-colors"
-        type="button"
-      >
-        <span className="hidden xl:inline-block text-sm font-medium whitespace-nowrap max-w-[10rem] truncate">{auth.user?.name || auth.user?.full_name || auth.user?.github_username || "Account"}</span>
-        <Avatar className="h-8 w-8">
-          <AvatarImage src={auth.user?.avatar_url || auth.user?.avatar || "/placeholder.svg"} alt={auth.user?.name || auth.user?.full_name || "User"} />
-          <AvatarFallback className="bg-primary text-primary-foreground">{(auth.user?.name || auth.user?.full_name || auth.user?.github_username || "U").slice(0,2).toUpperCase()}</AvatarFallback>
-        </Avatar>
-      </button>
+  const name = auth.user?.name || auth.user?.full_name || auth.user?.github_username || "Account";
+  const initials = (auth.user?.name || auth.user?.full_name || auth.user?.github_username || "U").slice(0, 2).toUpperCase();
+  const avatarSrc = auth.user?.avatar_url || auth.user?.avatar || undefined;
 
-      {open && (
-        <div className="absolute right-0 mt-2 w-64 bg-background border border-border rounded-lg shadow-xl overflow-hidden animate-in fade-in-0 zoom-in-95">
-          <div className="p-3 border-b border-border flex items-center gap-3">
-            <Avatar className="h-10 w-10">
-              <AvatarImage src={auth.user?.avatar_url || auth.user?.avatar || "/placeholder.svg"} alt={auth.user?.name || auth.user?.full_name || "User"} />
-              <AvatarFallback className="bg-primary text-primary-foreground">
-                {(auth.user?.name || auth.user?.full_name || auth.user?.github_username || "U").slice(0,2).toUpperCase()}
-              </AvatarFallback>
-            </Avatar>
-            <div className="min-w-0">
-              <div className="font-semibold text-sm truncate">{auth.user?.name || auth.user?.full_name || auth.user?.github_username || "Account"}</div>
-              {auth.user?.email && (
-                <div className="text-xs text-muted-foreground truncate">{auth.user.email}</div>
-              )}
-            </div>
-          </div>
-          <div className="p-2">
-            <button
-              onClick={() => {
-                setOpen(false);
-                navigate("/organizations");
-              }}
-              className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md hover:bg-accent transition-colors text-left"
-            >
-              <Building2 className="h-4 w-4" />
-              Organizations
-            </button>
-            <button
-              onClick={() => {
-                setOpen(false);
-                navigate("/teams");
-              }}
-              className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md hover:bg-accent transition-colors text-left"
-            >
-              <Users className="h-4 w-4" />
-              Teams
-            </button>
-            <button
-              onClick={handleSettings}
-              className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md hover:bg-accent transition-colors text-left"
-            >
-              <Settings className="h-4 w-4" />
-              Settings
-            </button>
-            <button
-              onClick={handleLogout}
-              className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md hover:bg-accent transition-colors text-left text-destructive"
-            >
-              <LogOut className="h-4 w-4" />
-              Logout
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+  const handleSignOut = () => {
+    // Revokes the session server-side, then reloads into the landing page.
+    void auth.logout({ redirectTo: "/" });
+  };
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        aria-label={`Account menu for ${name}`}
+      >
+        <span className="hidden xl:inline-block text-sm font-medium whitespace-nowrap max-w-[10rem] truncate" aria-hidden="true">
+          {name}
+        </span>
+        <Avatar className="h-8 w-8">
+          <AvatarImage src={avatarSrc} alt="" />
+          <AvatarFallback className="bg-primary text-primary-foreground text-xs">{initials}</AvatarFallback>
+        </Avatar>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        <DropdownMenuLabel className="font-normal">
+          <div className="text-sm font-medium truncate">{name}</div>
+          {auth.user?.email && <div className="text-xs text-muted-foreground truncate">{auth.user.email}</div>}
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link to="/settings" className="gap-2 cursor-pointer">
+            <Settings className="h-4 w-4" aria-hidden="true" />
+            Settings
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link to="/docs" className="gap-2 cursor-pointer">
+            <HelpCircle className="h-4 w-4" aria-hidden="true" />
+            Help
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={handleSignOut} className="gap-2 cursor-pointer">
+          <LogOut className="h-4 w-4" aria-hidden="true" />
+          Sign out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

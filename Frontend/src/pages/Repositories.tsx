@@ -1,5 +1,4 @@
-import { motion } from "framer-motion";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useRepositoryStore } from "@/stores/repositoryStore";
 import { useUIStore } from "@/stores/uiStore";
@@ -13,7 +12,6 @@ import {
   GitFork,
   Calendar,
   Filter,
-  Zap,
   ChevronRight,
   ChevronLeft,
   RefreshCw,
@@ -34,10 +32,11 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
-import { ThemeToggle } from "@/components/ThemeToggle";
-import AccountDropdown from "@/components/layout/AccountDropdown";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { AppHeader, MAIN_CONTENT_ID } from "@/components/layout/AppHeader";
 import AnalysisHistoryModal from "@/components/AnalysisHistoryModal";
-import NotificationBell from "@/components/NotificationBell";
+import type { Repository } from "@/stores/repositoryStore";
 import { scoreColor, scoreLabel } from '@/lib/scoreColor';
 import { isGitHubAccessError, isGitHubAccessKind } from '@/lib/apiErrors';
 import GitHubAccessNotice from "@/components/GitHubAccessNotice";
@@ -60,6 +59,36 @@ const languageColors: Record<string, string> = {
 };
 
 // Cache management is now handled by the repository store
+
+type SortKey = "updated" | "analyzed" | "score";
+
+const SORT_LABELS: Record<SortKey, string> = {
+  updated: "Recently updated",
+  analyzed: "Last analyzed",
+  score: "Lowest score",
+};
+
+const time = (value?: string | null) => (value ? new Date(value).getTime() || 0 : 0);
+
+/**
+ * GET /github/repositories has no sort parameter and returns no total; it
+ * orders by last GitHub activity. So the other orders sort the loaded page
+ * client-side, with repositories that have no value last.
+ */
+function sortRepositories(repos: Repository[], key: SortKey): Repository[] {
+  if (key === "updated") return repos;
+  const sorted = [...repos];
+  if (key === "analyzed") {
+    sorted.sort((a, b) => time(b.lastScan) - time(a.lastScan));
+  } else {
+    sorted.sort((a, b) => {
+      if (a.score == null) return b.score == null ? 0 : 1;
+      if (b.score == null) return -1;
+      return a.score - b.score;
+    });
+  }
+  return sorted;
+}
 
 export default function Repositories() {
   // Repository store
@@ -325,7 +354,7 @@ export default function Repositories() {
       
       addNotification({
         type: 'error',
-        title: 'Analysis Failed',
+        title: 'Analysis failed',
         message: errorDetail,
         repoId: repoIdStr,
         repoName: repoName,
@@ -344,52 +373,33 @@ export default function Repositories() {
     await syncRepositories();
   };
 
+  const [sortKey, setSortKey] = useState<SortKey>("updated");
+  const visibleRepos = sortRepositories(filteredRepos, sortKey);
+  const paginated = currentPage > 1 || hasMorePages;
+  const countLabel = `${visibleRepos.length} ${visibleRepos.length === 1 ? "repository" : "repositories"}${
+    paginated ? ` on page ${currentPage}` : ""
+  }`;
+
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="sticky top-0 z-50 glass-panel border-b">
-        <div className="container mx-auto px-4 h-16 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary to-cyan-400 flex items-center justify-center">
-              <Zap className="h-5 w-5 text-primary-foreground" />
-            </div>
-            <span className="font-bold text-xl">
-              Repo<span className="gradient-text">IQ</span>
-            </span>
-          </Link>
+      <AppHeader />
 
-          <div className="flex items-center gap-3">
-            <NotificationBell />
-            <ThemeToggle />
-            <AccountDropdown />
-          </div>
-        </div>
-      </header>
-
-      <main className="container mx-auto px-4 py-8">
-        {/* Page header */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-8"
-        >
-          <h1 className="text-3xl font-bold mb-2">Your Repositories</h1>
+      <main id={MAIN_CONTENT_ID} tabIndex={-1} className="container mx-auto px-4 py-8 focus:outline-none">
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold mb-2">Repositories</h1>
           <p className="text-muted-foreground">
-            Select a repository to analyze or view previous scan results.
+            Analyze a repository, or open its dashboard to see findings from the last analysis.
           </p>
-        </motion.div>
+        </div>
 
         {/* Search and filters */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="flex flex-col sm:flex-row gap-4 mb-8"
-        >
+        <div className="flex flex-col sm:flex-row gap-4 mb-6">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" aria-hidden="true" />
             <Input
-              placeholder="Search repositories..."
+              type="search"
+              aria-label="Search repositories"
+              placeholder="Search repositories"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               className="pl-10"
@@ -398,24 +408,28 @@ export default function Repositories() {
           <div className="flex gap-2">
             <DropdownMenu open={showFilters} onOpenChange={setShowFilters}>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" className="gap-2 relative">
-                  <Filter className="h-4 w-4" />
+                <Button
+                  variant="outline"
+                  className="gap-2 relative"
+                  aria-label={activeFilterCount > 0 ? `Filters, ${activeFilterCount} active` : "Filters"}
+                >
+                  <Filter className="h-4 w-4" aria-hidden="true" />
                   Filters
                   {activeFilterCount > 0 && (
-                    <span className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-bold">
+                    <span
+                      className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-bold"
+                      aria-hidden="true"
+                    >
                       {activeFilterCount}
                     </span>
                   )}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-64">
-                <DropdownMenuLabel>Filter Repositories</DropdownMenuLabel>
+                <DropdownMenuLabel>Filter repositories</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                
-                {/* Language Filter */}
-                <DropdownMenuLabel className="text-xs text-muted-foreground px-2 py-1.5">
-                  Language
-                </DropdownMenuLabel>
+
+                <DropdownMenuLabel className="text-xs text-muted-foreground px-2 py-1.5">Language</DropdownMenuLabel>
                 <div className="max-h-48 overflow-y-auto">
                   {availableLanguages.length > 0 ? (
                     availableLanguages.map((lang) => (
@@ -434,56 +448,50 @@ export default function Repositories() {
                       </DropdownMenuCheckboxItem>
                     ))
                   ) : (
-                    <div className="px-2 py-1.5 text-xs text-muted-foreground">No languages available</div>
+                    <div className="px-2 py-1.5 text-xs text-muted-foreground">No languages on this page</div>
                   )}
                 </div>
-                
+
                 <DropdownMenuSeparator />
-                
-                {/* Analysis Status Filter */}
-                <DropdownMenuLabel className="text-xs text-muted-foreground px-2 py-1.5">
-                  Analysis Status
-                </DropdownMenuLabel>
+
+                <DropdownMenuLabel className="text-xs text-muted-foreground px-2 py-1.5">Analysis status</DropdownMenuLabel>
                 <DropdownMenuRadioGroup value={analysisStatus} onValueChange={(value) => setAnalysisStatus(value as any)}>
-                  <DropdownMenuRadioItem value="all">All Repositories</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="all">All repositories</DropdownMenuRadioItem>
                   <DropdownMenuRadioItem value="analyzed">Analyzed</DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="not_analyzed">Not Analyzed</DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="has_issues">Has Issues</DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="no_issues">No Issues</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="not_analyzed">Not analyzed</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="has_issues">Score below 70</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="no_issues">Score 70 or above</DropdownMenuRadioItem>
                 </DropdownMenuRadioGroup>
-                
+
                 <DropdownMenuSeparator />
-                
-                {/* Last Scan Filter */}
-                <DropdownMenuLabel className="text-xs text-muted-foreground px-2 py-1.5">
-                  Last Scan
-                </DropdownMenuLabel>
+
+                <DropdownMenuLabel className="text-xs text-muted-foreground px-2 py-1.5">Last scan</DropdownMenuLabel>
                 <DropdownMenuRadioGroup value={lastScanFilter} onValueChange={(value) => setLastScanFilter(value as any)}>
-                  <DropdownMenuRadioItem value="all">All Time</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="all">Any time</DropdownMenuRadioItem>
                   <DropdownMenuRadioItem value="today">Today</DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="week">Last 7 Days</DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="month">Last 30 Days</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="week">Last 7 days</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="month">Last 30 days</DropdownMenuRadioItem>
                   <DropdownMenuRadioItem value="older">Older</DropdownMenuRadioItem>
                 </DropdownMenuRadioGroup>
-                
+
                 {activeFilterCount > 0 && (
                   <>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={clearFilters} className="text-destructive">
-                      <X className="h-4 w-4 mr-2" />
-                      Clear All Filters
+                      <X className="h-4 w-4 mr-2" aria-hidden="true" />
+                      Clear all filters
                     </DropdownMenuItem>
                   </>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
-            
+
             <Button variant="outline" className="gap-2" onClick={handleRefresh} disabled={isSyncing}>
-              <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} />
-              {isSyncing ? 'Syncing...' : 'Refresh'}
+              <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} aria-hidden="true" />
+              {isSyncing ? 'Syncing…' : 'Sync from GitHub'}
             </Button>
           </div>
-        </motion.div>
+        </div>
 
         {/* GitHub access missing: say so and offer the fix, instead of an
             empty list (or, before, a forced logout). */}
@@ -493,10 +501,11 @@ export default function Repositories() {
 
         {/* Repository grid */}
         {isLoading ? (
-          <div className="flex items-center justify-center py-20">
-            <RefreshCw className="h-8 w-8 animate-spin text-primary" />
+          <div className="flex items-center justify-center py-20" role="status">
+            <RefreshCw className="h-8 w-8 animate-spin text-primary" aria-hidden="true" />
+            <span className="sr-only">Loading repositories</span>
           </div>
-        ) : filteredRepos.length === 0 && isGitHubAccessKind(repoErrorKind) ? null : filteredRepos.length === 0 ? (
+        ) : visibleRepos.length === 0 && isGitHubAccessKind(repoErrorKind) ? null : visibleRepos.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center">
             <p className="text-muted-foreground mb-4">
               {repoError
@@ -518,91 +527,128 @@ export default function Repositories() {
               </Button>
             ) : (
               <Button onClick={handleRefresh} disabled={isSyncing} className="gap-2">
-                <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} />
-                {isSyncing ? 'Syncing...' : 'Sync Repositories'}
+                <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} aria-hidden="true" />
+                {isSyncing ? 'Syncing…' : 'Sync from GitHub'}
               </Button>
             )}
           </div>
         ) : (
         <>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredRepos.map((repo, index) => (
-            <motion.div
-              key={repo.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 + index * 0.05 }}
-              /* flex column + mt-auto on the actions: descriptions vary from
-                 one line to three, so the Analyze buttons sat at different
-                 heights across the grid. */
-              className="glass-panel rounded-xl p-6 hover:shadow-lg transition-all duration-300 group flex flex-col h-full"
-            >
-              {/* Header */}
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <p className="text-sm text-muted-foreground" aria-live="polite">{countLabel}</p>
+          <div className="flex items-center gap-2">
+            <Label htmlFor="repo-sort" className="text-sm text-muted-foreground font-normal">
+              Sort by
+            </Label>
+            <Select value={sortKey} onValueChange={(value) => setSortKey(value as SortKey)}>
+              <SelectTrigger id="repo-sort" className="w-44 h-9">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(SORT_LABELS) as SortKey[]).map((key) => (
+                  <SelectItem key={key} value={key}>
+                    {SORT_LABELS[key]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {visibleRepos.map((repo) => {
+            const displayName = repo.name || repo.full_name || "Repository";
+            const dashboardHref = `/dashboard/${repo.id}`;
+            const analyzed = repo.score != null;
+            const stars = repo.stars || repo.stargazers_count || 0;
+            const forks = repo.forks || repo.forks_count || 0;
+            const bgAnalysis = backgroundAnalyses.get(String(repo.id));
+            const isAnalyzing =
+              analyzingRepos.has(repo.id) || bgAnalysis?.status === 'in_progress' || bgAnalysis?.status === 'prefetching';
+
+            return (
+            // flex column + mt-auto on the actions: descriptions vary from one
+            // line to three, so the buttons sat at different heights.
+            <li key={repo.id} className="glass-panel rounded-xl p-6 flex flex-col h-full">
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-2 min-h-5">
                   {repo.language && (
                     <>
                       <div
-                        className={`w-3 h-3 rounded-full ${
-                          languageColors[repo.language] || "bg-gray-500"
-                        }`}
+                        className={`w-3 h-3 rounded-full ${languageColors[repo.language] || "bg-gray-500"}`}
+                        aria-hidden="true"
                       />
-                      <span className="text-sm text-muted-foreground">
-                        {repo.language}
-                      </span>
+                      <span className="text-sm text-muted-foreground">{repo.language}</span>
                     </>
                   )}
                 </div>
                 {(repo.is_private || repo.isPrivate) && (
-                  <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">
-                    Private
-                  </span>
+                  <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">Private</span>
                 )}
               </div>
 
-              {/* Title */}
-              <h3 className="text-lg font-semibold mb-2 group-hover:text-primary transition-colors">
-                {repo.name || repo.full_name}
-              </h3>
+              <h2 className="text-lg font-semibold mb-2 break-words">
+                {analyzed ? (
+                  <Link
+                    to={dashboardHref}
+                    className="rounded-sm hover:text-primary hover:underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {displayName}
+                  </Link>
+                ) : (
+                  displayName
+                )}
+              </h2>
               <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
                 {repo.description || 'No description'}
               </p>
 
-              {/* Stats */}
-              <div className="flex items-center gap-4 mb-4 text-sm text-muted-foreground">
-                <div className="flex items-center gap-1">
-                  <Star className="h-4 w-4" />
-                  {repo.stars || repo.stargazers_count || 0}
-                </div>
-                <div className="flex items-center gap-1">
-                  <GitFork className="h-4 w-4" />
-                  {repo.forks || repo.forks_count || 0}
-                </div>
-                {repo.github_updated_at && (
-                  <div
-                    className="flex items-center gap-1"
-                    title={`Last updated on GitHub ${new Date(repo.github_updated_at).toLocaleString()}`}
-                  >
-                    <Calendar className="h-4 w-4" aria-hidden />
-                    <span className="sr-only">Updated</span>
-                    {new Date(repo.github_updated_at).toLocaleDateString()}
-                  </div>
-                )}
-              </div>
-
-              {/* Score or Scan status */}
-              {/* `!== null` let `undefined` through, so a repository that had
-                  never been analysed rendered the score panel with an empty
-                  value and "Scanned N/A" - the most prominent element on the
-                  card, saying nothing. `!= null` catches both. */}
-              {repo.score != null ? (
-                <div className="flex items-center justify-between mb-4 p-3 bg-muted/50 rounded-lg">
-                  <div>
-                    <span className="text-xs text-muted-foreground">Last Score</span>
+              {(stars > 0 || forks > 0 || repo.github_updated_at) && (
+                <div className="flex items-center gap-4 mb-4 text-sm text-muted-foreground">
+                  {stars > 0 && (
+                    <div className="flex items-center gap-1">
+                      <Star className="h-4 w-4" aria-hidden="true" />
+                      <span className="sr-only">Stars:</span>
+                      {stars}
+                    </div>
+                  )}
+                  {forks > 0 && (
+                    <div className="flex items-center gap-1">
+                      <GitFork className="h-4 w-4" aria-hidden="true" />
+                      <span className="sr-only">Forks:</span>
+                      {forks}
+                    </div>
+                  )}
+                  {repo.github_updated_at && (
                     <div
-                      className="text-2xl font-bold"
-                      style={{ color: scoreColor(repo.score) }}
-                      title={scoreLabel(repo.score)}
+                      className="flex items-center gap-1"
+                      title={`Last updated on GitHub ${new Date(repo.github_updated_at).toLocaleString()}`}
+                    >
+                      <Calendar className="h-4 w-4" aria-hidden="true" />
+                      <span className="sr-only">Updated</span>
+                      {new Date(repo.github_updated_at).toLocaleDateString()}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* `!= null` catches both null and undefined: a never-analysed
+                  repository used to render an empty score and "Scanned N/A". */}
+              {analyzed ? (
+                // Same destination as the name link, so keyboard and screen
+                // reader users skip it; it is a larger target for the mouse.
+                <Link
+                  to={dashboardHref}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  className="flex items-center justify-between mb-4 p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors"
+                >
+                  <div>
+                    <span className="text-xs text-muted-foreground">Last score</span>
+                    <div
+                      className="text-2xl font-bold tabular-nums"
+                      style={{ color: scoreColor(repo.score as number) }}
+                      title={scoreLabel(repo.score as number)}
                     >
                       {repo.score}
                     </div>
@@ -611,108 +657,91 @@ export default function Repositories() {
                     <span className="text-xs text-muted-foreground">Scanned</span>
                     <div className="text-sm">{formatRelativeTime(repo.lastScan)}</div>
                   </div>
-                </div>
+                </Link>
               ) : (
                 <div className="flex items-center gap-2 mb-4 p-3 bg-muted/30 rounded-lg">
-                  <div className="w-2 h-2 rounded-full bg-muted-foreground/50" />
+                  <div className="w-2 h-2 rounded-full bg-muted-foreground/50" aria-hidden="true" />
                   <span className="text-sm text-muted-foreground">Not analyzed yet</span>
                 </div>
               )}
 
-              {/* Action */}
-              <div className="flex gap-2 mt-auto">
-                {(() => {
-                  const bgAnalysis = backgroundAnalyses.get(String(repo.id));
-                  const isAnalyzing = analyzingRepos.has(repo.id) || bgAnalysis?.status === 'in_progress' || bgAnalysis?.status === 'prefetching';
-                  
-                  if (isAnalyzing) {
-                    const elapsed = bgAnalysis?.elapsedSeconds || 0;
-                    const statusText = bgAnalysis?.status === 'prefetching' 
-                      ? 'Loading dashboard...' 
-                      : `Analyzing... ${elapsed}s`;
-                    
-                    return (
-                      <div className="flex-1 flex items-center gap-2">
-                        <div className="flex-1 flex items-center gap-2 px-4 py-2 bg-primary/10 rounded-lg border border-primary/20">
-                          <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                          <span className="text-sm font-medium text-primary">{statusText}</span>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-10 w-10 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleCancelAnalysis(repo.id);
-                          }}
-                          title="Cancel analysis"
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    );
-                  }
-                  
-                  return (
-                    <>
-                      <Button
-                        variant="hero"
-                        className="flex-1 gap-2 group"
-                        onClick={() => handleAnalyze(repo.id)}
-                      >
-                        Analyze Now
-                        <ChevronRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        className="min-w-[96px]"
-                        onClick={() => {
-                          setSelectedRepo({ id: repo.id, name: repo.name || repo.full_name || '' });
-                          setShowHistoryModal(true);
-                        }}
-                      >
-                        <History className="h-4 w-4 mr-2" />
-                        History
-                      </Button>
-                    </>
-                  );
-                })()}
+              <div className="flex flex-wrap items-center gap-2 mt-auto">
+                {isAnalyzing ? (
+                  <>
+                    <div
+                      className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 bg-primary/10 rounded-lg border border-primary/20"
+                      role="status"
+                    >
+                      <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" aria-hidden="true" />
+                      <span className="text-sm font-medium text-primary truncate">
+                        {bgAnalysis?.status === 'prefetching'
+                          ? 'Loading results…'
+                          : `Analyzing… ${bgAnalysis?.elapsedSeconds || 0}s`}
+                      </span>
+                    </div>
+                    <Button variant="outline" size="sm" asChild>
+                      <Link to={dashboardHref}>View progress</Link>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                      onClick={() => handleCancelAnalysis(repo.id)}
+                      aria-label={`Cancel analysis of ${displayName}`}
+                      title="Cancel analysis"
+                    >
+                      <X className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  </>
+                ) : analyzed ? (
+                  <>
+                    <Button className="flex-1 gap-2" asChild>
+                      <Link to={dashboardHref}>
+                        Open dashboard
+                        <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                      </Link>
+                    </Button>
+                    <Button variant="ghost" onClick={() => handleAnalyze(repo.id)}>
+                      Analyze again
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => {
+                        setSelectedRepo({ id: repo.id, name: displayName });
+                        setShowHistoryModal(true);
+                      }}
+                      aria-label={`Analysis history for ${displayName}`}
+                      title="Analysis history"
+                    >
+                      <History className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  </>
+                ) : (
+                  <Button className="flex-1 gap-2" onClick={() => handleAnalyze(repo.id)}>
+                    Analyze
+                    <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                  </Button>
+                )}
               </div>
-            </motion.div>
-          ))}
-        </div>
-        
-        {/* Pagination Controls */}
-        {!isLoading && filteredRepos.length > 0 && (
-          <div className="flex items-center justify-center gap-4 mt-8 pb-8">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handlePrevPage}
-              disabled={currentPage === 1}
-              className="gap-2"
-            >
-              <ChevronLeft className="h-4 w-4" />
+            </li>
+            );
+          })}
+        </ul>
+
+        {/* The API returns no total, so pagination is Previous / Next. */}
+        {paginated && (
+          <nav aria-label="Pagination" className="flex items-center justify-center gap-4 mt-8 pb-8">
+            <Button variant="outline" size="sm" onClick={handlePrevPage} disabled={currentPage === 1} className="gap-2">
+              <ChevronLeft className="h-4 w-4" aria-hidden="true" />
               Previous
             </Button>
-            
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">
-                Page {currentPage}
-              </span>
-            </div>
-            
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleNextPage}
-              disabled={!hasMorePages}
-              className="gap-2"
-            >
+            <span className="text-sm text-muted-foreground">Page {currentPage}</span>
+            <Button variant="outline" size="sm" onClick={handleNextPage} disabled={!hasMorePages} className="gap-2">
               Next
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
             </Button>
-          </div>
+          </nav>
         )}
         </>
         )}

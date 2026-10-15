@@ -29,6 +29,7 @@ import { Label } from "@/components/ui/label";
 import apiClient from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Navbar } from "@/components/layout/Navbar";
+import { MAIN_CONTENT_ID } from "@/components/layout/AppHeader";
 import { useOrganizations, usePrefetchOrganization, queryKeys } from "@/hooks/useApiQueries";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -36,16 +37,16 @@ export default function Organizations() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const prefetchOrg = usePrefetchOrganization();
-  
+
   // Use React Query for instant loading with cached data
   const { data: organizations = [], isLoading: orgsLoading, refetch: refetchOrgs } = useOrganizations({
     placeholderData: (previousData) => previousData,
     refetchOnMount: true, // Always refetch on mount to get latest data
   });
-  
+
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newOrgName, setNewOrgName] = useState("");
-  
+
   // Show loading only if we have no cached data
   const loading = orgsLoading && organizations.length === 0;
 
@@ -64,18 +65,18 @@ export default function Organizations() {
   // Prefetch stats ONLY if not already cached (avoid unnecessary API calls)
   useEffect(() => {
     if (organizations.length === 0) return;
-    
+
     organizations.forEach(org => {
       // Validate org.id before making API calls
       if (!org.id || org.id === 'undefined' || org.id === 'null') {
         console.warn('[Organizations] ⚠️ Skipping prefetch for invalid org:', org);
         return;
       }
-      
+
       // Only prefetch if data doesn't exist in cache
       const cachedTeams = queryClient.getQueryData(queryKeys.organizationTeams(org.id));
       const cachedRepos = queryClient.getQueryData(queryKeys.organizationRepositories(org.id));
-      
+
       if (!cachedTeams) {
         queryClient.prefetchQuery({
           queryKey: queryKeys.organizationTeams(org.id),
@@ -102,7 +103,7 @@ export default function Organizations() {
     },
     onSuccess: (newOrg) => {
       console.log('[Organizations] ✅ Created organization:', newOrg);
-      
+
       // Optimistically add new organization to cache
       queryClient.setQueryData(queryKeys.organizations, (old: any[] = []) => {
         // Check if already exists (avoid duplicates)
@@ -113,14 +114,14 @@ export default function Organizations() {
         console.log('[Organizations] ➕ Adding new org to cache:', newOrg.name);
         return [...old, newOrg];
       });
-      
+
       setCreateDialogOpen(false);
       setNewOrgName("");
       toast({
         title: "Success",
         description: "Organization created successfully",
       });
-      
+
       // Force refetch to ensure we have latest data from backend
       setTimeout(() => {
         queryClient.invalidateQueries({ queryKey: queryKeys.organizations });
@@ -141,7 +142,7 @@ export default function Organizations() {
     mutationFn: async (orgId: string) => {
       console.log('[Organizations] 🗑️ Deleting organization:', orgId);
       // Add timeout to prevent hanging
-      const timeoutPromise = new Promise((_, reject) => 
+      const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Delete request timed out')), 10000)
       );
       const deletePromise = apiClient.deleteOrganization(orgId);
@@ -151,29 +152,29 @@ export default function Organizations() {
       // Cancel outgoing refetches
       await queryClient.cancelQueries({ queryKey: queryKeys.organizations });
       await queryClient.cancelQueries({ queryKey: queryKeys.organization(orgId) });
-      
+
       // Snapshot previous values
       const previousOrgs = queryClient.getQueryData(queryKeys.organizations);
       const previousOrg = queryClient.getQueryData(queryKeys.organization(orgId));
-      
+
       console.log('[Organizations] 📸 Snapshot before delete:', previousOrgs);
-      
+
       // Optimistically remove organization from cache
       queryClient.setQueryData(queryKeys.organizations, (old: any[] = []) => {
         const filtered = old.filter((org: any) => org.id !== orgId);
         console.log('[Organizations] ➖ Removed org from cache. Before:', old.length, 'After:', filtered.length);
         return filtered;
       });
-      
+
       return { previousOrgs, previousOrg };
     },
     onError: (error: any, orgId, context) => {
       console.error('[Organizations] ❌ Delete failed:', error, 'orgId:', orgId);
-      
+
       // Rollback on error (unless it's a timeout or 404)
       const isTimeout = error?.message?.includes('timeout');
       const is404 = error?.message?.includes('404') || error?.status === 404;
-      
+
       if (!isTimeout && !is404 && context?.previousOrgs) {
         console.log('[Organizations] 🔄 Rolling back cache');
         queryClient.setQueryData(queryKeys.organizations, context.previousOrgs);
@@ -181,16 +182,16 @@ export default function Organizations() {
       if (!isTimeout && !is404 && context?.previousOrg) {
         queryClient.setQueryData(queryKeys.organization(orgId), context.previousOrg);
       }
-      
+
       // If 404 or timeout, the org might already be deleted - remove it from cache anyway
       if (is404 || isTimeout) {
         console.log('[Organizations] ⚠️', isTimeout ? 'Timeout' : '404', '- removing from cache anyway');
-        queryClient.setQueryData(queryKeys.organizations, (old: any[] = []) => 
+        queryClient.setQueryData(queryKeys.organizations, (old: any[] = []) =>
           old.filter((org: any) => org.id !== orgId)
         );
         toast({
           title: isTimeout ? "Timeout" : "Success",
-          description: isTimeout 
+          description: isTimeout
             ? "Delete request timed out. Organization may have been deleted. Refreshing..."
             : "Organization removed (may have already been deleted)",
         });
@@ -249,31 +250,36 @@ export default function Organizations() {
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
-      <div className="container mx-auto px-4 py-8 max-w-7xl pt-24">
+      <main id={MAIN_CONTENT_ID} tabIndex={-1} className="container mx-auto px-4 py-8 max-w-7xl pt-24 focus:outline-none">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
           <div className="flex-1">
             <h1 className="text-3xl font-bold">Organizations</h1>
             <p className="text-muted-foreground mt-2">
-              Group your repositories and teams together. Organizations help you monitor overall health across multiple teams and compare performance.
+              Group teams and repositories to see their health together.{" "}
+              {organizations.length > 0 && (
+                <Link to="/docs#organisations" className="text-link underline-offset-4 hover:underline">
+                  How organizations and teams work
+                </Link>
+              )}
             </p>
           </div>
           <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
             <DialogTrigger asChild>
               <Button>
-                <Plus className="h-4 w-4 mr-2" />
-                Create Organization
+                <Plus className="h-4 w-4 mr-2" aria-hidden="true" />
+                Create organization
               </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Create Organization</DialogTitle>
+                <DialogTitle>Create organization</DialogTitle>
                 <DialogDescription>
-                  Create a new organization to manage teams and repositories
+                  An organization holds teams and their repositories.
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-4">
                 <div className="space-y-2">
-                  <Label htmlFor="name">Organization Name</Label>
+                  <Label htmlFor="name">Organization name</Label>
                   <Input
                     id="name"
                     value={newOrgName}
@@ -314,8 +320,8 @@ export default function Organizations() {
                 Create your first organization to get started
               </p>
               <Button onClick={() => setCreateDialogOpen(true)}>
-                <Plus className="h-4 w-4 mr-2" />
-                Create Organization
+                <Plus className="h-4 w-4 mr-2" aria-hidden="true" />
+                Create organization
               </Button>
             </CardContent>
           </Card>
@@ -336,26 +342,27 @@ export default function Organizations() {
                     </div>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button 
-                          variant="ghost" 
-                          size="icon" 
+                        <Button
+                          variant="ghost"
+                          size="icon"
                           className="text-muted-foreground hover:text-destructive shrink-0"
                           disabled={deleteOrgMutation.isPending && deleteOrgMutation.variables === org.id}
+                          aria-label={`Delete ${org.name}`}
+                          title="Delete organization"
                         >
                           {deleteOrgMutation.isPending && deleteOrgMutation.variables === org.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
+                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                           ) : (
-                            <Trash2 className="h-4 w-4" />
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
                           )}
                         </Button>
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
-                          <AlertDialogTitle>Delete Organization</AlertDialogTitle>
+                          <AlertDialogTitle>Delete {org.name}?</AlertDialogTitle>
                           <AlertDialogDescription>
-                            Are you sure you want to delete <strong>"{org.name}"</strong>? 
-                            This will remove all teams, repositories, and data associated with this organization. 
-                            This action cannot be undone.
+                            This removes the organization's teams, repository assignments and data. It can't be
+                            undone.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
@@ -364,7 +371,7 @@ export default function Organizations() {
                             onClick={() => handleDeleteOrganization(org.id)}
                             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                           >
-                            Delete Organization
+                            Delete organization
                           </AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>
@@ -401,13 +408,13 @@ export default function Organizations() {
                         })()}
                       </span>
                     </div>
-                    <Link 
+                    <Link
                       to={`/organizations/${org.id}`}
                       onMouseEnter={() => prefetchOrg.prefetch(org.id)}
                     >
                       <Button variant="outline" className="w-full">
-                        View Details
-                        <ArrowRight className="h-4 w-4 ml-2" />
+                        View details
+                        <ArrowRight className="h-4 w-4 ml-2" aria-hidden="true" />
                       </Button>
                     </Link>
                   </div>
@@ -417,12 +424,14 @@ export default function Organizations() {
           </div>
         )}
 
-        {/* Concept Explanation Card - Moved below organizations list */}
+        {/* The long explanation is for people who have none yet; after
+            that, the header links to the docs. */}
+        {organizations.length === 0 && (
         <Card className="mt-8 bg-muted/50">
           <CardHeader>
             <div className="flex items-center gap-2">
               <Info className="h-5 w-5 text-primary" />
-              <CardTitle className="text-lg">What are Organizations?</CardTitle>
+              <CardTitle className="text-lg">What are organizations?</CardTitle>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -437,12 +446,13 @@ export default function Organizations() {
               <li>Identify which teams need support or training</li>
             </ul>
             <p className="text-sm text-muted-foreground mt-3">
-              <strong>Example:</strong> If you're monitoring Frontend Team (score: 85) and Backend Team (score: 60), 
+              <strong>Example:</strong> If you're monitoring Frontend Team (score: 85) and Backend Team (score: 60),
               you immediately know the Backend Team needs attention. Without organizations, you'd just see 10 disconnected repositories.
             </p>
           </CardContent>
         </Card>
-      </div>
+        )}
+      </main>
     </div>
   );
 }

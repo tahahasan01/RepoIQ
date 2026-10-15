@@ -1,8 +1,8 @@
 import { Toaster } from "@/components/ui/toaster";
-import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { MotionConfig } from "framer-motion";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { RoleProvider } from "@/hooks/useRole";
 import { useEffect, Suspense, lazy } from "react";
@@ -28,7 +28,6 @@ const Files = lazy(() => import("./pages/Files"));
 const Documentation = lazy(() => import("./pages/Documentation"));
 const Pricing = lazy(() => import("./pages/Pricing"));
 const Docs = lazy(() => import("./pages/Docs"));
-const Settings = lazy(() => import("./pages/Settings"));
 const UserSettings = lazy(() => import("./pages/UserSettings"));
 const Organizations = lazy(() => import("./pages/Organizations"));
 const OrganizationDetail = lazy(() => import("./pages/OrganizationDetail"));
@@ -157,7 +156,8 @@ const AppInner = () => {
           <Route path="/dashboard/:id/issues" element={<ProtectedRoute><Issues /></ProtectedRoute>} />
           <Route path="/dashboard/:id/files" element={<ProtectedRoute><Files /></ProtectedRoute>} />
           <Route path="/dashboard/:id/docs" element={<ProtectedRoute><Documentation /></ProtectedRoute>} />
-          <Route path="/dashboard/:id/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+          {/* Repository settings never existed; account settings live on /settings. */}
+          <Route path="/dashboard/:id/settings" element={<Navigate to="/settings" replace />} />
           <Route path="/settings" element={<ProtectedRoute><UserSettings /></ProtectedRoute>} />
           <Route path="/organizations" element={<ProtectedRoute><Organizations /></ProtectedRoute>} />
           <Route path="/organizations/:id" element={<ProtectedRoute><OrganizationDetail /></ProtectedRoute>} />
@@ -217,9 +217,11 @@ const App = () => {
         <ThemeProvider>
           <RoleProvider>
             <TooltipProvider>
-              <Toaster />
-              <Sonner />
-              <AppInner />
+              {/* Animations honour the OS "reduce motion" setting. */}
+              <MotionConfig reducedMotion="user">
+                <Toaster />
+                <AppInner />
+              </MotionConfig>
             </TooltipProvider>
           </RoleProvider>
         </ThemeProvider>
