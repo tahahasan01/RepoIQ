@@ -22,7 +22,7 @@ httpx>=0.27.0
 
 # --- Config ---
 python-dotenv==1.0.1
-pydantic[email]==2.10.4
+pydantic[email]==2.14.1  # claude-agent-sdk (dev) -> mcp needs >=2.12; this is the version the suite runs on
 pydantic-settings==2.7.0
 
 # --- GitHub ---
