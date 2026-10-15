@@ -373,11 +373,20 @@ class ApiClient {
     const criticalEndpoints = ['/results', '/issues'];
     const isCritical = criticalEndpoints.some(path => endpoint.includes(path));
     
+    const method = (options.method || 'GET').toUpperCase();
+    const isRead = method === 'GET' || method === 'HEAD';
     // Use throttling for GET requests (read operations) but NOT for critical endpoints
-    const shouldThrottle = !isCritical && (options.method === 'GET' || !options.method);
+    const shouldThrottle = !isCritical && isRead;
     const key = throttleKey || endpoint;
-    
-    // ALWAYS deduplicate requests (even critical ones) to prevent rate limit issues
+
+    // Writes are never merged or throttled: two POSTs to one endpoint (two chat
+    // messages, two approvals) used to share the first one's response, and the
+    // second write was silently never sent.
+    if (!isRead) {
+      return this._doRequest<T>(endpoint, options, token);
+    }
+
+    // Identical reads in flight at once share one request.
     if (this.pendingRequests.has(key)) {
       // Return existing pending request instead of making a new one
       log.debug('♻️ Deduplicating request for:', endpoint);
@@ -590,21 +599,7 @@ class ApiClient {
     }
   }
 
-  // Auth endpoints
-  async login(email: string, password: string) {
-    return this.request<{ access_token: string; refresh_token: string; user: any }>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    });
-  }
-
-  async signup(email: string, password: string, full_name: string) {
-    return this.request<{ access_token: string; refresh_token: string; user: any }>('/auth/signup', {
-      method: 'POST',
-      body: JSON.stringify({ email, password, full_name }),
-    });
-  }
-
+  // Auth endpoints. Sign-in is GitHub only (see PASSWORD_AUTH_ENABLED on the backend).
   async getCurrentUser() {
     return this.request<any>('/auth/me');
   }

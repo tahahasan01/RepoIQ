@@ -237,3 +237,29 @@ it("sends compareTeams ids as repeated parameters", async () => {
 
   expect(fetchedUrl(fetchFn)).toMatch(/\/executive\/organizations\/org-1\/teams\/compare\?team_ids=a&team_ids=b$/);
 });
+
+describe("request merging", () => {
+  it("never merges two writes to the same endpoint", async () => {
+    const fetchFn = mockFetch(
+      { status: 200, body: { message: "first" } },
+      { status: 200, body: { message: "second" } },
+    );
+
+    const [a, b] = await Promise.all([
+      apiClient.cancelAnalysis("a-1"),
+      apiClient.cancelAnalysis("a-1"),
+    ]);
+
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect([a.message, b.message].sort()).toEqual(["first", "second"]);
+  });
+
+  it("shares one request between identical reads in flight", async () => {
+    const fetchFn = mockFetch({ status: 200, body: { id: "x" } });
+
+    const [a, b] = await Promise.all([apiClient.getAnalysisById("x"), apiClient.getAnalysisById("x")]);
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(a).toEqual(b);
+  });
+});
