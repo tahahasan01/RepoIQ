@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import apiClient from "@/lib/api";
+import { useCurrentUser } from "@/hooks/useApiQueries";
 import { Settings, LogOut, Building2, Users, BarChart3 } from "lucide-react";
 
 export default function AccountDropdown() {
@@ -44,25 +44,14 @@ export default function AccountDropdown() {
     void auth.logout({ redirectTo: "/" });
   };
 
+  // The shared, token-gated query. This used to call /auth/me directly on
+  // every mount - including signed out, where it drew a 403 and then a doomed
+  // token refresh on the login page itself.
+  const { data: currentUser } = useCurrentUser();
   useEffect(() => {
-    let mounted = true;
-    async function load() {
-      try {
-        const user = await apiClient.getCurrentUser();
-        if (!mounted) return;
-        if (user) {
-          auth.login(user as any);
-        }
-      } catch (err) {
-        // not logged in
-      }
-    }
-
-    load();
-    return () => {
-      mounted = false;
-    };
-  }, []);
+    if (currentUser) auth.login(currentUser as any);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser]);
 
   return (
     <div className="relative" ref={dropdownRef}>

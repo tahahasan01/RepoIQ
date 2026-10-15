@@ -27,16 +27,6 @@ export function Navbar() {
   const isSecurityActive = (location.pathname === "/" && hash === "#security") || false;
   const isDocsActive = location.pathname === "/docs";
 
-  useEffect(() => {
-    // Check auth on mount
-    if (localStorage.getItem('token')) {
-      apiClient.getCurrentUser().then(u => {
-        // user data loaded by AccountDropdown
-      }).catch(() => {
-        // not logged in
-      });
-    }
-  }, []);
 
   function handleFeaturesClick() {
     if (location.pathname === "/") {
