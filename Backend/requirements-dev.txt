@@ -13,3 +13,6 @@ claude-agent-sdk==0.2.167
 # The SDK pulls in mcp -> sse-starlette, which otherwise upgrades Starlette past
 # what FastAPI 0.115 supports (FastAPI pins starlette<0.42) and breaks the app.
 starlette>=0.40.0,<0.42.0
+
+# --- Lint (CI installs these in its lint job) ---
+flake8
