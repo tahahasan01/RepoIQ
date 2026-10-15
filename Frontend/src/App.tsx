@@ -38,8 +38,6 @@ const ExecutiveDashboard = lazy(() => import("./pages/ExecutiveDashboard"));
 const Features = lazy(() => import("./pages/Features"));
 const Changelog = lazy(() => import("./pages/Changelog"));
 const About = lazy(() => import("./pages/About"));
-const Blog = lazy(() => import("./pages/Blog"));
-const Careers = lazy(() => import("./pages/Careers"));
 const Contact = lazy(() => import("./pages/Contact"));
 const Privacy = lazy(() => import("./pages/Privacy"));
 const Terms = lazy(() => import("./pages/Terms"));
@@ -149,8 +147,6 @@ const AppInner = () => {
           <Route path="/features" element={<Features />} />
           <Route path="/changelog" element={<Changelog />} />
           <Route path="/about" element={<About />} />
-          <Route path="/blog" element={<Blog />} />
-          <Route path="/careers" element={<Careers />} />
           <Route path="/contact" element={<Contact />} />
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/terms" element={<Terms />} />

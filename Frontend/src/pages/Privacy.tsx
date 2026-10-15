@@ -48,7 +48,7 @@ function List({ children }: { children: ReactNode }) {
 
 function ExternalLink({ href, children }: { href: string; children: ReactNode }) {
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+    <a href={href} target="_blank" rel="noopener noreferrer" className="text-link hover:underline">
       {children}
     </a>
   );
@@ -111,8 +111,8 @@ export default function Privacy() {
                   This policy explains what information {PRODUCT_NAME} collects when you use the website,
                   web app and API (together, the "Service"), how your source code is handled, who we share
                   information with, and the choices you have. Our{" "}
-                  <Link to="/terms" className="text-primary hover:underline">Terms of Service</Link> and{" "}
-                  <Link to="/security" className="text-primary hover:underline">Security</Link> page should be
+                  <Link to="/terms" className="text-link hover:underline">Terms of Service</Link> and{" "}
+                  <Link to="/security" className="text-link hover:underline">Security</Link> page should be
                   read alongside it.
                 </p>
               </Section>
@@ -435,7 +435,7 @@ export default function Privacy() {
                 <p>
                   We protect your information with measures including encryption of stored GitHub tokens,
                   HTTPS, and access checks that limit each account to its own data. No system is perfectly
-                  secure. Our <Link to="/security" className="text-primary hover:underline">Security</Link> page
+                  secure. Our <Link to="/security" className="text-link hover:underline">Security</Link> page
                   describes the measures in place and how to report a vulnerability.
                 </p>
               </Section>
@@ -461,7 +461,7 @@ export default function Privacy() {
                   Depending on where you live, you may have further rights under data protection law, such as the
                   right to object to or restrict processing, or to complain to a data protection authority. To
                   make a request, email{" "}
-                  <a href={`mailto:${CONTACT_EMAIL}`} className="text-primary hover:underline">
+                  <a href={`mailto:${CONTACT_EMAIL}`} className="text-link hover:underline">
                     {CONTACT_EMAIL}
                   </a>
                   . We may need to verify your identity before acting on it.
@@ -497,7 +497,7 @@ export default function Privacy() {
                 <ul className="space-y-2">
                   <li>
                     Email:{" "}
-                    <a href={`mailto:${CONTACT_EMAIL}`} className="text-primary hover:underline">
+                    <a href={`mailto:${CONTACT_EMAIL}`} className="text-link hover:underline">
                       {CONTACT_EMAIL}
                     </a>
                   </li>

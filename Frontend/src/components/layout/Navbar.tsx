@@ -159,20 +159,8 @@ export function Navbar() {
           <ThemeToggle />
           
           <div className="hidden sm:flex items-center gap-2">
-            {/* Always show Login/Get Started on homepage (marketing page) */}
-            {location.pathname === "/" ? (
-              <>
-                <Link to="/login">
-                  <Button variant="outline">Login</Button>
-                </Link>
-                <Link to="/signup">
-                  <Button variant="hero" className="gap-2">
-                    <Github className="h-4 w-4" />
-                    Get Started Free
-                  </Button>
-                </Link>
-              </>
-            ) : isAuthenticated ? (
+            {/* Signed-in users get the same header on every page, the landing page included. */}
+            {isAuthenticated ? (
               <>
                 <NotificationBell />
                 <Button variant="outline" onClick={handleLogout}>Logout</Button>
@@ -287,22 +275,7 @@ export function Navbar() {
             )}
             
             <div className="flex gap-2 mt-2 pt-2 border-t border-border">
-              {/* Always show Login/Get Started on homepage (mobile) */}
-              {location.pathname === "/" ? (
-                <>
-                  <Link to="/login" className="flex-1" onClick={() => setMobileMenuOpen(false)}>
-                    <Button variant="outline" className="w-full">
-                      Login
-                    </Button>
-                  </Link>
-                  <Link to="/signup" className="flex-1" onClick={() => setMobileMenuOpen(false)}>
-                    <Button variant="hero" className="w-full gap-2">
-                      <Github className="h-4 w-4" />
-                      Get Started Free
-                    </Button>
-                  </Link>
-                </>
-              ) : isAuthenticated ? (
+              {isAuthenticated ? (
                 <>
                   <Button variant="outline" onClick={() => { handleLogout(); setMobileMenuOpen(false); }} className="flex-1">
                     Logout

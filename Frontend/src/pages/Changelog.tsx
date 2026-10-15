@@ -1,71 +1,100 @@
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 import { motion } from "framer-motion";
-import { Calendar, Zap, Shield, Code2, Users, Bell } from "lucide-react";
+import { Calendar, Zap, Shield, Code2, Users, Bell, Wand2, MessageSquare } from "lucide-react";
 import { useEffect } from "react";
 
+// Summarised from the repository's commit history. RepoIQ has no version
+// numbers or release tags yet, so entries are dated, not versioned. Add an
+// entry here when a user-visible change ships.
 const releases = [
   {
-    version: "2.1.0",
+    title: "Claude, auto-fix, chat and teams",
+    date: "October 15, 2026",
+    major: true,
+    changes: [
+      { icon: Zap, type: "feature", text: "The analysis engine now runs on Claude, through Anthropic's API" },
+      {
+        icon: Wand2,
+        type: "feature",
+        text: "Auto-fix: select findings, review the exact diff, and RepoIQ opens a draft pull request only after you approve it",
+      },
+      {
+        icon: MessageSquare,
+        type: "feature",
+        text: "\"Ask about this repo\": a chat grounded in the latest analysis, with up to three attached files",
+      },
+      {
+        icon: Users,
+        type: "feature",
+        text: "Team pages with scores and member contributions; joining a team now needs the invited person's consent",
+      },
+      {
+        icon: Bell,
+        type: "improvement",
+        text: "Alerts are stored, deduplicated, checked on a schedule and follow each person's own threshold; webhooks are signed and keep a delivery history",
+      },
+      { icon: Code2, type: "feature", text: "The Documentation tab shows the improvement roadmap and an architecture diagram" },
+      {
+        icon: Shield,
+        type: "improvement",
+        text: "GitHub-only sign-in, security headers, and production checks that refuse an unsafe configuration",
+      },
+      {
+        icon: Code2,
+        type: "fix",
+        text: "Real line numbers on AI findings, fewer false high-severity static findings, and a usable dashboard on phones",
+      },
+    ],
+  },
+  {
+    title: "Security and reliability overhaul",
+    date: "August 21, 2026",
+    major: true,
+    changes: [
+      {
+        icon: Shield,
+        type: "feature",
+        text: "Sign-in and repository access through a GitHub App, installed only on the repositories you choose",
+      },
+      {
+        icon: Zap,
+        type: "improvement",
+        text: "Incremental analysis: findings are cached per file, so unchanged files are not reviewed again",
+      },
+      { icon: Code2, type: "fix", text: "One scoring formula for every analysis, in place of three that disagreed" },
+      { icon: Code2, type: "fix", text: "Failed analyses are reported as failed instead of as results" },
+      { icon: Shield, type: "improvement", text: "A daily AI usage cap per account, and analyses queued on background workers" },
+    ],
+  },
+  {
+    title: "Deployment and CI",
+    date: "February 5, 2026",
+    major: false,
+    changes: [
+      {
+        icon: Zap,
+        type: "improvement",
+        text: "Continuous integration for the backend and frontend, and deployment configuration for Railway",
+      },
+    ],
+  },
+  {
+    title: "First version",
     date: "January 27, 2026",
-    type: "major",
+    major: false,
     changes: [
-      { icon: Zap, type: "feature", text: "Lightning-fast repository analysis (under 60 seconds)" },
-      { icon: Users, type: "feature", text: "Team collaboration workspaces and shared reports" },
-      { icon: Shield, type: "improvement", text: "Enhanced security scanning with zero-day vulnerability detection" },
-      { icon: Code2, type: "fix", text: "Fixed code complexity calculation for nested functions" }
-    ]
+      { icon: Code2, type: "feature", text: "Repository analysis with scores, an issues list and analysis reports" },
+      { icon: Bell, type: "feature", text: "Analyses run in the background, with an in-app notification when they finish" },
+      { icon: Code2, type: "feature", text: "Filters on the repository and issue lists" },
+    ],
   },
-  {
-    version: "2.0.0",
-    date: "January 15, 2026",
-    type: "major",
-    changes: [
-      { icon: Bell, type: "feature", text: "Smart notifications for critical issues and quality regressions" },
-      { icon: Shield, type: "feature", text: "End-to-end encryption for all repository data" },
-      { icon: Code2, type: "improvement", text: "Improved code documentation generation" },
-      { icon: Zap, type: "improvement", text: "50% faster analysis performance" }
-    ]
-  },
-  {
-    version: "1.5.0",
-    date: "December 20, 2025",
-    type: "minor",
-    changes: [
-      { icon: Users, type: "feature", text: "Organization and team management" },
-      { icon: Code2, type: "feature", text: "Custom code quality rules" },
-      { icon: Shield, type: "improvement", text: "Enhanced dependency vulnerability scanning" },
-      { icon: Zap, type: "fix", text: "Fixed memory leak in large repository analysis" }
-    ]
-  },
-  {
-    version: "1.4.0",
-    date: "December 1, 2025",
-    type: "minor",
-    changes: [
-      { icon: Code2, type: "feature", text: "Architecture diagram visualization" },
-      { icon: Bell, type: "feature", text: "Slack and email integration" },
-      { icon: Shield, type: "improvement", text: "Improved security pattern detection" },
-      { icon: Zap, type: "fix", text: "Fixed analysis timeout for large repositories" }
-    ]
-  },
-  {
-    version: "1.3.0",
-    date: "November 15, 2025",
-    type: "minor",
-    changes: [
-      { icon: Code2, type: "feature", text: "Real-time code quality dashboards" },
-      { icon: Shield, type: "feature", text: "Secret exposure detection" },
-      { icon: Users, type: "improvement", text: "Enhanced team performance metrics" },
-      { icon: Zap, type: "fix", text: "Fixed GitHub API rate limiting issues" }
-    ]
-  }
 ];
 
 const typeColors = {
-  feature: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
-  improvement: "bg-blue-500/10 text-blue-500 border-blue-500/20",
-  fix: "bg-amber-500/10 text-amber-500 border-amber-500/20"
+  feature: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20",
+  improvement: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20",
+  fix: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20"
 };
 
 export default function Changelog() {
@@ -77,7 +106,7 @@ export default function Changelog() {
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
-      
+
       <main className="pt-24 pb-16">
         {/* Header */}
         <section className="container mx-auto px-4 py-16">
@@ -88,10 +117,10 @@ export default function Changelog() {
             className="text-center mb-16"
           >
             <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-6">
-              Product <span className="gradient-text">Changelog</span>
+              <span className="gradient-text">Changelog</span>
             </h1>
             <p className="text-xl text-muted-foreground max-w-3xl mx-auto">
-              Stay up to date with new features, improvements, and bug fixes.
+              What has changed in RepoIQ, summarised from its commit history.
             </p>
           </motion.div>
 
@@ -99,7 +128,7 @@ export default function Changelog() {
           <div className="max-w-4xl mx-auto">
             {releases.map((release, index) => (
               <motion.div
-                key={release.version}
+                key={release.date}
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ duration: 0.5, delay: index * 0.1 }}
@@ -107,18 +136,18 @@ export default function Changelog() {
               >
                 {/* Timeline dot */}
                 <div className="absolute left-[-9px] top-0 w-4 h-4 rounded-full bg-primary border-4 border-background" />
-                
+
                 <div className="glass-panel p-6 rounded-xl">
                   {/* Release header */}
-                  <div className="flex items-center gap-4 mb-4">
-                    <h2 className="text-2xl font-bold">v{release.version}</h2>
-                    {release.type === "major" && (
-                      <span className="px-3 py-1 bg-primary/10 text-primary text-xs font-semibold rounded-full border border-primary/20">
-                        Major Release
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4">
+                    <h2 className="text-2xl font-bold">{release.title}</h2>
+                    {release.major && (
+                      <span className="px-3 py-1 bg-primary/10 text-primary text-xs font-semibold rounded-full border border-primary/20 whitespace-nowrap">
+                        Major update
                       </span>
                     )}
                   </div>
-                  
+
                   <div className="flex items-center gap-2 text-muted-foreground mb-6">
                     <Calendar className="h-4 w-4" />
                     <span className="text-sm">{release.date}</span>
@@ -126,8 +155,8 @@ export default function Changelog() {
 
                   {/* Changes */}
                   <ul className="space-y-3">
-                    {release.changes.map((change, i) => (
-                      <li key={i} className="flex items-start gap-3">
+                    {release.changes.map((change) => (
+                      <li key={change.text} className="flex items-start gap-3">
                         <div className="p-2 rounded-lg bg-muted">
                           <change.icon className="h-4 w-4 text-muted-foreground" />
                         </div>

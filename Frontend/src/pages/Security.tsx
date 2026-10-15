@@ -199,7 +199,7 @@ export default function Security() {
               <p>
                 How we handle personal information, which providers receive it, and how to exercise your rights
                 are described in our{" "}
-                <Link to="/privacy" className="text-primary hover:underline">Privacy Policy</Link>.
+                <Link to="/privacy" className="text-link hover:underline">Privacy Policy</Link>.
               </p>
             </div>
           </motion.div>
@@ -238,7 +238,7 @@ export default function Security() {
             <div className="space-y-4 text-muted-foreground">
               <p>
                 If you believe you have found a security vulnerability in {PRODUCT_NAME}, please email{" "}
-                <a href={`mailto:${SECURITY_EMAIL}`} className="text-primary hover:underline">{SECURITY_EMAIL}</a>{" "}
+                <a href={`mailto:${SECURITY_EMAIL}`} className="text-link hover:underline">{SECURITY_EMAIL}</a>{" "}
                 with a description of the issue and the steps to reproduce it. We aim to acknowledge reports
                 within {SECURITY_ACK_TIME}.
               </p>
@@ -272,7 +272,7 @@ export default function Security() {
             <h2 className="text-2xl font-bold mb-4">Questions about security?</h2>
             <p className="text-muted-foreground mb-8">
               Email{" "}
-              <a href={`mailto:${SECURITY_EMAIL}`} className="text-primary hover:underline">{SECURITY_EMAIL}</a>{" "}
+              <a href={`mailto:${SECURITY_EMAIL}`} className="text-link hover:underline">{SECURITY_EMAIL}</a>{" "}
               or use the contact page.
             </p>
             <Link

@@ -1,12 +1,23 @@
 import { motion } from "framer-motion";
-import { Github, Sparkles, ArrowRight, Play } from "lucide-react";
+import { Github, Sparkles, ArrowRight, ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link } from "react-router-dom";
-import { useState } from "react";
-import DemoModal from "@/components/landing/DemoModal";
+import { useAuth } from "@/hooks/useAuth";
+
+// Facts about the product, not usage numbers: RepoIQ has no public usage
+// statistics to quote. Each line must stay true of the current code.
+const facts = [
+  { value: "4", label: "Scored areas, from findings" },
+  { value: "File + line", label: "On every finding" },
+  { value: "$0", label: "One free plan" },
+];
 
 export function HeroSection() {
-  const [open, setOpen] = useState(false);
+  const { isAuthenticated } = useAuth();
+
+  function scrollToFeatures() {
+    document.getElementById("features")?.scrollIntoView({ behavior: "smooth" });
+  }
 
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden hero-gradient">
@@ -53,7 +64,7 @@ export function HeroSection() {
           >
             <Sparkles className="h-4 w-4 text-primary" />
             <span className="text-sm font-medium text-foreground">
-              AI-Powered Code Intelligence
+              Code review with Claude
             </span>
           </motion.div>
 
@@ -64,8 +75,8 @@ export function HeroSection() {
             transition={{ duration: 0.5, delay: 0.1 }}
             className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-bold mb-6 leading-tight text-foreground"
           >
-            Transform Your Code with{" "}
-            <span className="gradient-text">AI Intelligence</span>
+            AI code review for your{" "}
+            <span className="gradient-text">GitHub repositories</span>
           </motion.h1>
 
           {/* Subheadline */}
@@ -75,8 +86,9 @@ export function HeroSection() {
             transition={{ duration: 0.5, delay: 0.2 }}
             className="text-lg sm:text-xl text-muted-foreground max-w-2xl mx-auto mb-10"
           >
-            Analyze, score, and improve your GitHub repositories in minutes. 
-            Get security insights, architecture suggestions, and AI-generated fixes.
+            RepoIQ reviews your code with Claude and static checks, reports security, quality,
+            architecture and documentation findings with the file and line, and can open a draft
+            pull request with a fix once you approve the diff.
           </motion.p>
 
           {/* CTAs */}
@@ -86,37 +98,42 @@ export function HeroSection() {
             transition={{ duration: 0.5, delay: 0.3 }}
             className="flex flex-col sm:flex-row items-center justify-center gap-4"
           >
-            <Link to="/login">
-              <Button variant="hero" size="xl" className="gap-3 group">
-                <Github className="h-5 w-5" />
-                Login with GitHub
-                <ArrowRight className="h-5 w-5 group-hover:translate-x-1 transition-transform" />
-              </Button>
-            </Link>
+            {isAuthenticated ? (
+              <Link to="/repos">
+                <Button variant="hero" size="xl" className="gap-3 group">
+                  Open your repositories
+                  <ArrowRight className="h-5 w-5 group-hover:translate-x-1 transition-transform" />
+                </Button>
+              </Link>
+            ) : (
+              <Link to="/login">
+                <Button variant="hero" size="xl" className="gap-3 group">
+                  <Github className="h-5 w-5" />
+                  Sign in with GitHub
+                  <ArrowRight className="h-5 w-5 group-hover:translate-x-1 transition-transform" />
+                </Button>
+              </Link>
+            )}
             <Button
               variant="heroOutline"
               size="xl"
               className="gap-3"
-              onClick={() => setOpen(true)}
+              onClick={scrollToFeatures}
             >
-              <Play className="h-5 w-5" />
-              Watch Demo
+              <ArrowDown className="h-5 w-5" />
+              See what it checks
             </Button>
           </motion.div>
 
-          {/* Stats */}
+          {/* Facts */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.4 }}
-            className="grid grid-cols-3 gap-8 mt-16 max-w-lg mx-auto"
+            className="grid grid-cols-3 gap-4 sm:gap-8 mt-16 max-w-lg mx-auto"
           >
-            {[
-              { value: "10K+", label: "Repos Analyzed" },
-              { value: "1M+", label: "Issues Found" },
-              { value: "99%", label: "Accuracy" },
-            ].map((stat, index) => (
-              <div key={index} className="text-center">
+            {facts.map((stat) => (
+              <div key={stat.label} className="text-center">
                 <div className="text-2xl sm:text-3xl font-bold gradient-text">
                   {stat.value}
                 </div>
@@ -143,7 +160,7 @@ export function HeroSection() {
                   <div className="w-3 h-3 rounded-full bg-warning/60" />
                   <div className="w-3 h-3 rounded-full bg-success/60" />
                   <span className="text-xs text-muted-foreground ml-4 font-mono">
-                    repoiq.app/dashboard
+                    /dashboard
                   </span>
                 </div>
                 <div className="h-80 bg-gradient-to-br from-card to-muted/30 p-6">
@@ -184,7 +201,6 @@ export function HeroSection() {
               </div>
             </div>
           </motion.div>
-          <DemoModal open={open} onClose={() => setOpen(false)} />
         </div>
       </div>
     </section>
