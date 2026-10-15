@@ -12,3 +12,6 @@ Frontend/dist/
 
 # Playwright MCP scratch output
 .playwright-mcp/
+
+# Claude Code agent worktrees
+.claude/worktrees/
