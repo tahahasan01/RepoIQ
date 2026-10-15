@@ -34,7 +34,17 @@ os.environ.setdefault("GITHUB_CLIENT_ID", "test_client_id")
 os.environ.setdefault("GITHUB_CLIENT_SECRET", "test_client_secret")
 os.environ.setdefault("GITHUB_REDIRECT_URI", "http://localhost:8000/auth/callback")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+# Logical database 15 of RepoIQ's own Redis, not the default 6379/0: on a
+# developer machine that can be another project's server, and the suite writes
+# session watermarks, rate-limit buckets and cache entries.
+os.environ.setdefault("REDIS_URL", os.getenv("TEST_REDIS_URL", "redis://localhost:6380/15"))
+# Any query a test makes without mocking must land in the disposable test
+# database. Settings otherwise defaults to localhost:5432/repoiq, which on a
+# developer machine can be the app's own data - or another project's server.
+os.environ.setdefault(
+    "DATABASE_URL",
+    os.getenv("TEST_DATABASE_URL", "postgresql://repoiq:repoiq_dev@localhost:5433/repoiq_test"),
+)
 os.environ.setdefault("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
 
 

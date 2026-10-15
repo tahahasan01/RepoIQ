@@ -221,6 +221,31 @@ class TestUserLookupIsCached:
 
         assert "invalidate_user_cache" in inspect.getsource(AuthService.github_oauth)
 
+    @pytest.mark.asyncio
+    async def test_secrets_are_never_selected(self, service):
+        """
+        This record is cached in Redis and passed to every route as
+        current_user. select("*") put password_hash and the encrypted GitHub
+        token in both.
+        """
+        service.redis.get.return_value = None
+        service.service_db.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value = \
+            MagicMock(data={"id": "u1"})
+
+        await service.get_user("u1")
+
+        columns = service.service_db.table.return_value.select.call_args.args[0]
+        selected = {c.strip() for c in columns.split(",")}
+        assert "*" not in selected
+        assert "password_hash" not in selected
+        assert "github_access_token" not in selected
+
+    def test_cache_key_moved_past_full_row_entries(self):
+        """Entries written before the fix hold full rows; they must never be read."""
+        from app.services import auth_service
+
+        assert auth_service._USER_CACHE_KEY.format(user_id="u1") != "db:user:u1"
+
 
 # ---------------------------------------------------------------------------
 # Incremental analysis

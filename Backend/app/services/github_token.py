@@ -68,8 +68,10 @@ async def resolve_github_token_for_user(user_id: str) -> str:
         except github_app.GitHubAppError as e:
             raise GitHubTokenUnavailable(str(e))
 
+    # Not part of the cached user record: read only here, only on the OAuth path.
+    stored = await AuthService().get_stored_github_token(user_id)
     try:
-        return decrypt_stored_token(user.get("github_access_token"))
+        return decrypt_stored_token(stored)
     except GitHubTokenUnavailable:
         raise
     except Exception as e:

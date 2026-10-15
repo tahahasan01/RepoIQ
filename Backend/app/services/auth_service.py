@@ -92,6 +92,18 @@ def _issue_session(user_id: str, email: Optional[str] = None) -> Dict[str, str]:
     return {"access_token": access_token, "refresh_token": refresh_token}
 
 
+# The user record as the application sees it: cached in Redis and passed to
+# every route as current_user. Deliberately excludes password_hash and
+# github_access_token - see AuthService.get_user.
+USER_RECORD_COLUMNS = (
+    "id, email, full_name, bio, avatar_url, github_username, "
+    "github_installation_id, github_connected, created_at, updated_at"
+)
+# v2: v1 entries were full rows including password_hash. A new key means none
+# of them is ever read again; they expire on their own 60s TTL.
+_USER_CACHE_KEY = "db:user:v2:{user_id}"
+
+
 class AuthService:
     def __init__(self):
         self.db = get_db()
@@ -102,7 +114,7 @@ class AuthService:
     def invalidate_user_cache(user_id: str) -> None:
         """Drop the cached user record so the next read is authoritative."""
         if user_id:
-            get_redis_service().delete(f"db:user:{user_id}")
+            get_redis_service().delete(_USER_CACHE_KEY.format(user_id=user_id))
     
     async def signup(self, email: str, password: str, full_name: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -534,17 +546,23 @@ class AuthService:
         from the hot path entirely.
 
         The TTL is deliberately short (60s): the record carries github_connected
-        and the encrypted token, so a disconnect or re-auth must take effect
+        and the installation id, so a disconnect or re-auth must take effect
         quickly. Mutating paths call invalidate_user_cache() to make it immediate.
+
+        SECURITY: an explicit column list, never "*". This record is cached in
+        Redis and handed to every route as current_user, and select("*") put
+        password_hash and the encrypted GitHub token in both. Password checks
+        and token resolution query those columns themselves, only when needed.
         """
-        cache_key = f"db:user:{user_id}"
+        cache_key = _USER_CACHE_KEY.format(user_id=user_id)
         cached = self.redis.get(cache_key)
         if cached is not None:
             return cached
 
         try:
             result = await run_blocking(
-                lambda: self.service_db.table("users").select("*").eq("id", user_id).single().execute()
+                lambda: self.service_db.table("users").select(USER_RECORD_COLUMNS)
+                .eq("id", user_id).single().execute()
             )
             if result.data:
                 self.redis.set(cache_key, result.data, ttl=60)
@@ -553,6 +571,18 @@ class AuthService:
             logger.error(f"Get user failed: {str(e)}")
             return None
     
+    async def get_stored_github_token(self, user_id: str) -> Optional[str]:
+        """
+        The encrypted OAuth-App token, for github_token.resolve_github_token_for_user.
+
+        Kept out of get_user's cached record on purpose and never cached itself.
+        """
+        result = await run_blocking(
+            lambda: self.service_db.table("users").select("github_access_token")
+            .eq("id", user_id).single().execute()
+        )
+        return (result.data or {}).get("github_access_token")
+
     async def update_user(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             result = await run_blocking(

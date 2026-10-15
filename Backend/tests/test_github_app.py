@@ -173,9 +173,10 @@ class TestDisabledByDefault:
     async def test_token_resolution_still_decrypts_the_stored_token(self):
         from app.services import github_token
 
-        user = {"id": "u1", "github_access_token": "stored-token"}
+        user = {"id": "u1"}
         with patch("app.services.auth_service.AuthService") as auth_cls:
             auth_cls.return_value.get_user = AsyncMock(return_value=user)
+            auth_cls.return_value.get_stored_github_token = AsyncMock(return_value="stored-token")
             with patch("app.services.github_token.decrypt_stored_token", return_value="plain"):
                 result = await github_token.resolve_github_token_for_user("u1")
 
