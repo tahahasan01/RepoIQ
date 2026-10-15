@@ -21,12 +21,19 @@ Only authors who are RepoIQ users (matched on github_username) are recorded:
 the tables reference users(id). Ownership percentages are still computed over
 ALL lines, so a share is never inflated by contributors who are not users.
 
-SECURITY: and only the repository owner or someone who shares an organization
-with them. GitHub attributes a commit to whichever account owns its author
-email, and anyone can author a commit with anyone's email. Matching every
-RepoIQ user would let a stranger analyse a repository of spoofed commits to
-write contribution and blame rows about any user - and see that user's name
-and avatar in the ownership and blame views of their own repository.
+SECURITY: and only users who can see this repository on GitHub themselves -
+the owner of the row being refreshed, or anyone else whose own sync produced a
+row for the same github_repo_id. GitHub attributes a commit to whichever
+account owns its author email, and anyone can author a commit with anyone's
+email. Matching every RepoIQ user let a stranger analyse a repository of
+spoofed commits to write contribution and blame rows about any user, and see
+that user's name and avatar in their own ownership and blame views.
+
+Organization membership is NOT the test. It was, briefly, and it is
+attacker-controlled: anyone can create an organization and add anyone to a
+team without their consent. Independent access to the repository is proof the
+person actually works on it - for a private repository that took an
+invitation they accepted on GitHub.
 
 Replaces DeveloperAnalyticsService.track_developer_contributions and
 OwnershipService.analyze_code_ownership, neither of which could ever run: both
@@ -142,9 +149,11 @@ async def refresh_repository_insights(
     logins |= {r["login"] for ranges in blame.values() for r in ranges if r.get("login")}
     users = {}
     if logins:
-        from app.services.organization_service import OrganizationService
-
-        attributable = {repo["user_id"]} | await OrganizationService().get_colleague_ids(repo["user_id"])
+        with_access = (await run_blocking(
+            lambda: db.table("repositories").select("user_id")
+            .eq("github_repo_id", repo["github_repo_id"]).execute()
+        )).data or []
+        attributable = {repo["user_id"]} | {r["user_id"] for r in with_access}
         rows = (await run_blocking(
             lambda: db.table("users").select("id, github_username")
             .in_("github_username", sorted(logins)).in_("id", sorted(attributable)).execute()

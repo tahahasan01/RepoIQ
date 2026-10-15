@@ -33,14 +33,21 @@ def repo(db, user):  # noqa: F811
 
 
 @pytest.fixture
-def bob(db, user):  # noqa: F811
-    """A colleague: a member of a team in the repository owner's organization."""
+def bob(db, user, repo):  # noqa: F811
+    """
+    A collaborator: a team member in the owner's organization who also has the
+    repository in their own sync - i.e. GitHub grants him access to it.
+    """
     bob = db.table("users").insert(
         {"email": "bob@example.com", "full_name": "Bob", "github_username": "bob"}
     ).execute().data[0]
     org = db.table("organizations").insert({"name": "Acme", "owner_id": user["id"]}).execute().data[0]
     team = db.table("teams").insert({"organization_id": org["id"], "name": "Core"}).execute().data[0]
     db.table("team_members").insert({"team_id": team["id"], "user_id": bob["id"], "role": "member"}).execute()
+    db.table("repositories").insert({
+        "user_id": bob["id"], "github_repo_id": repo["github_repo_id"],
+        "name": repo["name"], "full_name": repo["full_name"],
+    }).execute()
     bob["team_id"] = team["id"]
     return bob
 
@@ -137,6 +144,28 @@ class TestInsights:
         for table in ("developer_contributions", "code_ownership", "issue_blame"):
             rows = db.table(table).select("user_id").eq("user_id", stranger["id"]).execute().data
             assert not rows, f"{table} has a row for a stranger"
+
+    def test_organization_membership_alone_does_not_allow_attribution(self, db, user, repo, stranger):  # noqa: F811
+        """
+        Anyone can create an organization and add anyone to a team without
+        consent, so "colleague" cannot be the test - repository access is.
+        """
+        org = db.table("organizations").insert({"name": "Trap", "owner_id": user["id"]}).execute().data[0]
+        team = db.table("teams").insert({"organization_id": org["id"], "name": "T"}).execute().data[0]
+        db.table("team_members").insert(
+            {"team_id": team["id"], "user_id": stranger["id"], "role": "member"}
+        ).execute()
+
+        recent = datetime.now(timezone.utc).isoformat()
+        _refresh(repo, None, ["app.py"], _github(
+            stats=[{"login": "eve", "weeks": [
+                {"week_start": _sunday(1), "additions": 1, "deletions": 0, "commits": 1},
+            ]}],
+            blame={"app.py": [{"start": 1, "end": 5, "login": "eve", "committed_at": recent}]},
+        ))
+
+        for table in ("developer_contributions", "code_ownership"):
+            assert not db.table(table).select("user_id").eq("user_id", stranger["id"]).execute().data
 
     def test_refresh_replaces_ownership(self, db, user, repo, bob):  # noqa: F811
         """Someone whose lines were all rewritten no longer owns the file."""
