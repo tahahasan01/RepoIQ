@@ -353,7 +353,12 @@ class TestValidation:
         assert validate_fix(original, proposal, [5]) is None
         assert far_from_findings(original, updated, [5]) == [90]
 
-    @pytest.mark.parametrize("char", ["\u2028", "\x0c", "\x1c", "\u202e", "\u2066", "\x85"])
+    @pytest.mark.parametrize("char", [
+        "\u2028", "\u2029", "\x0c", "\x0b", "\x1c", "\x85",       # line-breaking
+        "\u202e", "\u2066", "\u200f",                              # bidi controls
+        "\u200b", "\u2060", "\ufeff", "\U000e0041",                 # zero-width / BOM / tag
+        "\x00", "\x1b", "\ue000",                                   # controls, private use
+    ])
     def test_characters_that_hide_code_from_review_are_rejected(self, char):
         """str.splitlines() and browsers disagree on these; bidi controls reorder display."""
         from app.services.autofix import validate_fix
@@ -361,6 +366,21 @@ class TestValidation:
         updated = FIXED.replace("return 1", f"return 1{char}import os; os.system('x')")
         reason = validate_fix(ORIGINAL, {"changed": True, "updated_file": updated, "addressed": [1]})
         assert reason and "invisible" in reason
+
+    def test_characters_already_in_the_file_are_still_rejected(self):
+        """A character planted in the repository must not ride through into an unreadable diff."""
+        from app.services.autofix import validate_fix
+
+        planted = ORIGINAL.replace("return 1", "return 1\u202e")
+        updated = FIXED.replace("return 1", "return 1\u202e")
+        reason = validate_fix(planted, {"changed": True, "updated_file": updated, "addressed": [1]})
+        assert reason and "invisible" in reason
+
+    def test_ordinary_unicode_is_allowed(self):
+        from app.services.autofix import validate_fix
+
+        updated = FIXED.replace("return 1", "return 'café – naïve ✓ 日本'")
+        assert validate_fix(ORIGINAL, {"changed": True, "updated_file": updated, "addressed": [1]}) is None
 
     def test_line_ending_changes_are_rejected(self):
         from app.services.autofix import validate_fix

@@ -102,15 +102,32 @@ def _changed_original_lines(original: str, updated: str) -> List[int]:
 
 
 # Characters that make a diff read differently from what is committed:
-# Python's str.splitlines() treats these as line breaks while browsers and
-# GitHub do not (or vice versa), and bidirectional controls reorder how code
-# is displayed without changing what runs ("Trojan Source"). A reviewer
-# looking at a diff containing them is not seeing the change.
-_DECEPTIVE_CHARS = {
-    "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029",
-    "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
-    "\u2066", "\u2067", "\u2068", "\u2069", "\u200e", "\u200f", "\x00",
-}
+# Python's str.splitlines() treats several as line breaks while browsers and
+# GitHub do not, bidirectional controls reorder how code is displayed without
+# changing what runs ("Trojan Source"), and zero-width / tag / format
+# characters are invisible. A reviewer looking at a diff containing them is
+# not seeing the change.
+#
+# Decided by Unicode category, not a hand-written list - a list was the first
+# version, and it missed zero-width spaces, U+2060, BOMs and tag characters.
+# Forbidden: controls other than tab/LF/CR (Cc), format characters (Cf, which
+# covers bidi controls, zero-width characters and tags), line and paragraph
+# separators (Zl, Zp), private-use (Co), surrogates (Cs) and unassigned (Cn).
+_FORBIDDEN_CATEGORIES = {"Cc", "Cf", "Zl", "Zp", "Co", "Cs", "Cn"}
+_ALLOWED_CONTROLS = {"\t", "\n", "\r"}
+
+
+def hidden_characters(text: str) -> List[str]:
+    """Code points in `text` that could hide code from a reviewer (deduplicated)."""
+    import unicodedata
+
+    found = []
+    for ch in set(text):
+        if ch in _ALLOWED_CONTROLS:
+            continue
+        if unicodedata.category(ch) in _FORBIDDEN_CATEGORIES:
+            found.append(f"U+{ord(ch):04X}")
+    return sorted(found)
 
 
 def _lines(text: str) -> List[str]:
@@ -162,9 +179,15 @@ def validate_fix(
     if not proposal.get("addressed"):
         return "The proposal did not say which findings it addresses"
 
-    introduced = {c for c in _DECEPTIVE_CHARS if c in updated and c not in original}
-    if introduced:
-        return "The proposal contains invisible or line-breaking characters that would hide code from review"
+    # Anywhere in the proposed file, not only characters the proposal added:
+    # one already planted in the repository would otherwise pass straight
+    # through into a diff the reviewer cannot read.
+    hidden = hidden_characters(updated)
+    if hidden:
+        return (
+            "The proposal contains invisible or line-breaking characters that would hide code "
+            f"from review ({', '.join(hidden[:5])})"
+        )
     # Line endings must match the file: a lone \r splits differently in
     # different viewers, and converting the whole file buries the real change.
     if ("\r\n" in original) != ("\r\n" in updated) or updated.replace("\r\n", "").count("\r") > original.replace("\r\n", "").count("\r"):
