@@ -8,7 +8,6 @@ logger = get_logger(__name__)
 class DocumentationAgent(BaseAgent):
     def __init__(self):
         super().__init__()
-        self.temperature = 0.6
         
     def get_agent_type(self) -> str:
         return "documentation"
@@ -150,7 +149,7 @@ Add docstrings, comments explaining complex logic, and usage examples where help
             {"role": "user", "content": user_prompt}
         ]
         
-        return await self._call_llm(messages, temperature=0.7)
+        return await self._call_llm(messages)
     
     async def generate_readme(self, project_info: Dict[str, Any]) -> str:
         system_prompt = """You are an expert technical writer specializing in README files."""
@@ -321,7 +320,7 @@ Output ONLY the ASCII diagram, no explanations."""
         ]
         
         try:
-            result = await self._call_llm(messages, temperature=0.5)
+            result = await self._call_llm(messages)
             return result
         except Exception as e:
             logger.error(f"Failed to generate architecture diagram: {e}")

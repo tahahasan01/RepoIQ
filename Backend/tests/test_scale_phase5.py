@@ -315,7 +315,7 @@ class TestIncrementalAnalysis:
 
         key = incremental_analysis._key("abc")
         assert incremental_analysis.ANALYSER_VERSION in key
-        assert incremental_analysis.settings.OPENAI_MODEL in key
+        assert incremental_analysis.settings.ANTHROPIC_MODEL in key
 
     def test_record_batch_caches_per_file(self, incremental_redis):
         from app.services.incremental_analysis import record_batch_findings, get_cached_findings

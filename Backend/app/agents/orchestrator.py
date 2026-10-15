@@ -26,6 +26,39 @@ class AIAnalysisUnavailable(Exception):
 logger = get_logger(__name__)
 
 
+# Response contract for _analyze_file_batch. The scores are logged but never
+# used for scoring - scores are derived from the findings (services/scoring.py).
+BATCH_REVIEW_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "issues": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                    "category": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "line_number": {"type": "integer"},
+                    "description": {"type": "string"},
+                    "suggestion": {"type": "string"},
+                },
+                "required": [
+                    "severity", "category", "file_path",
+                    "line_number", "description", "suggestion",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "security_score": {"type": "integer"},
+        "quality_score": {"type": "integer"},
+        "architecture_score": {"type": "integer"},
+    },
+    "required": ["issues", "security_score", "quality_score", "architecture_score"],
+    "additionalProperties": False,
+}
+
+
 class AgentOrchestrator:
     def __init__(self, user_id: str = None):
         # Attributing LLM spend requires knowing whose analysis this is.
@@ -362,14 +395,13 @@ Accuracy over volume. An empty issues array is an acceptable answer."""
                 {"role": "user", "content": prompt}
             ]
             
-            # json_mode: the API guarantees syntactically valid JSON, which
-            # removes the markdown-fence hunting below and, more importantly, the
-            # silent failure mode where a stray prefix or an unclosed fence made
-            # the whole batch parse as zero issues.
+            # Structured output: the API guarantees JSON matching the schema,
+            # which removes the markdown-fence hunting below and, more
+            # importantly, the silent failure mode where a stray prefix or an
+            # unclosed fence made the whole batch parse as zero issues.
             response = await self.security_agent._call_llm(
                 messages,
-                temperature=0.3,
-                json_mode=True,
+                json_schema=BATCH_REVIEW_SCHEMA,
                 user_id=self.user_id,
             )
             logger.info(f"Raw AI response length: {len(response)} chars")

@@ -34,7 +34,7 @@ settings = get_settings()
 
 # Bumped when the prompt, model or issue schema changes, so cached findings from
 # an older analyser are not served against a newer one.
-ANALYSER_VERSION = "v2"
+ANALYSER_VERSION = "v3"
 
 _KEY = "analysis:file:{version}:{model}:{sha}"
 
@@ -42,7 +42,7 @@ _KEY = "analysis:file:{version}:{model}:{sha}"
 def _key(blob_sha: str) -> str:
     return _KEY.format(
         version=ANALYSER_VERSION,
-        model=settings.OPENAI_MODEL,
+        model=settings.ANTHROPIC_MODEL,
         sha=blob_sha,
     )
 

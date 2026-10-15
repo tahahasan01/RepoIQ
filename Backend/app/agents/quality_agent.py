@@ -9,7 +9,6 @@ logger = get_logger(__name__)
 class CodeQualityAgent(BaseAgent):
     def __init__(self):
         super().__init__()
-        self.temperature = 0.4
         
     def get_agent_type(self) -> str:
         return "quality"

@@ -8,7 +8,6 @@ logger = get_logger(__name__)
 class ConversationalAgent(BaseAgent):
     def __init__(self):
         super().__init__()
-        self.temperature = 0.7
         self.conversation_history: List[Dict[str, str]] = []
         
     def get_agent_type(self) -> str:
@@ -138,7 +137,7 @@ Provide:
             {"role": "user", "content": user_prompt}
         ]
         
-        return await self._call_llm(messages, temperature=0.3)
+        return await self._call_llm(messages)
     
     async def suggest_improvements(self, code: str, focus_area: Optional[str] = None) -> str:
         system_prompt = """You are an expert code reviewer suggesting improvements."""
@@ -192,7 +191,7 @@ Return response in JSON format with "fixed_code", "explanation", and "testing_no
             {"role": "user", "content": user_prompt}
         ]
         
-        response = await self._call_llm(messages, temperature=0.3)
+        response = await self._call_llm(messages)
         
         try:
             import json

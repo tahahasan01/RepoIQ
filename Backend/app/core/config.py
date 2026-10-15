@@ -81,16 +81,29 @@ class Settings(BaseSettings):
     # escaped-newline form is accepted and normalised.
     GITHUB_APP_PRIVATE_KEY: Optional[str] = None
     
-    OPENAI_API_KEY: str
-    OPENAI_MODEL: str = "gpt-4o-mini"
-    # Output token ceiling per model call. Was hardcoded at 2000, which the
-    # analysis prompt routinely exceeded - the model stopped mid-JSON, the parse
-    # failed, and the failure was swallowed into an empty issue list with neutral
-    # 50 scores. A batch that found real problems reported none.
-    OPENAI_MAX_OUTPUT_TOKENS: int = 8000
+    # Claude (Anthropic). Set exactly one credential: ANTHROPIC_API_KEY (a
+    # Console key, sk-ant-api...) is the one meant for a deployed service;
+    # ANTHROPIC_AUTH_TOKEN takes an OAuth access token instead.
+    ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_AUTH_TOKEN: Optional[str] = None
+    ANTHROPIC_MODEL: str = "claude-opus-5-5"
+    # low | medium | high | xhigh | max. Code review is intelligence-sensitive;
+    # the model's own default is medium.
+    ANTHROPIC_EFFORT: str = "high"
+    # Re-run a declined request on Anthropic's recommended fallback model
+    # instead of returning the refusal.
+    ANTHROPIC_REFUSAL_FALLBACK: bool = True
+    # Max gap between streamed chunks before a call is treated as hung.
+    ANTHROPIC_TIMEOUT_SECONDS: float = 300.0
+    # Output token ceiling per model call, thinking included. Was hardcoded at
+    # 2000, which the analysis prompt routinely exceeded - the model stopped
+    # mid-JSON, the parse failed, and the failure was swallowed into an empty
+    # issue list with neutral 50 scores. A batch that found real problems
+    # reported none.
+    LLM_MAX_OUTPUT_TOKENS: int = 32000
     # Rolling daily token allowance per user. 0 disables the cap.
     # Nothing bounded LLM spend before this.
-    OPENAI_DAILY_TOKEN_BUDGET_PER_USER: int = 2_000_000
+    LLM_DAILY_TOKEN_BUDGET_PER_USER: int = 2_000_000
     
     # Redis configuration
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -140,7 +153,7 @@ class Settings(BaseSettings):
     # The analysis reads a SAMPLE of a repository, not all of it. Scores and
     # issue counts are computed from at most ANALYSIS_MAX_FILES files, chosen by
     # the priority heuristic in analysis_tasks. Raising this increases coverage,
-    # analysis time and OpenAI spend roughly linearly. The result carries
+    # analysis time and LLM spend roughly linearly. The result carries
     # files_analyzed and files_eligible so the UI can disclose the sample size.
     # Where analyses run: "queue" (Celery, correct for production), "inline"
     # (in the API process, for local dev), or "auto" (queue when a worker is

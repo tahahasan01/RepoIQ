@@ -29,8 +29,7 @@ pydantic-settings==2.7.0
 PyGithub==2.5.0
 
 # --- AI ---
-openai==1.59.6
-tiktoken==0.8.0
+anthropic==1.14.0
 
 # --- Async / queue / cache ---
 celery==5.4.0  # was unpinned: builds were not reproducible
@@ -50,7 +49,7 @@ cryptography>=44.0.0  # AES-256-GCM token encryption
 #   langchain==0.1.0, langchain-openai==0.0.2, langchain-community==0.0.10,
 #   langgraph==0.0.20
 #       January 2024 releases carrying a large transitive tree and a number of
-#       CVEs since. The agents call the OpenAI SDK directly.
+#       CVEs since. The agents call the Anthropic SDK directly.
 #   radon==6.0.1, bandit==1.7.5
 #       Static-analysis tools. bandit runs in CI, which installs it itself;
 #       neither is imported at runtime.

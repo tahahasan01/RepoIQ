@@ -7,7 +7,6 @@ import json
 import hashlib
 from datetime import datetime, timedelta
 from redis import Redis
-import tiktoken
 from app.core.logging import get_logger
 from app.core.config import get_settings
 
@@ -31,24 +30,17 @@ class TokenOptimizer:
             logger.warning(f"Redis unavailable for token optimizer: {e}")
             self.redis = None
             self.redis_available = False
-        # Count with the tokenizer of the model actually being called. This was
-        # pinned to gpt-3.5-turbo (cl100k_base) while requests went to the
-        # configured model, so every budget and truncation decision was made
-        # against the wrong tokenizer - and would drift further the moment the
-        # configured model changed.
-        try:
-            self.encoding = tiktoken.encoding_for_model(settings.OPENAI_MODEL)
-        except KeyError:
-            # An unrecognised or newly released model name. o200k_base is the
-            # current default rather than a guess at the old one.
-            logger.warning(
-                f"No tokenizer registered for {settings.OPENAI_MODEL}; using o200k_base"
-            )
-            self.encoding = tiktoken.get_encoding("o200k_base")
-    
     def count_tokens(self, text: str) -> int:
-        """Count tokens in text using tiktoken."""
-        return len(self.encoding.encode(text))
+        """
+        Estimate tokens in text, for usage logging only.
+
+        Claude's tokenizer is not available locally (tiktoken has no Claude
+        encoding), and an exact count would cost an API round trip per call.
+        Source code runs at roughly 3 characters per token, so this errs high.
+        Spend accounting does not use it: llm_budget records the usage the API
+        reports for each call.
+        """
+        return (len(text) + 2) // 3
     
     def summarize_code(self, code: str, max_tokens: int = 1000) -> str:
         """

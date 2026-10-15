@@ -43,7 +43,7 @@
 
 ### Why RepoIQ?
 
-- 🤖 **AI-Powered Analysis**: Uses OpenAI GPT-4 to understand code context and detect complex issues
+- 🤖 **AI-Powered Analysis**: Uses Claude (Anthropic) to understand code context and detect complex issues
 - 🔒 **Security First**: Detects SQL injection, XSS, authentication flaws, and 20+ vulnerability types
 - 📊 **Comprehensive Reports**: Generate professional PDF reports for stakeholders
 - ⚡ **Real-Time Analysis**: Live progress tracking with instant results
@@ -235,7 +235,7 @@
 | **Celery** | 5.4.0 | Task Queue | Background jobs, Scheduling |
 | **Redis** | 5.2.0 | Caching & Queue | Cache, Pub/Sub, Queue |
 | **PostgreSQL** | 16 | Database | Accessed directly via psycopg 3 with a connection pool |
-| **OpenAI** | 1.54.4 | AI Analysis | GPT-4, Embeddings |
+| **Anthropic SDK** | 1.14.0 | AI Analysis | Claude Opus 5.5, structured outputs |
 | **GitHub API** | - | Integration | OAuth, Repos, Files |
 | **Pydantic** | 2.10.3 | Validation | Data models, Settings |
 | **Uvicorn** | 0.32.1 | ASGI Server | Hot reload, Workers |
@@ -314,8 +314,8 @@
 ┌─────────────────────────────────────────────────────────────┐
 │               External Services & Cache                      │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │  OpenAI API  │  │  GitHub API  │  │    Redis     │       │
-│  │   (GPT-4)    │  │   (OAuth)    │  │   (Cache)    │       │
+│  │  Claude API  │  │  GitHub API  │  │    Redis     │       │
+│  │ (Opus 5.5)   │  │   (OAuth)    │  │   (Cache)    │       │
 │  └──────────────┘  └──────────────┘  └──────────────┘       │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -325,7 +325,7 @@
 1. **User Login**: GitHub OAuth → JWT token → Session storage
 2. **Repository Sync**: GitHub API → PostgreSQL → Frontend cache
 3. **Analysis Trigger**: User action → Celery task → Background processing
-4. **AI Analysis**: Code → OpenAI GPT-4 → Structured results
+4. **AI Analysis**: Code → Claude → Structured results
 5. **Results Storage**: Issues → PostgreSQL → Redis cache → Frontend
 6. **Report Generation**: Analysis data → PDF rendering → Download
 
@@ -339,7 +339,7 @@
 - **Python** >= 3.11
 - **Docker** (easiest way to get PostgreSQL and Redis)
 - **GitHub account** — to register the GitHub App
-- **OpenAI API key** — the AI review does not run without it
+- **Anthropic API key** — the AI review does not run without it
 
 ### 1️⃣ Clone
 
@@ -412,9 +412,10 @@ GITHUB_APP_CLIENT_SECRET=
 GITHUB_APP_PRIVATE_KEY=
 GITHUB_REDIRECT_URI=http://localhost:8080/auth/github/callback
 
-# AI
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4o-mini
+# AI — set ONE of these; with both set the API rejects every request
+ANTHROPIC_API_KEY=
+# ANTHROPIC_AUTH_TOKEN=
+ANTHROPIC_MODEL=claude-opus-5-5
 
 # CORS
 ALLOWED_ORIGINS=http://localhost:8080
@@ -510,7 +511,7 @@ Nothing needs editing in code.
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `SECRET_KEY` | JWT signing key — must be random and secret |
-| `OPENAI_API_KEY` | Model provider key; the AI review fails loudly without it |
+| `ANTHROPIC_API_KEY` | Claude API key (`sk-ant-api…`); the AI review fails loudly without it. `ANTHROPIC_AUTH_TOKEN` takes an OAuth token instead — set one, not both |
 | `GITHUB_APP_ID` / `GITHUB_APP_SLUG` | From the GitHub App |
 | `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` | From the GitHub App |
 | `GITHUB_APP_PRIVATE_KEY` | The `.pem`, escaped — use the installer script |
@@ -524,8 +525,11 @@ Nothing needs editing in code.
 | `ANALYSIS_BATCH_SIZE` | `8` | Files per AI call — fewer is more accurate, slower |
 | `ANALYSIS_MAX_FILE_BYTES` | `51200` | Files above this are skipped |
 | `ANALYSIS_EXECUTION_MODE` | `auto` | `auto` \| `celery` \| `inline` |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Tokenizer follows this automatically |
-| `OPENAI_DAILY_TOKEN_BUDGET_PER_USER` | `2000000` | Hard per-user daily ceiling |
+| `ANTHROPIC_MODEL` | `claude-opus-5-5` | Part of the per-file findings cache key |
+| `ANTHROPIC_EFFORT` | `high` | `low` \| `medium` \| `high` \| `xhigh` \| `max` — depth vs. cost |
+| `ANTHROPIC_REFUSAL_FALLBACK` | `true` | Re-run a declined request on Anthropic's recommended fallback model |
+| `LLM_MAX_OUTPUT_TOKENS` | `32000` | Per-call output ceiling, thinking included |
+| `LLM_DAILY_TOKEN_BUDGET_PER_USER` | `2000000` | Hard per-user daily ceiling |
 
 ### Security and limits
 
@@ -1114,7 +1118,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- **OpenAI** - GPT-4 API for intelligent code analysis
+- **Anthropic** - Claude API for intelligent code analysis
 - **GitHub** - OAuth and API for repository access
 - **PostgreSQL** - Database
 - **Vercel** - Inspiration for UI/UX design

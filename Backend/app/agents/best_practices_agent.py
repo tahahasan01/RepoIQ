@@ -11,7 +11,6 @@ class BestPracticesAgent(BaseAgent):
     
     def __init__(self):
         super().__init__()
-        self.temperature = 0.4
         
     def get_agent_type(self) -> str:
         return "best_practices"

@@ -198,7 +198,7 @@ class TestHotPathsUseTheThreadpool:
         )
 
     def test_llm_calls_go_through_the_threadpool(self):
-        """The OpenAI client is sync; gather() over agents was serial without this."""
+        """The Anthropic client is sync; gather() over agents was serial without this."""
         from app.agents.base_agent import BaseAgent
 
         assert "run_blocking" in inspect.getsource(BaseAgent._call_llm)
@@ -210,29 +210,29 @@ class TestHotPathsUseTheThreadpool:
 
 class TestClientsAreReused:
 
-    def test_agents_share_one_openai_client(self):
+    def test_agents_share_one_claude_client(self):
         """Six agents per orchestrator, one orchestrator per analysis, each of
         which used to build and leak its own httpx.Client."""
         import app.agents.base_agent as base_agent
 
-        base_agent._shared_openai_client = None
-        with patch("app.agents.base_agent.OpenAI", return_value=MagicMock()) as ctor:
-            first = base_agent.get_openai_client()
-            second = base_agent.get_openai_client()
+        base_agent._shared_claude_client = None
+        with patch("app.agents.base_agent.anthropic.Anthropic", return_value=MagicMock()) as ctor:
+            first = base_agent.get_claude_client()
+            second = base_agent.get_claude_client()
 
         assert first is second
         assert ctor.call_count == 1
-        base_agent._shared_openai_client = None
+        base_agent._shared_claude_client = None
 
-    def test_openai_client_has_a_timeout(self):
+    def test_claude_client_has_a_timeout(self):
         import app.agents.base_agent as base_agent
 
-        base_agent._shared_openai_client = None
-        with patch("app.agents.base_agent.OpenAI", return_value=MagicMock()) as ctor:
-            base_agent.get_openai_client()
+        base_agent._shared_claude_client = None
+        with patch("app.agents.base_agent.anthropic.Anthropic", return_value=MagicMock()) as ctor:
+            base_agent.get_claude_client()
 
         assert "timeout" in ctor.call_args.kwargs, "an unbounded LLM call is an outage"
-        base_agent._shared_openai_client = None
+        base_agent._shared_claude_client = None
 
     def test_base_agent_does_not_construct_an_httpx_client(self):
         from app.agents.base_agent import BaseAgent

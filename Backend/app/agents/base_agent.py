@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional
-from openai import OpenAI
-import httpx
+import anthropic
 from app.core.config import get_settings
 from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
@@ -11,42 +10,88 @@ settings = get_settings()
 logger = get_logger(__name__)
 
 
-_shared_openai_client: Optional[OpenAI] = None
+# Server-side refusal fallback: a declined request is re-run on the model
+# Anthropic recommends for that refusal category, inside the same call.
+_FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# OAuth access tokens (ANTHROPIC_AUTH_TOKEN) are only accepted on /v1/messages
+# with this beta header. Sending `betas=` replaces the anthropic-beta header,
+# so it has to be in the per-request list rather than in default_headers.
+_OAUTH_BETA = "oauth-2025-04-20"
+
+_shared_claude_client: Optional[anthropic.Anthropic] = None
 
 
-def get_openai_client() -> OpenAI:
+class LLMNotConfigured(Exception):
+    """Neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set."""
+
+
+def get_claude_client() -> anthropic.Anthropic:
     """
-    One OpenAI client for the process.
+    One Anthropic client for the process.
 
-    PERF: BaseAgent.__init__ used to construct `httpx.Client()` per instance and
+    PERF: BaseAgent.__init__ used to construct an HTTP client per instance and
     never close it. AgentOrchestrator builds six agents, and one orchestrator is
     created per analysis, so every analysis leaked six connection pools and their
     file descriptors. A single shared client also lets connections be reused
     across agents instead of renegotiating TLS for each one.
+
+    The client is synchronous and called through the threadpool. An async
+    client would bind its connection pool to one event loop, and Celery tasks
+    each run their own loop via asyncio.run().
     """
-    global _shared_openai_client
-    if _shared_openai_client is None:
-        _shared_openai_client = OpenAI(
-            api_key=settings.OPENAI_API_KEY,
-            # An unbounded LLM call on a request path is an outage waiting to
-            # happen; the orchestrator's own 10-minute budget is far too coarse
-            # to be the only limit.
-            timeout=httpx.Timeout(60.0, connect=10.0),
+    global _shared_claude_client
+    if _shared_claude_client is None:
+        # Pass exactly one credential. With both set the SDK sends both headers
+        # and the API rejects the request.
+        if settings.ANTHROPIC_API_KEY:
+            credentials = {"api_key": settings.ANTHROPIC_API_KEY}
+        elif settings.ANTHROPIC_AUTH_TOKEN:
+            credentials = {"auth_token": settings.ANTHROPIC_AUTH_TOKEN}
+        else:
+            raise LLMNotConfigured(
+                "Set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) to run AI analysis"
+            )
+        _shared_claude_client = anthropic.Anthropic(
+            **credentials,
+            # Requests stream, so this bounds the gap between chunks rather than
+            # the whole completion; the orchestrator's 10-minute budget bounds
+            # the analysis as a whole.
+            timeout=anthropic.Timeout(settings.ANTHROPIC_TIMEOUT_SECONDS, connect=10.0),
             max_retries=2,
         )
-    return _shared_openai_client
+    return _shared_claude_client
 
 
 class LLMResponseTruncated(Exception):
     """The model hit max_tokens mid-answer, so the response is incomplete."""
 
 
+class LLMRefusal(Exception):
+    """The model (and any fallback) declined the request."""
+
+
+def _split_system(messages: List[Dict[str, str]]):
+    """
+    Callers build chat-style message lists with role="system" entries. The
+    Messages API takes the system prompt as a separate parameter, so lift those
+    out and keep the user/assistant turns in order.
+    """
+    system_parts = [m["content"] for m in messages if m["role"] == "system"]
+    turns = [
+        {"role": m["role"], "content": m["content"]}
+        for m in messages
+        if m["role"] != "system"
+    ]
+    return "\n\n".join(system_parts), turns
+
+
 class BaseAgent(ABC):
     def __init__(self):
-        self.client = get_openai_client()
-        self.model = settings.OPENAI_MODEL
-        self.temperature = 0.3  # Lower temperature for more consistent responses
-        self.max_tokens = settings.OPENAI_MAX_OUTPUT_TOKENS
+        # Resolved on first call, so a missing credential fails the AI review
+        # with a reason rather than crashing whatever constructed the agent.
+        self.client: Optional[anthropic.Anthropic] = None
+        self.model = settings.ANTHROPIC_MODEL
+        self.max_tokens = settings.LLM_MAX_OUTPUT_TOKENS
 
     @abstractmethod
     async def analyze(self, code: str, file_path: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -59,64 +104,90 @@ class BaseAgent(ABC):
     async def _call_llm(
         self,
         messages: List[Dict[str, str]],
-        temperature: Optional[float] = None,
-        json_mode: bool = False,
+        json_schema: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
     ) -> str:
         """
-        Call the model and return the completion text.
+        Call Claude and return the response text.
 
-        PERF: the OpenAI client is synchronous, so this goes through the
-        threadpool. Called directly it blocked the event loop for the entire
-        completion, which also meant the orchestrator's asyncio.gather() over
-        several agents ran them strictly one after another.
+        PERF: the client is synchronous, so this goes through the threadpool.
+        Called directly it blocked the event loop for the entire completion,
+        which also meant the orchestrator's asyncio.gather() over several agents
+        ran them strictly one after another.
 
-        json_mode asks the API to guarantee syntactically valid JSON. Callers
-        that parse the response should use it: the previous approach of asking
-        the model nicely and then hunting for ``` fences failed whenever the
-        model wrapped, prefixed or truncated its answer, and the failure was
-        swallowed into an empty result.
+        json_schema constrains the response to that schema (structured
+        outputs). Callers that parse the response should pass one: the previous
+        approach of asking the model nicely and then hunting for ``` fences
+        failed whenever the model wrapped, prefixed or truncated its answer, and
+        the failure was swallowed into an empty result.
 
         Raises LLMResponseTruncated when the model stopped at max_tokens. That
         used to surface as a JSONDecodeError caught into `{"issues": []}` - i.e.
-        a batch that found real problems silently reported none.
+        a batch that found real problems silently reported none. Raises
+        LLMRefusal when the request was declined, for the same reason: a refusal
+        has no findings in it, and must not read as a clean result.
         """
         if user_id:
             # Cost control: a single user could previously drive unbounded spend.
             await enforce_spend_budget(user_id)
 
+        system, turns = _split_system(messages)
+        output_config: Dict[str, Any] = {"effort": settings.ANTHROPIC_EFFORT}
+        if json_schema is not None:
+            output_config["format"] = {"type": "json_schema", "schema": json_schema}
+
+        betas = []
+        if settings.ANTHROPIC_REFUSAL_FALLBACK:
+            betas.append(_FALLBACK_BETA)
+        if not settings.ANTHROPIC_API_KEY and settings.ANTHROPIC_AUTH_TOKEN:
+            betas.append(_OAUTH_BETA)
+
         kwargs: Dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
-            "temperature": temperature if temperature is not None else self.temperature,
             "max_tokens": self.max_tokens,
+            "messages": turns,
+            "output_config": output_config,
+            "betas": betas,
         }
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
+        if system:
+            kwargs["system"] = system
+        if settings.ANTHROPIC_REFUSAL_FALLBACK:
+            kwargs["fallbacks"] = "default"
+
+        client = self.client or get_claude_client()
+
+        def _complete():
+            # Streamed so a long completion is never cut off by an HTTP timeout.
+            with client.beta.messages.stream(**kwargs) as stream:
+                return stream.get_final_message()
 
         try:
-            response = await run_blocking(
-                lambda: self.client.chat.completions.create(**kwargs)
-            )
-        except Exception as e:
-            logger.error(f"LLM call failed: {str(e)}")
+            response = await run_blocking(_complete)
+        except anthropic.APIError as e:
+            logger.error(f"LLM call failed: {type(e).__name__}: {e}")
             raise
 
-        choice = response.choices[0]
-
         if user_id and getattr(response, "usage", None):
-            record_spend(user_id, response.usage.total_tokens)
+            record_spend(
+                user_id,
+                (response.usage.input_tokens or 0) + (response.usage.output_tokens or 0),
+            )
 
-        if choice.finish_reason == "length":
+        if response.stop_reason == "max_tokens":
             logger.error(
                 f"LLM response truncated at max_tokens={self.max_tokens}; "
-                "raise OPENAI_MAX_OUTPUT_TOKENS or reduce the batch size"
+                "raise LLM_MAX_OUTPUT_TOKENS or reduce the batch size"
             )
             raise LLMResponseTruncated(
                 f"Model stopped at the {self.max_tokens} token output limit"
             )
+        if response.stop_reason == "refusal":
+            details = getattr(response, "stop_details", None)
+            category = getattr(details, "category", None) if details else None
+            logger.warning(f"LLM declined the request (category={category})")
+            raise LLMRefusal(f"Model declined the request (category={category})")
 
-        return choice.message.content or ""
+        return "".join(b.text for b in response.content if b.type == "text")
     
     def calculate_score(self, issues: List[Dict[str, Any]]) -> int:
         if not issues:

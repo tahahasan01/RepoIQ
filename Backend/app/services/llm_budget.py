@@ -1,9 +1,9 @@
 """
-Per-user OpenAI spend caps.
+Per-user LLM spend caps.
 
 Nothing bounded LLM usage. A user could start analyses in a loop, or point the
 product at repositories large enough that a single run burned a meaningful amount
-of the account's budget, and the first signal would be the OpenAI invoice.
+of the account's budget, and the first signal would be the API invoice.
 
 Usage is counted in tokens against a rolling daily window per user. The cap is
 advisory in the sense that a run already in flight is allowed to finish - it is
@@ -70,7 +70,7 @@ async def enforce_spend_budget(user_id: str) -> None:
     cache outage is a worse failure than briefly not enforcing a cost ceiling.
     The cap exists to catch runaway usage, not to be a security boundary.
     """
-    limit = settings.OPENAI_DAILY_TOKEN_BUDGET_PER_USER
+    limit = settings.LLM_DAILY_TOKEN_BUDGET_PER_USER
     if limit <= 0:  # 0 disables the cap
         return
 
@@ -87,7 +87,7 @@ async def enforce_spend_budget(user_id: str) -> None:
 
 def remaining_budget(user_id: str) -> Optional[int]:
     """Tokens left in the window, or None when the cap is disabled."""
-    limit = settings.OPENAI_DAILY_TOKEN_BUDGET_PER_USER
+    limit = settings.LLM_DAILY_TOKEN_BUDGET_PER_USER
     if limit <= 0:
         return None
     return max(0, limit - get_spend(user_id))

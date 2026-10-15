@@ -9,7 +9,6 @@ logger = get_logger(__name__)
 class SecurityAgent(BaseAgent):
     def __init__(self):
         super().__init__()
-        self.temperature = 0.3
         
     def get_agent_type(self) -> str:
         return "security"
@@ -298,7 +297,7 @@ Provide only the fixed code without explanation."""
         ]
         
         try:
-            return await self._call_llm(messages, temperature=0.2)
+            return await self._call_llm(messages)
         except Exception as e:
             logger.error(f"Fix generation failed: {str(e)}")
             return None

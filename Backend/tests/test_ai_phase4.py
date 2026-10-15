@@ -15,20 +15,40 @@ from unittest.mock import AsyncMock, MagicMock, patch
 BACKEND = pathlib.Path(__file__).resolve().parent.parent
 
 
-def _make_completion(content: str, finish_reason: str = "stop", total_tokens: int = 100):
-    choice = MagicMock()
-    choice.message.content = content
-    choice.finish_reason = finish_reason
+def _make_message(text: str, stop_reason: str = "end_turn",
+                  input_tokens: int = 60, output_tokens: int = 40):
+    """A Messages API response as the SDK's stream helper returns it."""
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
 
-    response = MagicMock()
-    response.choices = [choice]
-    response.usage.total_tokens = total_tokens
-    return response
+    message = MagicMock()
+    message.content = [block]
+    message.stop_reason = stop_reason
+    message.stop_details = None
+    message.usage.input_tokens = input_tokens
+    message.usage.output_tokens = output_tokens
+    return message
+
+
+def _stream_returning(message):
+    """`client.beta.messages.stream(...)` is a context manager."""
+    stream = MagicMock()
+    stream.__enter__.return_value.get_final_message.return_value = message
+    return stream
+
+
+def _respond_with(agent, message):
+    agent.client.beta.messages.stream.return_value = _stream_returning(message)
+
+
+def _sent_kwargs(agent):
+    return agent.client.beta.messages.stream.call_args.kwargs
 
 
 @pytest.fixture
 def agent():
-    """A concrete BaseAgent with a mocked OpenAI client."""
+    """A concrete BaseAgent with a mocked Anthropic client."""
     from app.agents.base_agent import BaseAgent
 
     class _Agent(BaseAgent):
@@ -50,7 +70,7 @@ def agent():
 class TestTruncatedResponsesAreNotSilent:
 
     @pytest.mark.asyncio
-    async def test_length_finish_reason_raises(self, agent):
+    async def test_max_tokens_stop_reason_raises(self, agent):
         """
         max_tokens was hardcoded at 2000. The analysis prompt asks for several
         findings with descriptions and suggestions, which exceeds that for a
@@ -59,16 +79,16 @@ class TestTruncatedResponsesAreNotSilent:
         """
         from app.agents.base_agent import LLMResponseTruncated
 
-        agent.client.chat.completions.create.return_value = _make_completion(
-            '{"issues": [{"severity": "cri', finish_reason="length"
-        )
+        _respond_with(agent, _make_message(
+            '{"issues": [{"severity": "cri', stop_reason="max_tokens"
+        ))
 
         with pytest.raises(LLMResponseTruncated):
             await agent._call_llm([{"role": "user", "content": "x"}])
 
     @pytest.mark.asyncio
     async def test_complete_response_returns_content(self, agent):
-        agent.client.chat.completions.create.return_value = _make_completion('{"issues": []}')
+        _respond_with(agent, _make_message('{"issues": []}'))
 
         result = await agent._call_llm([{"role": "user", "content": "x"}])
         assert result == '{"issues": []}'
@@ -76,39 +96,142 @@ class TestTruncatedResponsesAreNotSilent:
     def test_output_token_limit_is_configurable_and_generous(self):
         from app.core.config import get_settings
 
-        assert get_settings().OPENAI_MAX_OUTPUT_TOKENS >= 4000
+        assert get_settings().LLM_MAX_OUTPUT_TOKENS >= 4000
 
     def test_limit_is_not_hardcoded(self):
         source = (BACKEND / "app/agents/base_agent.py").read_text(encoding="utf-8")
         assert "self.max_tokens = 2000" not in source
 
 
-class TestJsonModeIsUsedForParsedResponses:
+class TestStructuredOutputIsUsedForParsedResponses:
 
     @pytest.mark.asyncio
-    async def test_json_mode_sets_response_format(self, agent):
-        agent.client.chat.completions.create.return_value = _make_completion("{}")
+    async def test_json_schema_sets_output_format(self, agent):
+        _respond_with(agent, _make_message("{}"))
+        schema = {"type": "object", "properties": {}, "additionalProperties": False}
 
-        await agent._call_llm([{"role": "user", "content": "x"}], json_mode=True)
+        await agent._call_llm([{"role": "user", "content": "x"}], json_schema=schema)
 
-        kwargs = agent.client.chat.completions.create.call_args.kwargs
-        assert kwargs["response_format"] == {"type": "json_object"}
+        fmt = _sent_kwargs(agent)["output_config"]["format"]
+        assert fmt == {"type": "json_schema", "schema": schema}
 
     @pytest.mark.asyncio
-    async def test_json_mode_is_off_by_default(self, agent):
-        agent.client.chat.completions.create.return_value = _make_completion("hi")
+    async def test_free_text_by_default(self, agent):
+        _respond_with(agent, _make_message("hi"))
 
         await agent._call_llm([{"role": "user", "content": "x"}])
 
-        assert "response_format" not in agent.client.chat.completions.create.call_args.kwargs
+        assert "format" not in _sent_kwargs(agent)["output_config"]
 
-    def test_batch_analysis_requests_json_mode(self):
+    def test_batch_analysis_requests_the_review_schema(self):
         """Removes the markdown-fence hunting that failed silently."""
         from app.agents.orchestrator import AgentOrchestrator
 
         source = inspect.getsource(AgentOrchestrator._analyze_file_batch)
-        assert "json_mode=True" in source
+        assert "json_schema=BATCH_REVIEW_SCHEMA" in source
         assert '"```json" in json_str' not in source
+
+    def test_review_schema_is_strict(self):
+        """Structured outputs require closed objects with every field required."""
+        from app.agents.orchestrator import BATCH_REVIEW_SCHEMA
+
+        item = BATCH_REVIEW_SCHEMA["properties"]["issues"]["items"]
+        for obj in (BATCH_REVIEW_SCHEMA, item):
+            assert obj["additionalProperties"] is False
+            assert set(obj["required"]) == set(obj["properties"])
+
+
+class TestClaudeRequestShape:
+
+    @pytest.mark.asyncio
+    async def test_system_messages_become_the_system_parameter(self, agent):
+        """The Messages API takes the system prompt as its own parameter."""
+        _respond_with(agent, _make_message("ok"))
+
+        await agent._call_llm([
+            {"role": "system", "content": "be terse"},
+            {"role": "user", "content": "hello"},
+        ])
+
+        kwargs = _sent_kwargs(agent)
+        assert kwargs["system"] == "be terse"
+        assert kwargs["messages"] == [{"role": "user", "content": "hello"}]
+
+    @pytest.mark.asyncio
+    async def test_no_sampling_parameters_are_sent(self, agent):
+        """Claude Opus 5.5 answers temperature/top_p/top_k with a 400."""
+        _respond_with(agent, _make_message("ok"))
+
+        await agent._call_llm([{"role": "user", "content": "x"}])
+
+        kwargs = _sent_kwargs(agent)
+        for param in ("temperature", "top_p", "top_k"):
+            assert param not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_effort_and_model_come_from_settings(self, agent):
+        from app.core.config import get_settings
+
+        _respond_with(agent, _make_message("ok"))
+        await agent._call_llm([{"role": "user", "content": "x"}])
+
+        kwargs = _sent_kwargs(agent)
+        assert kwargs["model"] == get_settings().ANTHROPIC_MODEL
+        assert kwargs["output_config"]["effort"] == get_settings().ANTHROPIC_EFFORT
+
+    @pytest.mark.asyncio
+    async def test_refusal_fallback_is_requested(self, agent):
+        _respond_with(agent, _make_message("ok"))
+
+        await agent._call_llm([{"role": "user", "content": "x"}])
+
+        kwargs = _sent_kwargs(agent)
+        assert kwargs["fallbacks"] == "default"
+        assert "server-side-fallback-2026-07-01" in kwargs["betas"]
+
+    @pytest.mark.asyncio
+    async def test_refusal_raises_instead_of_reading_as_clean(self, agent):
+        """A declined review has no findings in it; it must not score as clean code."""
+        from app.agents.base_agent import LLMRefusal
+
+        _respond_with(agent, _make_message("", stop_reason="refusal"))
+
+        with pytest.raises(LLMRefusal):
+            await agent._call_llm([{"role": "user", "content": "x"}])
+
+    @pytest.mark.asyncio
+    async def test_oauth_token_sends_the_oauth_beta(self, agent, monkeypatch):
+        from app.agents import base_agent
+
+        monkeypatch.setattr(base_agent.settings, "ANTHROPIC_API_KEY", None)
+        monkeypatch.setattr(base_agent.settings, "ANTHROPIC_AUTH_TOKEN", "oauth-token")
+        _respond_with(agent, _make_message("ok"))
+
+        await agent._call_llm([{"role": "user", "content": "x"}])
+
+        assert "oauth-2025-04-20" in _sent_kwargs(agent)["betas"]
+
+    def test_only_one_credential_is_passed(self, monkeypatch):
+        """With both set the SDK sends both headers and the API rejects the request."""
+        from app.agents import base_agent
+
+        monkeypatch.setattr(base_agent, "_shared_claude_client", None)
+        monkeypatch.setattr(base_agent.settings, "ANTHROPIC_API_KEY", "sk-ant-api-test")
+        monkeypatch.setattr(base_agent.settings, "ANTHROPIC_AUTH_TOKEN", "oauth-token")
+        with patch("app.agents.base_agent.anthropic.Anthropic") as ctor:
+            base_agent.get_claude_client()
+        kwargs = ctor.call_args.kwargs
+        assert kwargs["api_key"] == "sk-ant-api-test"
+        assert "auth_token" not in kwargs
+
+    def test_missing_credentials_fail_the_call_not_the_constructor(self, monkeypatch):
+        from app.agents import base_agent
+
+        monkeypatch.setattr(base_agent, "_shared_claude_client", None)
+        monkeypatch.setattr(base_agent.settings, "ANTHROPIC_API_KEY", None)
+        monkeypatch.setattr(base_agent.settings, "ANTHROPIC_AUTH_TOKEN", None)
+        with pytest.raises(base_agent.LLMNotConfigured):
+            base_agent.get_claude_client()
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +339,7 @@ class TestPerUserSpendCap:
         from app.services import llm_budget
 
         monkeypatch.setattr(
-            llm_budget.settings, "OPENAI_DAILY_TOKEN_BUDGET_PER_USER", 1000, raising=False
+            llm_budget.settings, "LLM_DAILY_TOKEN_BUDGET_PER_USER", 1000, raising=False
         )
         llm_budget.record_spend("user-1", 100)
 
@@ -227,7 +350,7 @@ class TestPerUserSpendCap:
         from app.services import llm_budget
 
         monkeypatch.setattr(
-            llm_budget.settings, "OPENAI_DAILY_TOKEN_BUDGET_PER_USER", 1000, raising=False
+            llm_budget.settings, "LLM_DAILY_TOKEN_BUDGET_PER_USER", 1000, raising=False
         )
         llm_budget.record_spend("user-1", 1500)
 
@@ -239,7 +362,7 @@ class TestPerUserSpendCap:
         from app.services import llm_budget
 
         monkeypatch.setattr(
-            llm_budget.settings, "OPENAI_DAILY_TOKEN_BUDGET_PER_USER", 1000, raising=False
+            llm_budget.settings, "LLM_DAILY_TOKEN_BUDGET_PER_USER", 1000, raising=False
         )
         llm_budget.record_spend("user-1", 1500)
 
@@ -250,7 +373,7 @@ class TestPerUserSpendCap:
         from app.services import llm_budget
 
         monkeypatch.setattr(
-            llm_budget.settings, "OPENAI_DAILY_TOKEN_BUDGET_PER_USER", 0, raising=False
+            llm_budget.settings, "LLM_DAILY_TOKEN_BUDGET_PER_USER", 0, raising=False
         )
         llm_budget.record_spend("user-1", 10_000_000)
 
@@ -266,7 +389,7 @@ class TestPerUserSpendCap:
         down.available = False
         monkeypatch.setattr("app.services.llm_budget.get_redis_service", lambda: down)
         monkeypatch.setattr(
-            llm_budget.settings, "OPENAI_DAILY_TOKEN_BUDGET_PER_USER", 1, raising=False
+            llm_budget.settings, "LLM_DAILY_TOKEN_BUDGET_PER_USER", 1, raising=False
         )
 
         await llm_budget.enforce_spend_budget("user-1")
@@ -276,11 +399,9 @@ class TestPerUserSpendCap:
         from app.services import llm_budget
 
         monkeypatch.setattr(
-            llm_budget.settings, "OPENAI_DAILY_TOKEN_BUDGET_PER_USER", 100_000, raising=False
+            llm_budget.settings, "LLM_DAILY_TOKEN_BUDGET_PER_USER", 100_000, raising=False
         )
-        agent.client.chat.completions.create.return_value = _make_completion(
-            "{}", total_tokens=4242
-        )
+        _respond_with(agent, _make_message("{}", input_tokens=4000, output_tokens=242))
 
         await agent._call_llm([{"role": "user", "content": "x"}], user_id="user-1")
 
@@ -336,12 +457,12 @@ class TestNoBlockingLlmCallOnTheEventLoop:
 
         started = []
 
-        def slow_create(**kwargs):
+        def slow_stream(**kwargs):
             started.append(time.time())
             time.sleep(0.15)
-            return _make_completion("{}")
+            return _stream_returning(_make_message("{}"))
 
-        agent.client.chat.completions.create.side_effect = slow_create
+        agent.client.beta.messages.stream.side_effect = slow_stream
 
         began = time.time()
         await asyncio.gather(*[

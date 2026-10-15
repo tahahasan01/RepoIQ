@@ -8,7 +8,6 @@ logger = get_logger(__name__)
 class ArchitectureAgent(BaseAgent):
     def __init__(self):
         super().__init__()
-        self.temperature = 0.5
         
     def get_agent_type(self) -> str:
         return "architecture"

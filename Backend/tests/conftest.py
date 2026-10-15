@@ -36,7 +36,7 @@ os.environ.setdefault("SUPABASE_SERVICE_KEY", "test_service_key")
 os.environ.setdefault("GITHUB_CLIENT_ID", "test_client_id")
 os.environ.setdefault("GITHUB_CLIENT_SECRET", "test_client_secret")
 os.environ.setdefault("GITHUB_REDIRECT_URI", "http://localhost:8000/auth/callback")
-os.environ.setdefault("OPENAI_API_KEY", "test_openai_key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
 
