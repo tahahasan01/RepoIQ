@@ -467,6 +467,13 @@ class ApiClient {
         if (refreshed) {
           response = await doFetch(this.getToken());
           log.debug('Retried request, status:', response.status);
+        } else if (localStorage.getItem('refresh_token')) {
+          // The refresh could not reach the server (it keeps the tokens on a
+          // network error or 5xx). Report that, rather than signing out a
+          // user whose session is still valid.
+          const unavailable = new Error(NETWORK_ERROR_MESSAGE);
+          (unavailable as any).isNetworkError = true;
+          throw unavailable;
         }
         if (!refreshed || response.status === 401) {
           log.info('Session is no longer valid, logging out');
@@ -575,7 +582,12 @@ class ApiClient {
 
       if (!resp.ok) {
         log.info('Refresh failed, status:', resp.status);
-        this.expireSession();
+        // Only a rejected refresh token ends the session. A 5xx or 429 is the
+        // server having a moment (a deploy, a restart): signing the user out
+        // for it logged out everyone whose token came due during a deploy.
+        if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) {
+          this.expireSession();
+        }
         return false;
       }
 
@@ -593,8 +605,9 @@ class ApiClient {
       this.expireSession();
       return false;
     } catch (err) {
-      log.error('Refresh exception', err);
-      this.expireSession();
+      // No response at all (offline, server restarting). The tokens are still
+      // valid as far as we know; keep them so the next attempt can succeed.
+      log.warn('Refresh could not reach the server; keeping the session', err);
       return false;
     }
   }

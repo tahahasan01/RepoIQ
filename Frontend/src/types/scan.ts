@@ -12,6 +12,8 @@ export interface ScanIssue {
   line: number;
   severity: "critical" | "high" | "medium" | "low";
   type: string;
+  /** Which score the finding counts against. */
+  area?: import("@/lib/findings").FindingArea;
   description: string;
   details: string;
   fix: string;

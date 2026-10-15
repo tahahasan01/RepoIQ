@@ -14,6 +14,8 @@ interface MultiSelectFilterProps {
   selected: string[];
   onChange: (selected: string[]) => void;
   className?: string;
+  /** Display text for an option; the value itself is what gets selected. */
+  formatOption?: (option: string) => string;
 }
 
 export function MultiSelectFilter({
@@ -22,6 +24,7 @@ export function MultiSelectFilter({
   selected,
   onChange,
   className,
+  formatOption,
 }: MultiSelectFilterProps) {
   const [open, setOpen] = useState(false);
 
@@ -89,7 +92,9 @@ export function MultiSelectFilter({
                 >
                   {isSelected && <Check className="h-3 w-3 text-primary-foreground" />}
                 </div>
-                <span className="capitalize">{option}</span>
+                <span className={formatOption ? undefined : "capitalize"}>
+                  {formatOption ? formatOption(option) : option}
+                </span>
               </button>
             );
           })}

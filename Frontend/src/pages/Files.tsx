@@ -10,7 +10,6 @@ import {
   Folder,
   FolderOpen,
   AlertTriangle,
-  CheckCircle2,
   Info,
   Loader2,
   Copy,
@@ -147,7 +146,7 @@ function FileTreeItem({
             <File className="h-3.5 w-3.5 shrink-0" />
           </>
         )}
-        <span className="text-xs flex-1 truncate">{item.name}</span>
+        <span className="text-[13px] flex-1 truncate" title={item.path || item.name}>{item.name}</span>
         {issueCount > 0 && (
           <span className={cn(
             "text-[10px] px-1.5 py-0.5 rounded-full shrink-0 font-medium",
@@ -260,9 +259,9 @@ function CodeFixSuggestion({ issue, fileContent }: { issue: any; fileContent: st
               )}
             </Button>
           </div>
-          <div className="text-[11px] bg-green-500/5 border border-green-500/20 rounded p-2 overflow-x-auto">
-            <pre className="font-mono whitespace-pre-wrap text-foreground leading-relaxed break-words">{suggestion}</pre>
-          </div>
+          <p className="text-xs bg-green-500/5 border border-green-500/20 rounded p-2 whitespace-pre-wrap text-foreground leading-relaxed">
+            {suggestion}
+          </p>
         </div>
       )}
     </div>
@@ -454,7 +453,7 @@ export default function Files() {
           <motion.div
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
-            className="w-full max-h-64 md:max-h-none md:w-44 md:min-w-[160px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
+            className="w-full max-h-64 md:max-h-none md:w-56 lg:w-64 md:min-w-[200px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
           >
           <div className="p-2.5 border-b border-border">
             <h3 className="font-semibold text-xs">Files</h3>
@@ -612,7 +611,7 @@ export default function Files() {
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.2 }}
-          className="w-full max-h-[70vh] md:max-h-none md:w-60 md:min-w-[220px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
+          className="w-full max-h-[70vh] md:max-h-none md:w-64 xl:w-80 md:min-w-[240px] glass-panel rounded-xl overflow-hidden flex flex-col shrink-0"
         >
           <div className="p-2.5 border-b border-border flex items-center justify-between">
             <h3 className="font-semibold text-xs">Analysis</h3>
@@ -632,47 +631,11 @@ export default function Files() {
           
           {!analysisCollapsed && (
             <div className="flex-1 overflow-auto p-2.5 space-y-2">
-              {/* Issues list */}
-              {fileIssues.length > 0 ? (
-                fileIssues.map((item, index) => (
-                  <div
-                    key={index}
-                    className={cn(
-                      "p-2.5 rounded-lg",
-                      item.type === "error" && "bg-destructive/10",
-                      item.type === "warning" && "bg-warning/10",
-                      item.type === "info" && "bg-primary/10"
-                    )}
-                  >
-                    <div className="flex items-center gap-1.5 mb-1">
-                      {item.type === "error" && (
-                        <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
-                      )}
-                      {item.type === "warning" && (
-                        <AlertTriangle className="h-3.5 w-3.5 text-warning" />
-                      )}
-                      {item.type === "info" && (
-                        <Info className="h-3.5 w-3.5 text-primary" />
-                      )}
-                      <span className="text-[10px] text-muted-foreground">
-                        Line {item.line}
-                      </span>
-                    </div>
-                    <p className="text-xs leading-relaxed">{item.message}</p>
-                  </div>
-                ))
-              ) : (
-                <div className="text-center text-muted-foreground py-6">
-                  <CheckCircle2 className="h-6 w-6 mx-auto mb-1.5 opacity-50" />
-                  <p className="text-xs">No issues found in this file</p>
-                </div>
-              )}
-
-              {/* AI Suggestions with Code Fixes */}
-              <div className="pt-3 border-t border-border">
+              {/* One card per finding: line, severity, message, the code and the fix. */}
+              <div>
                 <div className="flex items-center gap-1.5 mb-2">
                   <Lightbulb className="h-3.5 w-3.5 text-amber-500" />
-                  <h4 className="text-xs font-medium">AI Suggestions</h4>
+                  <h4 className="text-xs font-medium">Findings in this file</h4>
                   {fileIssues.length > 0 && (
                     <span className="text-[10px] bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">
                       {fileIssues.length}
@@ -692,7 +655,7 @@ export default function Files() {
                 ) : (
                   <div className="py-4 text-center text-xs text-muted-foreground">
                     <Code className="h-5 w-5 mx-auto mb-1.5 opacity-50" />
-                    <p>No suggestions for this file</p>
+                    <p>No findings in this file</p>
                   </div>
                 )}
               </div>

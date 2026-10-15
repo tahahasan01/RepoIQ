@@ -115,6 +115,12 @@ export default function Dashboard() {
 
   const initialState = getInitialState();
   const [stats, setStats] = useState(initialState.stats || { critical: 0, high: 0, medium: 0, low: 0, total: 0 });
+  // How much of the repository the scores describe. An analysis reviews up to
+  // ANALYSIS_MAX_FILES files, so a large repository is scored from a sample;
+  // without this the page presented a 14-of-216-file sample as the whole repo.
+  const [coverage, setCoverage] = useState<{ analyzed: number | null; eligible: number | null; commit: string | null }>(
+    { analyzed: null, eligible: null, commit: null }
+  );
   const [scores, setScores] = useState(initialState.scores || {
     overall: 0,
     security: 0,
@@ -156,6 +162,11 @@ export default function Dashboard() {
           console.log('[Dashboard] Using cached analysis data');
           console.log('[Dashboard] Cached issues count:', cached.issues?.length || 0);
           console.debug('[Dashboard] cached object keys:', Object.keys(cached));
+          setCoverage({
+            analyzed: cached.files_analyzed ?? null,
+            eligible: cached.files_eligible ?? null,
+            commit: cached.commit_sha ?? null,
+          });
           if (cached.issues && cached.issues.length > 0) {
             setScores({
               overall: cached.overall_score || 0,
@@ -256,6 +267,11 @@ export default function Dashboard() {
           
           console.log('[Dashboard] Setting scores:', scoresData);
           setScores(scoresData);
+          setCoverage({
+            analyzed: results.files_analyzed ?? null,
+            eligible: results.files_eligible ?? null,
+            commit: results.commit_sha ?? null,
+          });
           
           // Map backend issues to frontend format (may be empty array)
           const mappedIssues = (results.issues || []).map((issue: any) => ({
@@ -422,6 +438,27 @@ export default function Dashboard() {
         )}
         
         {/* Score cards */}
+        {coverage.analyzed != null && coverage.analyzed > 0 && (
+          <p className="text-sm text-muted-foreground -mb-2">
+            {coverage.eligible != null && coverage.eligible > coverage.analyzed ? (
+              <>
+                Scores are based on the <span className="font-medium text-foreground">{coverage.analyzed}</span> most
+                important of <span className="font-medium text-foreground">{coverage.eligible}</span> source files
+              </>
+            ) : (
+              <>
+                Scores are based on all <span className="font-medium text-foreground">{coverage.analyzed}</span> source
+                files
+              </>
+            )}
+            {coverage.commit && (
+              <>
+                {" "}at commit <code className="font-mono text-xs">{coverage.commit.slice(0, 7)}</code>
+              </>
+            )}
+            .
+          </p>
+        )}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           {scoreData.map((item, index) => (
             <motion.div

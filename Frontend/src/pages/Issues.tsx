@@ -6,6 +6,7 @@ import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MultiSelectFilter } from "@/components/MultiSelectFilter";
+import { AREA_LABELS, FINDING_AREAS, findingArea, formatCategory } from "@/lib/findings";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AutofixSheet } from "@/components/autofix/AutofixSheet";
 import { GitHubAccessNotice } from "@/components/GitHubAccessNotice";
@@ -20,7 +21,6 @@ import {
 import { isGitHubAccessError } from "@/lib/apiErrors";
 import {
   Search,
-  Filter,
   AlertTriangle,
   Sparkles,
   Copy,
@@ -87,6 +87,7 @@ export default function Issues() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedSeverities, setSelectedSeverities] = useState<string[]>([]);
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
+  const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
   const [selectedIssue, setSelectedIssue] = useState<number | null>(null);
   const [copiedFix, setCopiedFix] = useState(false);
   const [issues, setIssues] = useState<ScanIssue[]>([]);
@@ -136,6 +137,7 @@ export default function Issues() {
             line: issue.line_number || issue.line || 1,
             severity: issue.severity || 'low',
             type: issue.category || issue.type || 'unknown',
+            area: findingArea(issue.agent_type),
             description: issue.description || issue.message || 'No description',
             details: issue.suggestion || issue.details || '',
             fix: issue.suggestion || issue.fix || 'No fix available',
@@ -172,6 +174,7 @@ export default function Issues() {
             line: issue.line_number || issue.line || 1,
             severity: issue.severity || 'low',
             type: issue.category || issue.type || 'unknown',
+            area: findingArea(issue.agent_type),
             description: issue.description || issue.message || 'No description',
             details: issue.suggestion || issue.details || '',
             fix: issue.suggestion || issue.fix || 'No fix available',
@@ -192,6 +195,7 @@ export default function Issues() {
                 line: issue.line_number || issue.line || 1,
                 severity: issue.severity || 'low',
                 type: issue.category || issue.type || 'unknown',
+                area: findingArea(issue.agent_type),
                 description: issue.description || issue.message || 'No description',
                 details: issue.suggestion || issue.details || '',
                 fix: issue.suggestion || issue.fix || 'No fix available',
@@ -256,9 +260,11 @@ export default function Issues() {
   const typeOptions = Array.from(new Set(issues.map((i) => i.type))).sort();
 
   const filteredIssues = issues.filter((issue) => {
+    const query = searchQuery.toLowerCase();
     const matchesQuery =
-      issue.file.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      issue.description.toLowerCase().includes(searchQuery.toLowerCase());
+      issue.file.toLowerCase().includes(query) ||
+      issue.description.toLowerCase().includes(query) ||
+      formatCategory(issue.type).toLowerCase().includes(query);
 
     const matchesSeverity = selectedSeverities.length === 0
       ? true
@@ -268,7 +274,11 @@ export default function Issues() {
       ? true
       : selectedTypes.includes(issue.type);
 
-    return matchesQuery && matchesSeverity && matchesType;
+    const matchesArea = selectedAreas.length === 0
+      ? true
+      : selectedAreas.includes(issue.area ?? "quality");
+
+    return matchesQuery && matchesSeverity && matchesType && matchesArea;
   });
 
   // ── Auto-fix selection ──
@@ -441,17 +451,23 @@ export default function Issues() {
                   onChange={setSelectedSeverities}
                 />
 
+                {/* Which score a finding counts against. Replaces a "Filter"
+                    button that did nothing. */}
+                <MultiSelectFilter
+                  label="Area"
+                  options={FINDING_AREAS}
+                  selected={selectedAreas}
+                  onChange={setSelectedAreas}
+                  formatOption={(area) => AREA_LABELS[area as keyof typeof AREA_LABELS] ?? area}
+                />
+
                 <MultiSelectFilter
                   label="Type"
                   options={typeOptions}
                   selected={selectedTypes}
                   onChange={setSelectedTypes}
+                  formatOption={formatCategory}
                 />
-
-                <Button variant="outline" className="gap-2">
-                  <Filter className="h-4 w-4" />
-                  Filter
-                </Button>
               </div>
             </div>
           </div>
@@ -477,18 +493,14 @@ export default function Issues() {
                     File
                   </th>
                   <th className="p-3 text-sm font-medium text-muted-foreground">
-                    Line
-                  </th>
-                  <th className="p-3 text-sm font-medium text-muted-foreground">
                     Severity
                   </th>
                   <th className="p-3 text-sm font-medium text-muted-foreground">
-                    Type
+                    Finding
                   </th>
                   <th className="p-3 text-sm font-medium text-muted-foreground">
-                    Description
+                    <span className="sr-only">Actions</span>
                   </th>
-                  <th className="p-3 text-sm font-medium text-muted-foreground"></th>
                 </tr>
               </thead>
               <tbody>
@@ -505,7 +517,7 @@ export default function Issues() {
                         : "hover:bg-muted/30"
                     }`}
                   >
-                    <td className="w-10 p-3" onClick={(e) => e.stopPropagation()}>
+                    <td className="w-10 p-3 align-top" onClick={(e) => e.stopPropagation()}>
                       {isFixableIssueId(String(issue.id)) && (
                         <Checkbox
                           checked={fixSelection.includes(String(issue.id))}
@@ -514,26 +526,33 @@ export default function Issues() {
                         />
                       )}
                     </td>
-                    <td className="p-3">
-                      <code className="text-sm font-mono">{issue.file}</code>
+                    <td className="p-3 align-top w-[12rem] max-w-[14rem]" title={`${issue.file}:${issue.line}`}>
+                      <div className="font-mono text-sm font-medium truncate">
+                        {issue.file.split("/").pop()}
+                        <span className="text-muted-foreground font-normal">:{issue.line}</span>
+                      </div>
+                      {issue.file.includes("/") && (
+                        <div className="font-mono text-xs text-muted-foreground truncate">
+                          {issue.file.slice(0, issue.file.lastIndexOf("/"))}
+                        </div>
+                      )}
                     </td>
-                    <td className="p-3 text-sm text-muted-foreground">
-                      {issue.line}
-                    </td>
-                    <td className="p-3">
+                    <td className="p-3 align-top">
                       <span
                         className={`text-xs px-2 py-1 rounded-full border ${severityColors[issue.severity]}`}
                       >
                         {issue.severity}
                       </span>
                     </td>
-                    <td className="p-3">
-                      <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">
-                        {issue.type}
-                      </span>
+                    <td className="p-3 align-top text-sm min-w-[16rem]">
+                      <p>{issue.description}</p>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground/80">{AREA_LABELS[issue.area ?? "quality"]}</span>
+                        <span aria-hidden="true">/</span>
+                        <span>{formatCategory(issue.type)}</span>
+                      </div>
                     </td>
-                    <td className="p-3 text-sm">{issue.description}</td>
-                    <td className="p-3">
+                    <td className="p-3 align-top">
                       <Button
                         variant="ghost"
                         size="sm"
@@ -555,7 +574,7 @@ export default function Issues() {
           <motion.div
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
-            className="w-96 glass-panel rounded-xl overflow-hidden flex flex-col"
+            className="fixed inset-y-4 right-4 z-40 w-[min(24rem,calc(100vw-2rem))] shadow-2xl bg-card xl:bg-transparent xl:static xl:inset-auto xl:z-auto xl:w-96 xl:shadow-none glass-panel rounded-xl overflow-hidden flex flex-col"
           >
             {/* Header */}
             <div className="p-4 border-b border-border flex items-center justify-between">
@@ -588,19 +607,24 @@ export default function Issues() {
                         : "text-success"
                     }`}
                   />
-                  <span className="text-sm font-medium">
-                    {selectedIssueData.description}
+                  <span className="text-xs font-medium capitalize">{selectedIssueData.severity}</span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                    {AREA_LABELS[selectedIssueData.area ?? "quality"]}
+                  </span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                    {formatCategory(selectedIssueData.type)}
                   </span>
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  {selectedIssueData.details}
+                <p className="font-mono text-xs text-muted-foreground break-all">
+                  {selectedIssueData.file}:{selectedIssueData.line}
                 </p>
+                <p className="text-sm">{selectedIssueData.description}</p>
               </div>
 
               {/* Code fix */}
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium">Suggested Fix</span>
+                  <span className="text-sm font-medium">How to fix</span>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -620,18 +644,15 @@ export default function Issues() {
                     )}
                   </Button>
                 </div>
-                <pre className="p-4 bg-foreground/5 rounded-lg overflow-x-auto text-sm font-mono">
-                  <code>{selectedIssueData.fix}</code>
-                </pre>
+                {/* The suggestion is prose from the reviewer, not code, so it is
+                    set as text; it used to be a monospace block that scrolled
+                    sideways and repeated the paragraph above it. */}
+                <p className="p-3 bg-foreground/5 rounded-lg text-sm leading-relaxed whitespace-pre-wrap">
+                  {selectedIssueData.fix}
+                </p>
               </div>
             </div>
 
-            {/* Actions */}
-            <div className="p-4 border-t border-border">
-              <Button variant="outline" className="w-full">
-                Ignore
-              </Button>
-            </div>
           </motion.div>
         )}
       </div>

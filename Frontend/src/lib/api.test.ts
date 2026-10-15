@@ -263,3 +263,32 @@ describe("request merging", () => {
     expect(a).toEqual(b);
   });
 });
+
+describe("session survives a refresh the server could not answer", () => {
+  it("keeps the session when the refresh hits a 5xx", async () => {
+    mockFetch(
+      { status: 401, body: { detail: "Token expired. Please refresh your session." } },
+      { status: 503, body: { detail: "Service Unavailable" } },
+    );
+
+    await expect(apiClient.getRepository("r1")).rejects.toThrow();
+
+    expect(localStorage.getItem("refresh_token")).toBe("refresh-1");
+    expect(authExpired).not.toHaveBeenCalled();
+  });
+
+  it("keeps the session when the refresh cannot connect (deploy, offline)", async () => {
+    let call = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      call += 1;
+      if (call === 1) return jsonResponse({ status: 401, body: { detail: "Token expired. Please refresh your session." } });
+      throw new TypeError("Failed to fetch");
+    }));
+
+    const err = await captureError(apiClient.getRepository("r1"));
+
+    expect((err as unknown as { isNetworkError?: boolean }).isNetworkError).toBe(true);
+    expect(localStorage.getItem("refresh_token")).toBe("refresh-1");
+    expect(authExpired).not.toHaveBeenCalled();
+  });
+});
