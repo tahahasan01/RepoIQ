@@ -93,7 +93,7 @@ def _changed_original_lines(original: str, updated: str) -> List[int]:
     import difflib
 
     lines = []
-    matcher = difflib.SequenceMatcher(a=original.splitlines(), b=updated.splitlines(), autojunk=False)
+    matcher = difflib.SequenceMatcher(a=_lines(original), b=_lines(updated), autojunk=False)
     for tag, i1, i2, _j1, _j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
@@ -101,11 +101,47 @@ def _changed_original_lines(original: str, updated: str) -> List[int]:
     return lines
 
 
+# Characters that make a diff read differently from what is committed:
+# Python's str.splitlines() treats these as line breaks while browsers and
+# GitHub do not (or vice versa), and bidirectional controls reorder how code
+# is displayed without changing what runs ("Trojan Source"). A reviewer
+# looking at a diff containing them is not seeing the change.
+_DECEPTIVE_CHARS = {
+    "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029",
+    "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+    "\u2066", "\u2067", "\u2068", "\u2069", "\u200e", "\u200f", "\x00",
+}
+
+
+def _lines(text: str) -> List[str]:
+    """Split on \\n only - the one line break every viewer agrees on."""
+    return text.split("\n")
+
+
 class AutofixError(ValueError):
     """
     A request that cannot be accepted. Message is user-facing - a ValueError,
     following the codebase's convention for authored validation messages.
     """
+
+
+def far_from_findings(original: str, updated: str, issue_lines: Optional[List[int]]) -> List[int]:
+    """
+    Changed lines more than CHANGE_WINDOW_LINES from every selected finding
+    (the top of the file excepted, where imports go).
+
+    Not a rejection: a correct fix can need a change elsewhere - fixing a
+    data-loss bug at line 86 meant changing the structure defined at line 56,
+    and this was rejecting it. Now that a person reviews every diff before it
+    is pushed, these lines are flagged on the proposal for that review instead.
+    """
+    anchors = [line for line in (issue_lines or []) if isinstance(line, int) and line > 0]
+    if not anchors:
+        return []
+    return [
+        n for n in _changed_original_lines(original, updated)
+        if n > CHANGE_WINDOW_LINES and all(abs(n - a) > CHANGE_WINDOW_LINES for a in anchors)
+    ]
 
 
 def validate_fix(
@@ -126,18 +162,16 @@ def validate_fix(
     if not proposal.get("addressed"):
         return "The proposal did not say which findings it addresses"
 
-    changed = _changed_original_lines(original, updated)
-    if len(changed) > MAX_CHANGED_LINES:
+    introduced = {c for c in _DECEPTIVE_CHARS if c in updated and c not in original}
+    if introduced:
+        return "The proposal contains invisible or line-breaking characters that would hide code from review"
+    # Line endings must match the file: a lone \r splits differently in
+    # different viewers, and converting the whole file buries the real change.
+    if ("\r\n" in original) != ("\r\n" in updated) or updated.replace("\r\n", "").count("\r") > original.replace("\r\n", "").count("\r"):
+        return "The proposal changed the file's line endings"
+
+    if len(_changed_original_lines(original, updated)) > MAX_CHANGED_LINES:
         return "The proposal changed too much of the file to be a targeted fix"
-    anchors = [line for line in (issue_lines or []) if isinstance(line, int) and line > 0]
-    if anchors:
-        # Imports are the one legitimate far-away edit a fix needs.
-        far = [
-            n for n in changed
-            if n > CHANGE_WINDOW_LINES and all(abs(n - a) > CHANGE_WINDOW_LINES for a in anchors)
-        ]
-        if far:
-            return f"The proposal changed lines far from the selected findings (line {far[0]})"
     return None
 
 
@@ -192,9 +226,9 @@ async def create_run(repo: Dict[str, Any], user_id: str, issue_ids: List[str]) -
 def public_view(run: Dict[str, Any]) -> Dict[str, Any]:
     """A run as the API returns it: proposals carry their diff, not the whole file."""
     view = {k: v for k, v in run.items() if k != "base_sha"}
-    view["proposals"] = [
-        {k: v for k, v in p.items() if k != "content"} for p in (run.get("proposals") or [])
-    ]
+    proposals = run.get("proposals") or []
+    view["proposals"] = [{k: v for k, v in p.items() if k != "content"} for p in proposals]
+    view["proposals_digest"] = proposals_digest(proposals) if proposals else None
     return view
 
 
@@ -217,10 +251,26 @@ async def list_runs(repository_id: str, user_id: str, limit: int = 20) -> List[D
 def _unified_diff(path: str, original: str, updated: str) -> str:
     import difflib
 
-    return "".join(difflib.unified_diff(
-        original.splitlines(keepends=True), updated.splitlines(keepends=True),
-        fromfile=f"a/{path}", tofile=f"b/{path}", n=3,
+    # Split on \n only, so the diff shows exactly the lines GitHub will.
+    return "\n".join(difflib.unified_diff(
+        _lines(original), _lines(updated),
+        fromfile=f"a/{path}", tofile=f"b/{path}", n=3, lineterm="",
     ))
+
+
+def proposals_digest(proposals: List[Dict[str, Any]]) -> str:
+    """
+    Fingerprint of exactly what would be committed. Approval must name it, so
+    a person approves the content they reviewed and nothing else.
+    """
+    import hashlib
+    import json
+
+    canonical = json.dumps(
+        [{"file_path": p["file_path"], "content": p["content"]} for p in proposals],
+        sort_keys=True, ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 async def _transition(run_id: str, user_id: str, from_status: str, fields: Dict[str, Any]) -> bool:
@@ -232,11 +282,17 @@ async def _transition(run_id: str, user_id: str, from_status: str, fields: Dict[
     return bool(changed)
 
 
-async def approve_run(run_id: str, user_id: str) -> Dict[str, Any]:
-    """Mark a 'ready' run for publishing. The caller then runs publish_run."""
+async def approve_run(run_id: str, user_id: str, reviewed_digest: str) -> Dict[str, Any]:
+    """
+    Mark a 'ready' run for publishing, provided `reviewed_digest` is the digest
+    of the proposals the user was shown. The caller then runs publish_run with
+    the same digest, which checks it again before pushing.
+    """
     run = await get_run(run_id, user_id)
     if not run:
         raise AutofixError("Auto-fix run not found")
+    if not reviewed_digest or reviewed_digest != proposals_digest(run.get("proposals") or []):
+        raise AutofixError("These changes are not the ones you reviewed. Reload the fix and review it again.")
     if not await _transition(run_id, user_id, "ready", {"status": "publishing"}):
         raise AutofixError(f"This auto-fix is {run['status']}, not waiting for review")
     return run
@@ -297,7 +353,11 @@ async def run_autofix(run_id: str, github_token: str) -> Dict[str, Any]:
     if not run:
         raise AutofixError("Auto-fix run not found")
     run = run[0]
-    await _update(run_id, {"status": "running"})
+    if run["status"] != "pending" or not await _transition(run_id, run["user_id"], "pending", {"status": "running"}):
+        # A redelivered or duplicate task. Re-running would replace proposals
+        # someone may already be reviewing.
+        logger.info(f"Auto-fix run {run_id} is {run['status']}; not starting it again")
+        return {"run_id": run_id, "status": run["status"], "pull_request": None}
 
     try:
         repo = (await run_blocking(
@@ -347,6 +407,9 @@ async def run_autofix(run_id: str, github_token: str) -> Dict[str, Any]:
             addressed = {n for n in proposal["addressed"] if isinstance(n, int) and 1 <= n <= len(file_issues)}
             fixed.append({
                 "file_path": path,
+                "far_lines": far_from_findings(
+                    original, proposal["updated_file"], [i.get("line_number") for i in file_issues]
+                ),
                 "original": original,
                 "content": proposal["updated_file"],
                 "summary": proposal.get("summary") or "Fix for the listed findings",
@@ -372,6 +435,8 @@ async def run_autofix(run_id: str, github_token: str) -> Dict[str, Any]:
                     "summary": c["summary"],
                     "issue_ids": [i["id"] for i in c["issues"]],
                     "diff": _unified_diff(c["file_path"], c["original"], c["content"]),
+                    # Lines changed away from the findings: shown to the reviewer.
+                    "changes_outside_findings": c["far_lines"][:20],
                     "content": c["content"],
                 }
                 for c in fixed
@@ -388,7 +453,7 @@ async def run_autofix(run_id: str, github_token: str) -> Dict[str, Any]:
         raise
 
 
-async def publish_run(run_id: str, github_token: str) -> Dict[str, Any]:
+async def publish_run(run_id: str, github_token: str, reviewed_digest: str) -> Dict[str, Any]:
     """
     Push an approved run: branch at the commit the proposals were built from,
     one commit per file, one draft pull request. Always leaves the run
@@ -401,6 +466,9 @@ async def publish_run(run_id: str, github_token: str) -> Dict[str, Any]:
     if not rows or rows[0]["status"] != "publishing":
         raise AutofixError("This auto-fix has not been approved")
     run = rows[0]
+    if reviewed_digest != proposals_digest(run.get("proposals") or []):
+        await _update(run_id, {"status": "failed", "error_message": "The changes differ from the ones approved"})
+        raise AutofixError("The changes differ from the ones approved")
 
     try:
         repo = (await run_blocking(

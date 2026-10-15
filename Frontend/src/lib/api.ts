@@ -766,9 +766,14 @@ class ApiClient {
     return this.request<AutofixRun[]>(`/analysis/repositories/${repoId}/autofix`);
   }
 
-  async approveAutofixRun(runId: string) {
+  /**
+   * Approve exactly the proposals the user reviewed: the backend refuses if
+   * the digest does not match what it would push.
+   */
+  async approveAutofixRun(runId: string, proposalsDigest: string) {
     return this.request<Partial<AutofixRun>>(`/analysis/autofix/${runId}/approve`, {
       method: 'POST',
+      body: JSON.stringify({ proposals_digest: proposalsDigest }),
     });
   }
 

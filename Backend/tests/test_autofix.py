@@ -60,12 +60,19 @@ def _run(run_id, github, proposals):
         return asyncio.run(autofix.run_autofix(run_id, "token")), agent
 
 
+def _digest(run_id, user_id):
+    from app.services import autofix
+
+    return autofix.public_view(asyncio.run(autofix.get_run(run_id, user_id)))["proposals_digest"]
+
+
 def _approve_and_publish(run_id, user_id, github):
     from app.services import autofix
 
-    asyncio.run(autofix.approve_run(run_id, user_id))
+    digest = _digest(run_id, user_id)
+    asyncio.run(autofix.approve_run(run_id, user_id, digest))
     with patch("app.services.github_service.create_github_service", return_value=github):
-        return asyncio.run(autofix.publish_run(run_id, "token"))
+        return asyncio.run(autofix.publish_run(run_id, "token", digest))
 
 
 def _good(addressed=(1,)):
@@ -153,10 +160,38 @@ class TestRun:
 
         run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
         _run(run["id"], _github({"app.py": ORIGINAL}), {"app.py": _good()})
-        asyncio.run(autofix.approve_run(run["id"], user["id"]))
+        digest = _digest(run["id"], user["id"])
+        asyncio.run(autofix.approve_run(run["id"], user["id"], digest))
 
         with pytest.raises(autofix.AutofixError):
-            asyncio.run(autofix.approve_run(run["id"], user["id"]))
+            asyncio.run(autofix.approve_run(run["id"], user["id"], digest))
+
+    def test_approval_must_name_the_reviewed_content(self, db, user, repo, issues):  # noqa: F811
+        """An approval for one set of changes cannot publish a different one."""
+        from app.services import autofix
+
+        run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
+        _run(run["id"], _github({"app.py": ORIGINAL}), {"app.py": _good()})
+
+        with pytest.raises(autofix.AutofixError, match="not the ones you reviewed"):
+            asyncio.run(autofix.approve_run(run["id"], user["id"], "0" * 64))
+        assert asyncio.run(autofix.get_run(run["id"], user["id"]))["status"] == "ready"
+
+    def test_a_redelivered_task_does_not_regenerate_reviewed_proposals(self, db, user, repo, issues):  # noqa: F811
+        """Celery redelivers after a worker dies; proposals someone is reviewing must not change."""
+        from app.services import autofix
+
+        run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
+        github = _github({"app.py": ORIGINAL})
+        _run(run["id"], github, {"app.py": _good()})
+        before = _digest(run["id"], user["id"])
+
+        other = dict(_good(), updated_file=FIXED.replace("literal_eval", "literal_eval  # changed"))
+        result, agent = _run(run["id"], github, {"app.py": other})
+
+        agent.propose_fix.assert_not_called()
+        assert result["status"] == "ready"
+        assert _digest(run["id"], user["id"]) == before
 
     def test_discard_pushes_nothing(self, db, user, repo, issues):  # noqa: F811
         from app.services import autofix
@@ -169,7 +204,7 @@ class TestRun:
 
         assert discarded["status"] == "discarded"
         with pytest.raises(autofix.AutofixError):
-            asyncio.run(autofix.publish_run(run["id"], "token"))
+            asyncio.run(autofix.publish_run(run["id"], "token", "0" * 64))
         github.create_branch_at.assert_not_called()
 
     def test_content_is_read_at_the_branch_base_commit(self, db, user, repo, issues):  # noqa: F811
@@ -300,18 +335,44 @@ class TestValidation:
 
         assert (validate_fix(ORIGINAL, proposal) is None) is ok
 
-    def test_a_change_far_from_the_finding_is_rejected(self):
-        """An injected payload elsewhere in the file must not ride along with the fix."""
-        from app.services.autofix import validate_fix
+    def test_a_change_far_from_the_finding_is_flagged_for_review(self):
+        """
+        A correct fix can need a change elsewhere (a data-loss fix at line 86
+        needed the structure at line 56), so it is not rejected - but the
+        reviewer is told exactly which lines lie outside the findings.
+        """
+        from app.services.autofix import far_from_findings, validate_fix
 
         original = "\n".join(f"line{n}" for n in range(1, 101)) + "\n"
         lines = original.splitlines()
         lines[4] = "line5 fixed"          # near the finding at line 5
         lines[89] = "exfiltrate(secrets)"  # line 90, far away
-        proposal = {"changed": True, "updated_file": "\n".join(lines) + "\n", "addressed": [1]}
+        updated = "\n".join(lines) + "\n"
+        proposal = {"changed": True, "updated_file": updated, "addressed": [1]}
 
-        reason = validate_fix(original, proposal, [5])
-        assert reason and "far from" in reason
+        assert validate_fix(original, proposal, [5]) is None
+        assert far_from_findings(original, updated, [5]) == [90]
+
+    @pytest.mark.parametrize("char", ["\u2028", "\x0c", "\x1c", "\u202e", "\u2066", "\x85"])
+    def test_characters_that_hide_code_from_review_are_rejected(self, char):
+        """str.splitlines() and browsers disagree on these; bidi controls reorder display."""
+        from app.services.autofix import validate_fix
+
+        updated = FIXED.replace("return 1", f"return 1{char}import os; os.system('x')")
+        reason = validate_fix(ORIGINAL, {"changed": True, "updated_file": updated, "addressed": [1]})
+        assert reason and "invisible" in reason
+
+    def test_line_ending_changes_are_rejected(self):
+        from app.services.autofix import validate_fix
+
+        reason = validate_fix(ORIGINAL, {"changed": True, "updated_file": FIXED.replace("\n", "\r\n"), "addressed": [1]})
+        assert reason and "line endings" in reason
+
+    def test_the_diff_splits_lines_the_way_github_does(self):
+        from app.services.autofix import _unified_diff
+
+        diff = _unified_diff("a.py", "x = 1\n", "x = 2\n")
+        assert "-x = 1" in diff and "+x = 2" in diff
 
     def test_a_change_near_the_finding_is_accepted(self):
         from app.services.autofix import validate_fix

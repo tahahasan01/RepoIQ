@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks, Query
 from loguru import logger
+from pydantic import BaseModel, Field
 from app.schemas import AutoFixRequest
 from app.services.repository_service import RepositoryService
 from app.api.dependencies import get_current_user, get_github_token
@@ -446,28 +447,37 @@ async def get_autofix_run(run_id: str, current_user: dict = Depends(get_current_
     return autofix.public_view(run)
 
 
+class AutofixApproval(BaseModel):
+    # The proposals_digest of the run as the user reviewed it.
+    proposals_digest: str = Field(..., min_length=64, max_length=64)
+
+
 @router.post("/autofix/{run_id}/approve", status_code=status.HTTP_202_ACCEPTED)
 async def approve_autofix_run(
     run_id: str,
+    approval: AutofixApproval,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
     github_token: str = Depends(get_github_token),
 ):
     """
     Push a reviewed run as a draft pull request. Only a run in 'ready' can be
-    approved. Response (202): {"run_id", "status": "publishing"}; poll
+    approved, and the body must carry the run's proposals_digest as shown to
+    the user - so what is pushed is exactly what was reviewed.
+    Request: {"proposals_digest": "<64 hex>"}.
+    Response (202): {"run_id", "status": "publishing"}; poll
     GET /analysis/autofix/{run_id} for 'completed' (pr_url) or 'failed'.
     """
     from app.services import autofix
 
     try:
-        await autofix.approve_run(run_id, current_user["id"])
+        await autofix.approve_run(run_id, current_user["id"], approval.proposals_digest)
     except ValueError as e:  # autofix.AutofixError: an authored message
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
     async def _publish():
         try:
-            await autofix.publish_run(run_id, github_token)
+            await autofix.publish_run(run_id, github_token, approval.proposals_digest)
         except Exception:
             pass  # recorded on the run
 

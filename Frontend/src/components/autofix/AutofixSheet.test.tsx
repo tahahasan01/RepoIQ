@@ -20,6 +20,7 @@ const readyRun: AutofixRun = {
   id: "run-1",
   repository_id: "repo-1",
   status: "ready",
+  proposals_digest: "d".repeat(64),
   issue_ids: [ISSUE],
   proposals: [
     {
@@ -66,7 +67,7 @@ describe("AutofixSheet", () => {
     expect(screen.getByText(/too many lines/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /open pull request/i }));
-    await waitFor(() => expect(api.approveAutofixRun).toHaveBeenCalledWith("run-1"));
+    await waitFor(() => expect(api.approveAutofixRun).toHaveBeenCalledWith("run-1", "d".repeat(64)));
     expect(await screen.findByText("Opening a draft pull request")).toBeInTheDocument();
   });
 

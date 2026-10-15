@@ -407,9 +407,23 @@ function useAutofixDecision(
   });
 }
 
-/** Approve a run's proposals: the backend opens a draft pull request. */
+/**
+ * Approve a run's proposals: the backend opens a draft pull request. Sends the
+ * digest of the proposals as currently cached - the ones on screen.
+ */
 export function useApproveAutofix(repoId: string) {
-  return useAutofixDecision(repoId, (runId) => apiClient.approveAutofixRun(runId), 'publishing');
+  const queryClient = useQueryClient();
+  return useAutofixDecision(
+    repoId,
+    (runId) => {
+      const run = queryClient.getQueryData<AutofixRun>(queryKeys.autofixRun(runId));
+      if (!run?.proposals_digest) {
+        return Promise.reject(new Error('Reload the fix and review it again before approving.'));
+      }
+      return apiClient.approveAutofixRun(runId, run.proposals_digest);
+    },
+    'publishing'
+  );
 }
 
 /** Throw a run's proposals away. Nothing was pushed, so nothing is undone on GitHub. */

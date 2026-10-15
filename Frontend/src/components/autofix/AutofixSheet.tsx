@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import {
+import { AlertTriangle,
   AlertCircle,
   CheckCircle2,
   ExternalLink,
@@ -287,6 +287,16 @@ function RunDetail({ repoId, runId, run, isLoading, isError, errorMessage, onRet
                       </ul>
                     )}
                   </header>
+                  {proposal.changes_outside_findings && proposal.changes_outside_findings.length > 0 && (
+                    <p className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs">
+                      <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-500" aria-hidden />
+                      <span>
+                        Also changes line{proposal.changes_outside_findings.length === 1 ? "" : "s"}{" "}
+                        {proposal.changes_outside_findings.join(", ")}, away from the selected findings. Check these
+                        before approving.
+                      </span>
+                    </p>
+                  )}
                   <DiffViewer diff={proposal.diff} label={`Proposed changes to ${proposal.file_path}`} />
                 </article>
               ))}

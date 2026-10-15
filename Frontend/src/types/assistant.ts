@@ -46,6 +46,8 @@ export interface AutofixProposal {
   /** Unified diff text for this file. */
   diff: string;
   issue_ids: string[];
+  /** Changed lines (original numbering) far from every selected finding - review these closely. */
+  changes_outside_findings?: number[];
 }
 
 export interface AutofixSkipped {
@@ -59,6 +61,8 @@ export interface AutofixRun {
   status: AutofixStatus;
   issue_ids: string[];
   proposals?: AutofixProposal[] | null;
+  /** Fingerprint of the proposals as shown; approval must send it back. */
+  proposals_digest?: string | null;
   fixed_issue_ids?: string[] | null;
   skipped?: AutofixSkipped[] | null;
   branch?: string | null;
