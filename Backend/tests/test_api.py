@@ -2,14 +2,14 @@
 Sample tests for the API
 """
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from unittest.mock import patch, MagicMock
 
 
 @pytest.mark.asyncio
 async def test_root(app):
     """Test root endpoint"""
-    async with AsyncClient(app=app, base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/")
         assert response.status_code == 200
         data = response.json()
@@ -33,7 +33,7 @@ async def test_health_check(app):
     
     with patch('redis.Redis.from_url', return_value=mock_redis), \
          patch('app.db.postgres.check_connection', return_value=True):
-        async with AsyncClient(app=app, base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
             assert response.status_code == 200
             data = response.json()
@@ -46,7 +46,7 @@ async def test_health_check(app):
 @pytest.mark.asyncio
 async def test_signup_validation(app):
     """Test signup with invalid data"""
-    async with AsyncClient(app=app, base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
             "/api/v1/auth/signup",
             json={
@@ -60,7 +60,7 @@ async def test_signup_validation(app):
 @pytest.mark.asyncio
 async def test_protected_route_without_auth(app):
     """Test accessing protected route without authentication"""
-    async with AsyncClient(app=app, base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/v1/users/me")
         assert response.status_code == 403  # Forbidden
 
