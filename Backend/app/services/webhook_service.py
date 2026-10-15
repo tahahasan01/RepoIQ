@@ -2,15 +2,53 @@
 Webhook service for sending notifications to external services.
 
 Features:
-- Send analysis completion notifications
-- Retry failed webhook deliveries
+- Event emission to every webhook subscribed to an event (emit_event)
+- Delivery retried by Celery, never by sleeping (app/tasks/webhook_tasks.py)
 - Support for multiple webhook endpoints per user
 - Signature verification for security
+- Per-attempt delivery history (webhook_deliveries)
+
+What was broken:
+  - Nothing ever emitted an event. trigger_event and trigger_analysis_completed
+    existed and no code path called them, so a registered webhook only ever
+    received the manual test ping.
+  - Delivery retried inline with asyncio.sleep(5 / 30 / 300): one failing
+    endpoint held whatever called it for over five minutes. Retries are now
+    Celery countdowns - the worker slot is free between attempts.
+  - webhook_deliveries was written and never read, though the routes promised a
+    delivery history. GET /webhooks/{id}/deliveries reads it now.
+
+Delivery request (what a receiver gets):
+
+    POST <webhook url>
+    Content-Type: application/json
+    User-Agent: RepoIQ-Webhook/1.0
+    X-RepoIQ-Event: analysis.completed
+    X-RepoIQ-Delivery: <uuid, the same on every retry of one event delivery>
+    X-RepoIQ-Timestamp: <ISO-8601, also in the body>
+    X-RepoIQ-Signature: sha256=<hex HMAC-SHA256 of the raw body, keyed by the webhook secret>
+
+    {"event": "analysis.completed", "timestamp": "...", "data": {...}}
+
+`data` per event:
+    analysis.completed: repository_id, analysis_id, overall_score,
+        security_score, quality_score, total_issues, critical_issues,
+        high_issues (see trigger_analysis_completed)
+    analysis.failed: repository_id, analysis_id, error
+    test.ping: message, webhook_id, user_id
+
+A 2xx/3xx answer is success. A timeout, connection failure, 5xx, 408, 425 or 429
+is retried after 5s, 30s and 300s (four attempts). Any other 4xx is final: the
+receiver has rejected the request and sending it again will not change that.
 """
 import hashlib
 import hmac
 import json
 import asyncio
+import ipaddress
+import time
+import uuid
+from dataclasses import dataclass
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import httpx
@@ -22,21 +60,61 @@ from app.db.postgres import get_service_db
 logger = get_logger(__name__)
 settings = get_settings()
 
+# Delay before each retry. Celery countdowns between attempts, not sleeps.
+RETRY_DELAYS_SECONDS = (5, 30, 300)
+
+# Status codes that mean "try again later" rather than "no".
+_RETRYABLE_STATUS = {408, 425, 429}
+
+
+def _pin_to_address(url: str, hostname: str, address: str):
+    """
+    (request URL, extra headers, httpx extensions) that connect to `address`
+    while presenting `hostname` over HTTP (Host) and TLS (SNI and certificate
+    verification - httpcore uses sni_hostname as the TLS server_hostname).
+
+    For a URL whose host is already an IP literal nothing changes: there is no
+    second lookup to race, and SNI must not carry an IP.
+    """
+    original = httpx.URL(url)
+    try:
+        ipaddress.ip_address(hostname)
+        return original, {}, {}
+    except ValueError:
+        pass
+    # netloc is host[:port] as written, without userinfo - exactly the Host
+    # header the original URL would have produced.
+    return (
+        original.copy_with(host=address),
+        {"Host": original.netloc.decode("ascii")},
+        {"sni_hostname": hostname},
+    )
+
+
+@dataclass
+class DeliveryOutcome:
+    """The result of one delivery attempt."""
+    ok: bool
+    status: str             # success | blocked | failed | retrying
+    response_code: int
+    retryable: bool
+    error: Optional[str] = None
+
 
 class WebhookService:
     """
     Service for managing and delivering webhooks.
     """
-    
+
     def __init__(self):
         self.db = get_service_db()
-        self.max_retries = 3
-        self.retry_delays = [5, 30, 300]  # 5s, 30s, 5min
-    
+        self.max_retries = len(RETRY_DELAYS_SECONDS)
+        self.retry_delays = list(RETRY_DELAYS_SECONDS)
+
     def _generate_signature(self, payload: str, secret: str) -> str:
         """
         Generate HMAC-SHA256 signature for webhook payload.
-        
+
         Used by receivers to verify webhook authenticity.
         """
         return hmac.new(
@@ -44,7 +122,7 @@ class WebhookService:
             payload.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
-    
+
     async def register_webhook(
         self,
         user_id: str,
@@ -54,7 +132,7 @@ class WebhookService:
     ) -> Dict[str, Any]:
         """
         Register a new webhook endpoint for a user.
-        
+
         Args:
             user_id: User ID
             url: Webhook URL to receive events
@@ -78,15 +156,17 @@ class WebhookService:
             "active": True,
             "created_at": datetime.utcnow().isoformat()
         }
-        
+
         try:
             result = (await run_blocking(self.db.table("webhooks").insert(webhook_data).execute))
-            logger.info(f"✅ Webhook registered for user {user_id}: {url}")
+            # Ids and the host only: a webhook URL's path is often its credential.
+            webhook_id = result.data[0]["id"] if result.data else None
+            logger.info(f"Webhook {webhook_id} registered for user {user_id} ({httpx.URL(url).host})")
             return result.data[0] if result.data else webhook_data
         except Exception as e:
-            logger.error(f"Failed to register webhook: {e}")
+            logger.error(f"Failed to register webhook: {type(e).__name__}")
             raise
-    
+
     async def get_user_webhooks(self, user_id: str) -> List[Dict[str, Any]]:
         """Get all webhooks for a user."""
         try:
@@ -99,7 +179,27 @@ class WebhookService:
         except Exception as e:
             logger.error(f"Failed to get webhooks: {e}")
             return []
-    
+
+    async def get_webhook(
+        self, webhook_id: str, user_id: str, active_only: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """One webhook, only if `user_id` owns it. None otherwise (or for a non-UUID id)."""
+        try:
+            uuid.UUID(str(webhook_id))
+        except ValueError:
+            return None
+        query = self.db.table("webhooks").select("*").eq("id", webhook_id).eq("user_id", user_id)
+        if active_only:
+            query = query.eq("active", True)
+        return (await run_blocking(query.single().execute)).data
+
+    async def subscribed_webhooks(self, user_id: str, event_type: str) -> List[Dict[str, Any]]:
+        """The user's active webhooks that subscribe to `event_type` (or to "*")."""
+        return [
+            w for w in await self.get_user_webhooks(user_id)
+            if event_type in (w.get("events") or []) or "*" in (w.get("events") or [])
+        ]
+
     async def delete_webhook(self, webhook_id: str, user_id: str) -> bool:
         """
         Delete a webhook. True only if a row was actually removed.
@@ -117,110 +217,182 @@ class WebhookService:
 
             deleted = bool(result.data)
             if deleted:
-                logger.info(f"🗑️ Webhook deleted: {webhook_id}")
+                logger.info(f"Webhook deleted: {webhook_id}")
             else:
                 logger.info(f"No webhook {webhook_id} owned by this user; nothing deleted")
             return deleted
         except Exception as e:
             logger.error(f"Failed to delete webhook: {e}")
             return False
-    
-    async def send_webhook(
+
+    async def get_deliveries(
+        self, webhook_id: str, limit: int, offset: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Delivery attempts for one webhook, newest first. The caller must have
+        established ownership (get_webhook) - this is scoped by webhook_id only.
+        """
+        result = await run_blocking(
+            self.db.table("webhook_deliveries")
+            .select("id, delivery_id, event_type, status, response_code, attempt, error, delivered_at")
+            .eq("webhook_id", webhook_id)
+            .order("delivered_at", desc=True)
+            .limit(limit)
+            .offset(offset)
+            .execute
+        )
+        return result.data or []
+
+    async def deliver(
         self,
         webhook: Dict[str, Any],
         event_type: str,
         payload: Dict[str, Any],
-        max_attempts: Optional[int] = None
-    ) -> bool:
+        *,
+        delivery_id: Optional[str] = None,
+        attempt: int = 1,
+        retries_left: bool = False,
+    ) -> DeliveryOutcome:
         """
-        Send a webhook notification.
+        Make ONE delivery attempt and record it in webhook_deliveries.
 
-        Args:
-            webhook: Webhook configuration
-            event_type: Type of event (e.g., 'analysis.completed')
-            payload: Event data to send
-            max_attempts: Cap on delivery attempts. Pass 1 from request-path
-                callers - the default retry ladder sleeps up to 335s in total,
-                which holds a connection open for over five minutes.
+        Never sleeps and never loops: a retry is the caller's decision, made from
+        `outcome.retryable` (the Celery task schedules it with a countdown).
+        `retries_left` only changes how a retryable failure is recorded -
+        "retrying" when another attempt will follow, "failed" when it will not.
         """
         from app.services.url_guard import resolve_and_validate, UnsafeUrlError
 
         url = webhook.get("url")
         secret = webhook.get("secret", "")
+        delivery_id = delivery_id or str(uuid.uuid4())
+        # SECURITY: logs identify a delivery by ids only. The URL is not
+        # logged - receivers such as Slack and Discord put the credential in the
+        # path - and neither are the body, the signature, response headers or
+        # bodies, or exception text (httpx messages embed the request URL).
+        label = f"webhook {webhook.get('id')} delivery {delivery_id} attempt {attempt}"
+
+        async def record(outcome: DeliveryOutcome) -> DeliveryOutcome:
+            await self._log_delivery(
+                webhook.get("id"), event_type, outcome.status, outcome.response_code,
+                attempt=attempt, delivery_id=delivery_id, error=outcome.error,
+            )
+            return outcome
 
         # SECURITY: re-validate at delivery time, not just at registration.
         # DNS answers change: a hostname that resolved publicly when the webhook
         # was created can resolve to 169.254.169.254 by the time we deliver.
+        # Checked on every attempt, retries included. Not retried: the answer
+        # will not become safe by waiting.
         try:
-            resolve_and_validate(url)
-        except UnsafeUrlError as e:
-            logger.error(f"Refusing webhook delivery to unsafe destination: {e}")
-            await self._log_delivery(webhook.get("id"), event_type, "blocked", 0)
-            return False
-        
-        # Build webhook payload
+            hostname, addresses = resolve_and_validate(url)
+        except UnsafeUrlError:
+            logger.error(f"Refusing {label}: unsafe destination")
+            return await record(DeliveryOutcome(False, "blocked", 0, False, "unsafe_destination"))
+
+        # SECURITY: connect to the address that was just validated, not to the
+        # hostname. Handing httpx the hostname makes it resolve again when it
+        # connects, and a rebinding DNS server answers that second lookup with
+        # 127.0.0.1 or 169.254.169.254 - the check above would then guard a
+        # connection that is never made. The URL is rewritten to the pinned IP;
+        # Host carries the real name for the receiver's routing, and the
+        # sni_hostname extension makes TLS send SNI for, and verify the
+        # certificate against, the real name rather than the IP.
+        target, pinned_headers, extensions = _pin_to_address(url, hostname, addresses[0])
+
         webhook_payload = {
             "event": event_type,
             "timestamp": datetime.utcnow().isoformat(),
             "data": payload
         }
-        
+
         payload_json = json.dumps(webhook_payload, sort_keys=True)
         signature = self._generate_signature(payload_json, secret)
-        
+
         headers = {
+            **pinned_headers,
             "Content-Type": "application/json",
             "X-RepoIQ-Event": event_type,
+            "X-RepoIQ-Delivery": delivery_id,
             "X-RepoIQ-Signature": f"sha256={signature}",
             "X-RepoIQ-Timestamp": webhook_payload["timestamp"],
             "User-Agent": "RepoIQ-Webhook/1.0"
         }
-        
-        # Try to deliver with retries
-        schedule = [0] + self.retry_delays
-        if max_attempts is not None:
-            schedule = schedule[:max(1, max_attempts)]
 
-        for attempt, delay in enumerate(schedule):
-            if attempt > 0:
-                logger.info(f"Retrying webhook delivery (attempt {attempt + 1}/{len(schedule)})")
-                await asyncio.sleep(delay)
+        response_code = 0
+        started = time.monotonic()
+        try:
+            # follow_redirects=False: a 302 to http://169.254.169.254 would
+            # walk straight past the validation above.
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+                response = await client.post(
+                    target, content=payload_json, headers=headers, extensions=extensions
+                )
+            response_code = response.status_code
+            if response_code < 400:
+                logger.info(
+                    f"Delivered {label}: {event_type} -> {response_code} "
+                    f"in {int((time.monotonic() - started) * 1000)}ms"
+                )
+                return await record(DeliveryOutcome(True, "success", response_code, False))
+            retryable = response_code >= 500 or response_code in _RETRYABLE_STATUS
+            error = f"http_{response_code}"
+        except httpx.TimeoutException:
+            retryable, error = True, "timeout"
+        except httpx.ConnectError:
+            retryable, error = True, "connection_error"
+        except httpx.HTTPError as e:
+            retryable, error = True, "request_error"
+            logger.warning(f"Request error on {label}: {type(e).__name__}")
+        except Exception as e:
+            # Not a transport failure (e.g. a URL httpx cannot use). Waiting
+            # will not fix it; record it instead of failing the task unlogged.
+            retryable, error = False, "request_error"
+            logger.error(f"Unexpected error on {label}: {type(e).__name__}")
 
-            try:
-                # follow_redirects=False: a 302 to http://169.254.169.254 would
-                # walk straight past the validation above.
-                async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-                    response = await client.post(
-                        url,
-                        content=payload_json,
-                        headers=headers
-                    )
-                    
-                    if response.status_code < 400:
-                        logger.info(f"✅ Webhook delivered successfully: {url} ({response.status_code})")
-                        await self._log_delivery(webhook["id"], event_type, "success", response.status_code)
-                        return True
-                    else:
-                        logger.warning(f"⚠️ Webhook returned error: {url} ({response.status_code})")
-                        
-            except httpx.TimeoutException:
-                logger.warning(f"⏱️ Webhook timeout: {url}")
-            except httpx.ConnectError:
-                logger.warning(f"🔌 Webhook connection failed: {url}")
-            except Exception as e:
-                logger.error(f"❌ Webhook error: {url} - {e}")
-        
-        # All retries failed
-        logger.error(f"❌ Webhook delivery failed after {len(schedule)} attempts: {url}")
-        await self._log_delivery(webhook["id"], event_type, "failed", 0)
-        return False
-    
+        status = "retrying" if (retryable and retries_left) else "failed"
+        logger.warning(
+            f"Delivery {status} for {label}: {event_type} -> {error} "
+            f"after {int((time.monotonic() - started) * 1000)}ms"
+        )
+        return await record(DeliveryOutcome(False, status, response_code, retryable, error))
+
+    async def send_webhook(
+        self,
+        webhook: Dict[str, Any],
+        event_type: str,
+        payload: Dict[str, Any],
+        max_attempts: int = 1,
+        *,
+        delivery_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Deliver in-process, in a single attempt. True on success.
+
+        For request-path callers (POST /webhooks/{id}/test) and the no-worker
+        fallback in emit_event. This used to run a retry ladder that slept 5s,
+        30s and 300s inline - over five minutes holding the caller. Retrying is
+        now the Celery task's job, so more than one attempt here is refused
+        rather than silently ignored.
+        """
+        if max_attempts != 1:
+            raise ValueError(
+                "In-process delivery makes exactly one attempt; "
+                "retries run on Celery (emit_event)"
+            )
+        outcome = await self.deliver(webhook, event_type, payload, delivery_id=delivery_id)
+        return outcome.ok
+
     async def _log_delivery(
         self,
         webhook_id: str,
         event_type: str,
         status: str,
-        response_code: int
+        response_code: int,
+        *,
+        attempt: int = 1,
+        delivery_id: Optional[str] = None,
+        error: Optional[str] = None,
     ):
         """Log webhook delivery attempt."""
         try:
@@ -229,45 +401,13 @@ class WebhookService:
                 "event_type": event_type,
                 "status": status,
                 "response_code": response_code,
+                "attempt": attempt,
+                "delivery_id": delivery_id,
+                "error": error,
                 "delivered_at": datetime.utcnow().isoformat()
             }).execute))
         except Exception as e:
-            logger.debug(f"Failed to log webhook delivery: {e}")
-    
-    async def trigger_event(
-        self,
-        user_id: str,
-        event_type: str,
-        payload: Dict[str, Any]
-    ):
-        """
-        Trigger an event and send to all subscribed webhooks.
-        
-        Args:
-            user_id: User ID
-            event_type: Type of event
-            payload: Event data
-        """
-        webhooks = await self.get_user_webhooks(user_id)
-        
-        # Filter webhooks subscribed to this event
-        subscribed = [
-            w for w in webhooks
-            if event_type in w.get("events", []) or "*" in w.get("events", [])
-        ]
-        
-        if not subscribed:
-            logger.debug(f"No webhooks subscribed to event: {event_type}")
-            return
-        
-        logger.info(f"🔔 Triggering {event_type} for {len(subscribed)} webhooks")
-        
-        # Send webhooks concurrently
-        tasks = [
-            self.send_webhook(webhook, event_type, payload)
-            for webhook in subscribed
-        ]
-        await asyncio.gather(*tasks, return_exceptions=True)
+            logger.warning(f"Failed to log delivery {delivery_id} of webhook {webhook_id}: {type(e).__name__}")
 
 
 # Event types
@@ -293,19 +433,76 @@ def get_webhook_service() -> WebhookService:
     return _webhook_service
 
 
-async def trigger_analysis_completed(
-    user_id: str,
-    repo_id: str,
-    analysis_id: str,
-    results: Dict[str, Any]
-):
+# ---------------------------------------------------------------------------
+# Emission
+# ---------------------------------------------------------------------------
+
+async def _dispatch(
+    user_id: str, webhooks: List[Dict[str, Any]], event_type: str, payload: Dict[str, Any]
+) -> int:
     """
-    Convenience function to trigger analysis completed event.
-    Called from analysis tasks when analysis finishes.
+    One delivery per webhook: a Celery task each when a worker is listening,
+    otherwise a single in-process attempt each.
+
+    The task carries the webhook id, never the webhook row: the row holds the
+    signing secret, and task arguments sit in the Redis broker in plaintext.
+    The worker re-reads the webhook (and so also skips one deleted meanwhile).
     """
-    service = get_webhook_service()
-    
-    payload = {
+    from app.services.analysis_dispatch import DispatchMode, resolve_mode
+
+    # resolve_mode pings the workers, which blocks for up to 0.75s.
+    mode = await run_blocking(resolve_mode)
+
+    inline = []
+    for webhook in webhooks:
+        delivery_id = str(uuid.uuid4())
+        if mode == DispatchMode.QUEUE:
+            try:
+                from app.tasks.webhook_tasks import deliver_webhook_task
+
+                deliver_webhook_task.delay(
+                    webhook_id=webhook["id"],
+                    user_id=user_id,
+                    event_type=event_type,
+                    payload=payload,
+                    delivery_id=delivery_id,
+                )
+                continue
+            except Exception as e:
+                # The broker went away between the ping and the publish. One
+                # attempt now beats an event that is never delivered.
+                logger.warning(f"Could not enqueue webhook delivery, sending inline: {type(e).__name__}")
+        inline.append((webhook, delivery_id))
+
+    if inline:
+        service = get_webhook_service()
+        await asyncio.gather(
+            *(
+                service.send_webhook(w, event_type, payload, max_attempts=1, delivery_id=d)
+                for w, d in inline
+            ),
+            return_exceptions=True,
+        )
+
+    logger.info(
+        f"Event {event_type}: {len(webhooks) - len(inline)} queued, {len(inline)} sent inline"
+    )
+    return len(webhooks)
+
+
+async def emit_event(user_id: str, event_type: str, payload: Dict[str, Any]) -> int:
+    """
+    Send `event_type` to every active webhook of `user_id` subscribed to it.
+    Returns how many webhooks the event was dispatched to.
+    """
+    webhooks = await get_webhook_service().subscribed_webhooks(user_id, event_type)
+    if not webhooks:
+        return 0
+    return await _dispatch(user_id, webhooks, event_type, payload)
+
+
+def _analysis_completed_payload(repo_id: str, analysis_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
+    return {
         "repository_id": repo_id,
         "analysis_id": analysis_id,
         "overall_score": results.get("overall_score"),
@@ -315,5 +512,75 @@ async def trigger_analysis_completed(
         "critical_issues": results.get("critical_issues", 0),
         "high_issues": results.get("high_issues", 0)
     }
-    
-    await service.trigger_event(user_id, WebhookEvents.ANALYSIS_COMPLETED, payload)
+
+
+async def trigger_analysis_completed(
+    user_id: str,
+    repo_id: str,
+    analysis_id: str,
+    results: Dict[str, Any]
+) -> int:
+    """Emit analysis.completed with the scores and counts in `results`."""
+    return await emit_event(
+        user_id,
+        WebhookEvents.ANALYSIS_COMPLETED,
+        _analysis_completed_payload(repo_id, analysis_id, results),
+    )
+
+
+async def emit_analysis_completed(repo: Dict[str, Any], analysis_id: str) -> int:
+    """
+    Post-analysis step (analysis_tasks._run_followups): emit analysis.completed.
+
+    Reads the scores from the stored analysis row rather than taking them from
+    the caller, so the event says exactly what the UI shows. Looks up
+    subscribers first: most users have no webhooks, and then nothing is read.
+    """
+    user_id = repo.get("user_id")
+    if not user_id:
+        return 0
+    webhooks = await get_webhook_service().subscribed_webhooks(user_id, WebhookEvents.ANALYSIS_COMPLETED)
+    if not webhooks:
+        return 0
+
+    analysis = (await run_blocking(
+        get_service_db().table("analysis_results")
+        .select("*")
+        .eq("id", analysis_id)
+        .eq("repository_id", repo["id"])
+        .single()
+        .execute
+    )).data
+    if not analysis or analysis.get("status") != "completed":
+        return 0
+
+    return await _dispatch(
+        user_id, webhooks, WebhookEvents.ANALYSIS_COMPLETED,
+        _analysis_completed_payload(repo["id"], analysis_id, analysis),
+    )
+
+
+async def emit_analysis_failed(
+    user_id: Optional[str], repo_id: Optional[str], analysis_id: str, error: BaseException
+) -> int:
+    """
+    Emit analysis.failed. Never raises: it is called from failure handlers,
+    where an exception would replace the error being handled.
+
+    `error` in the payload is the exception's message only when it was written
+    for a person (user_facing, e.g. "configure your API key"). Anything else is
+    an internal failure whose text can carry SQL, paths or hostnames, and goes
+    out as a generic sentence.
+    """
+    if not user_id:
+        return 0
+    try:
+        message = str(error) if getattr(error, "user_facing", False) else "Analysis failed"
+        return await emit_event(user_id, WebhookEvents.ANALYSIS_FAILED, {
+            "repository_id": repo_id,
+            "analysis_id": analysis_id,
+            "error": message,
+        })
+    except Exception as e:
+        logger.warning(f"Could not emit analysis.failed for {analysis_id}: {type(e).__name__}")
+        return 0

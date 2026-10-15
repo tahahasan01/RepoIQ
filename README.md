@@ -368,7 +368,7 @@ The schema is created in step 3 by the migration runner — there is nothing to
 load by hand.
 
 > Prefer one command? `cd Backend && docker compose up --build` runs Postgres,
-> Redis, the migrations, the API and a worker together.
+> Redis, the migrations, the API, a worker and beat together.
 
 ### 3️⃣ Backend
 
@@ -450,6 +450,26 @@ celery -A app.core.celery_app worker --loglevel=info -Q celery,analysis
 > logs a warning and still works, but each analysis occupies an API worker for
 > its full duration and is lost on restart. Fine for a quick local look; not
 > how you should run it.
+
+The worker also delivers webhooks: each event is a task, and a failed delivery
+(timeout, connection error, 5xx, 408/425/429) is retried by Celery after 5s,
+30s and 300s. Without a worker, a webhook gets one in-process attempt and no
+retries.
+
+**Run Celery beat — the scheduler for periodic tasks:**
+
+```bash
+celery -A app.core.celery_app beat --loglevel=info
+```
+
+Beat publishes the organisation alert check every `ALERT_CHECK_INTERVAL_SECONDS`
+(default hourly); the worker runs it. Without beat, alerts are only checked
+when someone presses "check" (`POST /api/v1/alerts/organizations/{id}/check`).
+Run **exactly one** beat per deployment — each beat process publishes the whole
+schedule. It is a separate process in every deployment option: `beat` in the
+`Procfile` and `docker-compose.yml`, `railway.beat.toml` as a third Railway
+service (alongside the API and `railway.worker.toml`), and `start.sh` starts it
+detached.
 
 Backend runs on `http://localhost:8000` — interactive docs at `/docs`.
 
@@ -548,6 +568,13 @@ Nothing needs editing in code.
 | `ANTHROPIC_REFUSAL_FALLBACK` | `true` | Re-run a declined request on Anthropic's recommended fallback model |
 | `LLM_MAX_OUTPUT_TOKENS` | `32000` | Per-call output ceiling, thinking included |
 | `LLM_DAILY_TOKEN_BUDGET_PER_USER` | `2000000` | Hard per-user daily ceiling |
+
+### Alerts
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ALERT_CHECK_INTERVAL_SECONDS` | `3600` | How often beat runs the alert check; `0` removes it from the schedule |
+| `ALERT_QUALITY_THRESHOLD` | `70` | A latest-analysis overall score below this raises a quality alert (`high` below 50) |
 
 ### Security and limits
 

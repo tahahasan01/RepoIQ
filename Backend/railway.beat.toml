@@ -1,0 +1,19 @@
+# Railway configuration for the Celery beat (scheduler) service.
+# Same repository, Root Directory = "Backend", config file path = this file.
+# Shares DATABASE_URL, REDIS_URL and every secret with the API service.
+#
+# Beat only PUBLISHES scheduled tasks (the hourly alert check); the worker
+# service runs them, so both are needed. Run exactly ONE beat replica: each
+# replica publishes the whole schedule, so two would check every organisation
+# twice an hour. The schedule file is local state and may be lost on redeploy -
+# beat then simply starts its interval afresh.
+
+[build]
+builder = "NIXPACKS"
+buildCommand = "pip install -r requirements.txt"
+
+[deploy]
+startCommand = "celery -A app.core.celery_app beat --loglevel=info --schedule /tmp/celerybeat-schedule"
+numReplicas = 1
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

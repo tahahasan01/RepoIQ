@@ -190,7 +190,17 @@ class Settings(BaseSettings):
     # slower. Configurable because the right value moves with the model.
     ANALYSIS_BATCH_SIZE: int = 8
     ANALYSIS_MAX_FILE_BYTES: int = 50 * 1024
-    
+
+    # Alerts. Celery beat runs the organisation alert checks every
+    # ALERT_CHECK_INTERVAL_SECONDS; 0 removes the schedule (the manual check
+    # endpoint keeps working). Requires a `celery ... beat` process - without
+    # one nothing is scheduled at all, which is how alerts went unchecked
+    # before the schedule existed.
+    ALERT_CHECK_INTERVAL_SECONDS: int = 3600
+    # A latest-analysis overall_score below this raises a quality alert
+    # (severity "high" below 50, "medium" otherwise).
+    ALERT_QUALITY_THRESHOLD: int = 70
+
     RATE_LIMIT_PER_MINUTE: int = 60
     
     @property

@@ -41,7 +41,9 @@ ACKNOWLEDGED_GLOBAL_QUERIES = {
     #  caught that the entry was obsolete.)
     # Scheduled job, not a user request: it iterates every organisation by design.
     # There is no tenant to scope to.
-    ("alert_tasks.py", "organizations", "check_all_organizations_alerts"),
+    # (The query moved into the Celery task's async body when the task became
+    #  a real Celery task.)
+    ("alert_tasks.py", "organizations", "_check_all_organizations"),
     # Gated by an explicit ownership walk immediately above the query:
     # issue -> analysis -> repository, rejecting when repo.user_id != user_id.
     ("ownership_service.py", "issue_blame", "get_issue_blame"),
