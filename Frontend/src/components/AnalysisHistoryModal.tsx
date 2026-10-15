@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import apiClient from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { X, CheckCircle, XCircle, Clock, AlertCircle, RefreshCw } from "lucide-react";
+import { X, CheckCircle, XCircle, Clock, RefreshCw, ChevronRight } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { formatDateOnly, formatRelativeTime } from "@/lib/timeUtils";
+import { scoreTextClass } from "@/lib/scoreColor";
+import { cn } from "@/lib/utils";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { LoadingState } from "@/components/shared/LoadingState";
 
 interface AnalysisRun {
   id: string;
@@ -24,6 +28,13 @@ interface AnalysisHistoryModalProps {
   repoName: string;
 }
 
+const RUN_SCORES: { key: "overall_score" | "security_score" | "quality_score" | "architecture_score"; label: string }[] = [
+  { key: "overall_score", label: "Overall" },
+  { key: "security_score", label: "Security" },
+  { key: "quality_score", label: "Quality" },
+  { key: "architecture_score", label: "Architecture" },
+];
+
 export default function AnalysisHistoryModal({
   isOpen,
   onClose,
@@ -34,33 +45,25 @@ export default function AnalysisHistoryModal({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const titleId = useId();
 
   const loadHistory = useCallback(async (forceRefresh = false) => {
     try {
       setLoading(true);
       setError(null);
-      console.log('[AnalysisHistoryModal] Loading history for repo:', repoId, 'forceRefresh:', forceRefresh);
-      
+
       // Pass forceRefresh to API to bypass cache
       const response = await apiClient.getAnalysisHistory(repoId, forceRefresh);
-      console.log('[AnalysisHistoryModal] History response:', response);
-      console.log('[AnalysisHistoryModal] Total analyses in response:', response?.total_analyses);
-      
       const runs = response.history || [];
-      console.log('[AnalysisHistoryModal] Found', runs.length, 'analysis runs');
-      
+
       // Sort by completed_at descending to ensure latest is first
       runs.sort((a: AnalysisRun, b: AnalysisRun) => {
         const dateA = a.completed_at ? new Date(a.completed_at).getTime() : 0;
         const dateB = b.completed_at ? new Date(b.completed_at).getTime() : 0;
         return dateB - dateA;
       });
-      
+
       setHistory(runs);
-      
-      if (runs.length === 0) {
-        setError("No analysis history found for this repository.");
-      }
     } catch (err) {
       console.error('[AnalysisHistoryModal] Failed to load history:', err);
       setError(err instanceof Error && err.message ? err.message : "Failed to load analysis history");
@@ -75,201 +78,163 @@ export default function AnalysisHistoryModal({
     }
   }, [isOpen, repoId, loadHistory]);
 
+  // Escape closes, like every other dialog in the app.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isOpen, onClose]);
+
   const handleViewAnalysis = (analysisId: string) => {
-    console.log('[AnalysisHistoryModal] Viewing analysis:', analysisId);
     onClose();
     navigate(`/dashboard/${repoId}?analysis_id=${analysisId}`);
   };
 
   const formatDate = (dateString: string | null) => {
-    if (!dateString) return "N/A";
+    if (!dateString) return "Not completed";
     // Show only date and relative time (e.g., "Jan 27, 2026 (34 minutes ago)")
     const relative = formatRelativeTime(dateString);
     const dateOnly = formatDateOnly(dateString);
     return `${dateOnly} (${relative})`;
   };
 
-  const getScoreColor = (score: number | null) => {
-    if (score === null || score === undefined) return "text-gray-400";
-    if (score >= 80) return "text-green-500";
-    if (score >= 60) return "text-yellow-500";
-    return "text-red-500";
-  };
-
   const getStatusIcon = (run: AnalysisRun) => {
     if (run.overall_score !== null && run.overall_score !== undefined) {
-      return <CheckCircle className="h-5 w-5 text-green-500" />;
+      return <CheckCircle className="h-5 w-5 text-score-good" aria-label="Completed" />;
     }
     if (run.status === "failed") {
-      return <XCircle className="h-5 w-5 text-red-500" />;
+      return <XCircle className="h-5 w-5 text-sev-critical" aria-label="Failed" />;
     }
-    return <Clock className="h-5 w-5 text-gray-400" />;
+    return <Clock className="h-5 w-5 text-muted-foreground" aria-label="Incomplete" />;
   };
 
   if (!isOpen) return null;
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         {/* Backdrop */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+          className="absolute inset-0 bg-black/60"
           onClick={onClose}
         />
 
         {/* Modal */}
         <motion.div
-          initial={{ opacity: 0, scale: 0.95, y: 20 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.95, y: 20 }}
-          className="relative bg-background border border-border rounded-lg shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.98 }}
+          className="relative flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
         >
           {/* Header */}
-          <div className="flex items-center justify-between p-6 border-b border-border">
-            <div>
-              <h2 className="text-2xl font-bold">Analysis History</h2>
-              <p className="text-sm text-muted-foreground mt-1">{repoName}</p>
+          <div className="flex items-center justify-between gap-4 border-b border-border p-6">
+            <div className="min-w-0">
+              <h2 id={titleId} className="text-xl font-semibold">Analysis history</h2>
+              <p className="mt-1 truncate text-sm text-muted-foreground">{repoName}</p>
             </div>
-            <div className="flex items-center gap-2">
-              <button
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
                 onClick={() => loadHistory(true)}
                 disabled={loading}
-                className="p-2 hover:bg-accent rounded-lg transition-colors disabled:opacity-50"
+                aria-label="Refresh history"
                 title="Refresh history"
               >
-                <RefreshCw className={`h-5 w-5 ${loading ? 'animate-spin' : ''}`} />
-              </button>
-              <button
-                onClick={onClose}
-                className="p-2 hover:bg-accent rounded-lg transition-colors"
-              >
-                <X className="h-5 w-5" />
-              </button>
+                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+              </Button>
+              <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
+                <X className="h-4 w-4" />
+              </Button>
             </div>
           </div>
 
           {/* Content */}
           <div className="flex-1 overflow-y-auto p-6">
             {loading ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mb-4"></div>
-                <p className="text-muted-foreground">Loading analysis history...</p>
-              </div>
+              <LoadingState variant="list" count={4} label="Loading analysis history" />
             ) : error ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <AlertCircle className="h-12 w-12 text-muted-foreground mb-4" />
-                <p className="text-muted-foreground">{error}</p>
-                <Button onClick={() => loadHistory(true)} variant="outline" className="mt-4 gap-2">
-                  <RefreshCw className="h-4 w-4" />
-                  Retry
-                </Button>
-              </div>
+              <EmptyState
+                variant="error"
+                title="Couldn't load the history"
+                body={error}
+                onRetry={() => loadHistory(true)}
+              />
             ) : history.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <Clock className="h-12 w-12 text-muted-foreground mb-4" />
-                <p className="text-muted-foreground">No analysis history yet</p>
-                <p className="text-sm text-muted-foreground mt-2">
-                  Run an analysis to see it here
-                </p>
-              </div>
+              <EmptyState icon={Clock} title="No analysis history yet" body="Run an analysis to see it here." />
             ) : (
-              <div className="space-y-3">
+              <ol className="space-y-2">
                 {history.map((run, index) => (
-                  <motion.div
-                    key={run.id}
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: index * 0.05 }}
-                    className={`p-4 rounded-lg border ${
-                      index === 0
-                        ? "border-primary bg-primary/5"
-                        : "border-border bg-card hover:bg-accent/50"
-                    } transition-colors cursor-pointer group`}
-                    onClick={() => handleViewAnalysis(run.id)}
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex items-start gap-3 flex-1">
-                        <div className="mt-0.5">
-                          {getStatusIcon(run)}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-medium">
-                              {formatDate(run.completed_at)}
+                  <li key={run.id}>
+                    <button
+                      type="button"
+                      onClick={() => handleViewAnalysis(run.id)}
+                      className={cn(
+                        "group flex w-full items-start gap-3 rounded-lg border p-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        index === 0 ? "border-primary/50 bg-primary/5" : "border-border bg-card"
+                      )}
+                    >
+                      <span className="mt-0.5 shrink-0">{getStatusIcon(run)}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{formatDate(run.completed_at)}</span>
+                          {index === 0 && (
+                            <span className="rounded-md border border-primary/40 px-1.5 py-0.5 text-xs font-medium text-foreground">
+                              Latest
                             </span>
-                            {index === 0 && (
-                              <span className="text-xs px-2 py-0.5 rounded-full bg-primary text-primary-foreground">
-                                Latest
-                              </span>
-                            )}
-                          </div>
-                          
-                          {run.overall_score !== null && run.overall_score !== undefined ? (
-                            <div className="mt-2 flex flex-wrap gap-4 text-sm">
-                              <div>
-                                <span className="text-muted-foreground">Score:</span>{" "}
-                                <span className={`font-semibold ${getScoreColor(run.overall_score)}`}>
-                                  {run.overall_score}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-muted-foreground">Issues:</span>{" "}
-                                <span className="font-semibold">{run.total_issues}</span>
-                              </div>
-                              <div>
-                                <span className="text-muted-foreground">Security:</span>{" "}
-                                <span className={getScoreColor(run.security_score)}>
-                                  {run.security_score ?? "N/A"}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-muted-foreground">Quality:</span>{" "}
-                                <span className={getScoreColor(run.quality_score)}>
-                                  {run.quality_score ?? "N/A"}
-                                </span>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="mt-2 text-sm text-muted-foreground">
-                              {run.status === "failed" ? "Analysis failed" : "Analysis incomplete"}
-                            </div>
                           )}
-                        </div>
-                      </div>
-
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="opacity-0 group-hover:opacity-100 transition-opacity"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleViewAnalysis(run.id);
-                        }}
-                      >
-                        View Results →
-                      </Button>
-                    </div>
-                  </motion.div>
+                        </span>
+                        {run.overall_score !== null && run.overall_score !== undefined ? (
+                          <span className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                            {RUN_SCORES.map(({ key, label }) => (
+                              <span key={key}>
+                                <span className="text-muted-foreground">{label}</span>{" "}
+                                <span className={cn("font-medium tabular-nums", scoreTextClass(run[key]))}>
+                                  {run[key] ?? "–"}
+                                </span>
+                              </span>
+                            ))}
+                            <span>
+                              <span className="text-muted-foreground">Issues</span>{" "}
+                              <span className="font-medium tabular-nums">{run.total_issues}</span>
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="mt-1.5 block text-sm text-muted-foreground">
+                            {run.status === "failed" ? "Analysis failed" : "Analysis incomplete"}
+                          </span>
+                        )}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-1 self-center text-sm text-muted-foreground group-hover:text-foreground">
+                        View
+                        <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                      </span>
+                    </button>
+                  </li>
                 ))}
-              </div>
+              </ol>
             )}
           </div>
 
           {/* Footer */}
-          <div className="p-6 border-t border-border bg-muted/30">
-            <div className="flex items-center justify-between text-sm text-muted-foreground">
-              <span>
-                {history.length > 0 
-                  ? `Showing ${history.length} analysis run${history.length === 1 ? '' : 's'}`
-                  : 'No analysis runs'}
-              </span>
-              <Button variant="outline" onClick={onClose}>
-                Close
-              </Button>
-            </div>
+          <div className="flex items-center justify-between border-t border-border p-4 text-sm text-muted-foreground sm:px-6">
+            <span>
+              {history.length > 0
+                ? `Showing ${history.length} analysis run${history.length === 1 ? '' : 's'}`
+                : 'No analysis runs'}
+            </span>
+            <Button variant="outline" onClick={onClose}>
+              Close
+            </Button>
           </div>
         </motion.div>
       </div>

@@ -35,8 +35,17 @@ export default function NotificationBell() {
       }
     }
     
+    // Escape closes too, so the dropdown can be left from the keyboard.
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setIsOpen(false);
+    }
+
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
   }, []);
   
   const handleNotificationClick = (notification: Notification) => {
@@ -52,12 +61,12 @@ export default function NotificationBell() {
     switch (type) {
       case 'success':
       case 'analysis_complete':
-        return <CheckCircle className="h-5 w-5 text-green-500" />;
+        return <CheckCircle className="h-5 w-5 text-score-good" aria-hidden="true" />;
       case 'error':
-        return <XCircle className="h-5 w-5 text-red-500" />;
+        return <XCircle className="h-5 w-5 text-sev-critical" aria-hidden="true" />;
       case 'info':
       default:
-        return <Info className="h-5 w-5 text-blue-500" />;
+        return <Info className="h-5 w-5 text-muted-foreground" aria-hidden="true" />;
     }
   };
   
@@ -69,8 +78,9 @@ export default function NotificationBell() {
     <div className="relative" ref={dropdownRef}>
       {/* Bell Button */}
       <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="relative p-2 rounded-lg hover:bg-accent transition-colors"
+        className="relative p-2 rounded-lg hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-label={
           badgeCount > 0
             ? `Notifications: ${badgeCount} need${badgeCount === 1 ? "s" : ""} your attention`
@@ -84,7 +94,7 @@ export default function NotificationBell() {
         {badgeCount > 0 && (
           <span
             aria-hidden="true"
-            className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center font-medium"
+            className="absolute -top-1 -right-1 z-10 h-5 min-w-5 px-1 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-semibold tabular-nums"
           >
             {badgeCount > 9 ? '9+' : badgeCount}
           </span>
@@ -111,14 +121,16 @@ export default function NotificationBell() {
               {notifications.length > 0 && (
                 <div className="flex gap-2">
                   <button
+                    type="button"
                     onClick={markAllAsRead}
-                    className="text-xs text-primary hover:underline"
+                    className="rounded-sm text-xs text-link hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     Mark all read
                   </button>
                   <button
+                    type="button"
                     onClick={clearAll}
-                    className="text-xs text-muted-foreground hover:text-foreground"
+                    className="rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     Clear all
                   </button>
@@ -171,39 +183,48 @@ export default function NotificationBell() {
                   <p className="text-sm">No notifications yet</p>
                 </div>
               ) : (
-                notifications.slice(0, 10).map(notification => (
-                  <div
-                    key={notification.id}
-                    className={`p-3 border-b border-border hover:bg-accent/50 cursor-pointer transition-colors ${
-                      !notification.read ? 'bg-accent/20' : ''
-                    }`}
-                    onClick={() => handleNotificationClick(notification)}
-                  >
-                    <div className="flex gap-3">
-                      <div className="flex-shrink-0 mt-0.5">
-                        {getIcon(notification.type)}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-sm">{notification.title}</p>
-                        <p className="text-xs text-muted-foreground line-clamp-2">
-                          {notification.message}
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          {formatRelativeTime(new Date(notification.timestamp).toISOString())}
-                        </p>
-                      </div>
+                <ul>
+                  {notifications.slice(0, 10).map(notification => (
+                    // The item and its dismiss button are siblings, not nested:
+                    // a button inside a clickable row is unreachable by keyboard.
+                    <li
+                      key={notification.id}
+                      className={`group relative flex border-b border-border transition-colors hover:bg-accent/50 ${
+                        !notification.read ? 'bg-accent/20' : ''
+                      }`}
+                    >
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeNotification(notification.id);
-                        }}
-                        className="flex-shrink-0 p-1 hover:bg-accent rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                        type="button"
+                        onClick={() => handleNotificationClick(notification)}
+                        className="flex min-w-0 flex-1 gap-3 p-3 pr-10 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                       >
-                        <X className="h-4 w-4" />
+                        <span className="mt-0.5 flex-shrink-0">
+                          {getIcon(notification.type)}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-medium">
+                            {notification.title}
+                            {!notification.read && <span className="sr-only"> (unread)</span>}
+                          </span>
+                          <span className="block text-xs text-muted-foreground line-clamp-2">
+                            {notification.message}
+                          </span>
+                          <span className="mt-1 block text-xs text-muted-foreground">
+                            {formatRelativeTime(new Date(notification.timestamp).toISOString())}
+                          </span>
+                        </span>
                       </button>
-                    </div>
-                  </div>
-                ))
+                      <button
+                        type="button"
+                        onClick={() => removeNotification(notification.id)}
+                        aria-label={`Dismiss notification: ${notification.title}`}
+                        className="absolute right-2 top-2 rounded p-1 opacity-0 transition-opacity hover:bg-accent focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 group-focus-within:opacity-100"
+                      >
+                        <X className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
             
