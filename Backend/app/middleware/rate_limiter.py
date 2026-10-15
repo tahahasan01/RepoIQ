@@ -396,6 +396,27 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return response
 
 
+_DECORATOR_REDIS = None
+
+
+def _decorator_redis():
+    """
+    One shared client for the @rate_limit decorator, with bounded timeouts.
+    It used to open a new connection on every decorated call, with redis-py's
+    default of waiting forever on an unresponsive server.
+    """
+    global _DECORATOR_REDIS
+    if _DECORATOR_REDIS is None:
+        settings = get_settings()
+        _DECORATOR_REDIS = Redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
+            socket_connect_timeout=settings.REDIS_SOCKET_CONNECT_TIMEOUT,
+        )
+    return _DECORATOR_REDIS
+
+
 def rate_limit(
     capacity: int = 10,
     refill_rate: float = 1.0,
@@ -433,8 +454,7 @@ def rate_limit(
                 identifier = f"endpoint:{func.__name__}:ip:{request.client.host if request.client else 'unknown'}"
             
             # Create limiter
-            settings = get_settings()
-            redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+            redis = _decorator_redis()
             limiter = TokenBucket(redis, capacity, refill_rate, key_prefix=f"rate_limit:endpoint:{func.__name__}")
             
             allowed, info = await limiter.consume(identifier)

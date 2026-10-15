@@ -160,6 +160,7 @@ class TestApiDocsInProduction:
             client = TestClient(FastAPI(**docs_config(settings)))
             assert client.get("/docs").status_code == 200
             assert client.get("/openapi.json").status_code == 200
+            assert client.get("/redoc").status_code == 404  # its default bundle is broken
 
 
 EXPECTED = {

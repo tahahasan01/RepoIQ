@@ -25,7 +25,12 @@ class TokenOptimizer:
     def __init__(self, redis_client: Optional[Redis] = None):
         """Initialize with optional Redis client for caching."""
         try:
-            self.redis = redis_client or Redis.from_url(settings.REDIS_URL, decode_responses=False)
+            self.redis = redis_client or Redis.from_url(
+                settings.REDIS_URL,
+                decode_responses=False,
+                socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
+                socket_connect_timeout=settings.REDIS_SOCKET_CONNECT_TIMEOUT,
+            )
             self.redis.ping()
             self.redis_available = True
         except Exception as e:

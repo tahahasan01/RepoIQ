@@ -87,8 +87,10 @@ def docs_config(s) -> dict:
     including the admin ones, with its parameters. Production serves none of
     the three unless ENABLE_API_DOCS is set.
     """
+    # No ReDoc: FastAPI's default bundle (redoc@next) is an ES module loaded
+    # as a classic script and throws on load. Swagger UI at /docs covers it.
     if s.api_docs_enabled:
-        return {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
+        return {"docs_url": "/docs", "redoc_url": None, "openapi_url": "/openapi.json"}
     return {"docs_url": None, "redoc_url": None, "openapi_url": None}
 
 
@@ -263,8 +265,11 @@ async def health_check():
     # SECURITY: report only the exception type. Raw connection errors embed
     # hostnames, ports and credentials-in-URL on an unauthenticated endpoint.
     try:
-        redis_client = Redis.from_url(settings.REDIS_URL, socket_timeout=2)
-        redis_client.ping()
+        # A fresh client per probe is deliberate (it tests a real connection,
+        # not a pooled one), but it must be closed: probes run every few
+        # seconds and each one used to leave a connection behind.
+        with Redis.from_url(settings.REDIS_URL, socket_timeout=2, socket_connect_timeout=2) as redis_client:
+            redis_client.ping()
         health_status["dependencies"]["redis"] = {"status": "healthy", "latency_ms": 0}
     except Exception as e:
         logger.error(f"Health check: Redis unhealthy: {e}")
@@ -311,8 +316,8 @@ async def readiness_check():
     
     try:
         # Quick Redis check
-        redis_client = Redis.from_url(settings.REDIS_URL, socket_timeout=1)
-        redis_client.ping()
+        with Redis.from_url(settings.REDIS_URL, socket_timeout=1, socket_connect_timeout=1) as redis_client:
+            redis_client.ping()
         return {"ready": True}
     except Exception:
         from fastapi.responses import JSONResponse
@@ -342,7 +347,8 @@ async def get_metrics(_: bool = Depends(require_admin)):
         }
     except Exception as e:
         logger.error(f"Failed to get metrics: {e}")
-        return {"error": str(e)}
+        # The type only: exception text can carry hosts and connection URLs.
+        return {"error": type(e).__name__}
 
 
 # Cache statistics endpoint
@@ -372,7 +378,7 @@ async def cache_stats(_: bool = Depends(require_admin)):
         logger.error(f"Failed to get cache stats: {e}")
         return {
             "status": "error",
-            "error": str(e)
+            "error": type(e).__name__
         }
 
 
