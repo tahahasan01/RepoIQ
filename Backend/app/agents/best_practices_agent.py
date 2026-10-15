@@ -1,6 +1,7 @@
 from typing import Dict, List, Any, Optional
 from .base_agent import BaseAgent
 from app.core.logging import get_logger
+import ast
 import re
 
 logger = get_logger(__name__)
@@ -124,133 +125,190 @@ Return ONLY valid JSON."""
                 return lang
         return "unknown"
     
+    # ------------------------------------------------------------------
+    # Static rules
+    #
+    # This used to be a set of regex/filename heuristics, and on a real
+    # repository every one of its findings was wrong. The N+1 rule fired when a
+    # file merely contained the word SELECT and, anywhere after some `for x in`,
+    # a `.query(`/`.execute(`/`.find(` - and then reported EVERY for-loop in the
+    # file as a HIGH. A CSV reader loop and an in-memory nested loop were each
+    # a "HIGH N+1 query". Four false HIGHs took the quality score from 65 to 41.
+    #
+    # The other rules guessed from the file NAME ("api" or "route" in the path ->
+    # HIGH "missing rate limiting" at line 1, because rate limiting is normally
+    # global middleware that this file cannot see), flagged every controlled
+    # React input as "missing debouncing", and called files "missing caching"
+    # because the word "cache" did not appear. None of that can be decided from
+    # one file with a regex, and the AI review already covers those practices
+    # with the whole batch in view.
+    #
+    # What remains is only what can be decided from the syntax tree, and is
+    # language-gated to Python where we parse it:
+    #   - a database call executed once per loop iteration (directly, or via a
+    #     helper in the same file that itself queries);
+    #   - a `requests` call with no timeout (requests has no default timeout).
+    # Both are MEDIUM: they are real costs, not certain defects.
+    # ------------------------------------------------------------------
+
+    # Method names that perform a round trip when called on a DB-ish receiver.
+    _DB_METHODS = frozenset({
+        "execute", "executemany", "query", "get", "filter", "exclude",
+        "find", "find_one", "aggregate", "count_documents", "raw", "scalar", "scalars",
+        "fetch", "fetchrow", "fetchval",
+    })
+    # Too generic to trust on `session`/`conn` (requests.Session().get is HTTP):
+    # only a query when called on a Django manager, `Model.objects.get(...)`.
+    _ORM_MANAGER_ONLY = frozenset({"get", "filter", "exclude"})
+    # Receiver names (last segment, lower-cased) that are a database handle.
+    _DB_RECEIVER = re.compile(r"(^|_)(cursor|cur|conn|connection|db|session|objects|collection|pool)$")
+    _HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "request"})
+    _LOOPS = (ast.For, ast.AsyncFor)
+    _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+    _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
     def _run_static_analysis(self, code: str, file_path: str, language: str) -> List[Dict[str, Any]]:
-        """Detect missing best practices with regex patterns"""
+        """Syntax-tree checks that are reliable enough to report without a model."""
+        if language != "python":
+            return []
+        try:
+            tree = ast.parse(code)
+        except (SyntaxError, ValueError):
+            return []
+        return (
+            self._find_queries_in_loops(tree, file_path)
+            + self._find_requests_without_timeout(tree, file_path)
+        )
+
+    @classmethod
+    def _walk_same_scope(cls, nodes):
+        """Walk nodes without descending into nested defs - their bodies do not run here."""
+        stack = list(reversed(nodes))
+        while stack:
+            node = stack.pop()
+            yield node
+            if isinstance(node, cls._SCOPES):
+                continue
+            stack.extend(reversed(list(ast.iter_child_nodes(node))))
+
+    @classmethod
+    def _db_call_label(cls, call: ast.Call) -> Optional[str]:
+        func = call.func
+        if not isinstance(func, ast.Attribute) or func.attr not in cls._DB_METHODS:
+            return None
+        receiver = func.value
+        if isinstance(receiver, ast.Call):  # db.session().query(...)
+            receiver = receiver.func
+        if isinstance(receiver, ast.Attribute):
+            name = receiver.attr
+        elif isinstance(receiver, ast.Name):
+            name = receiver.id
+        else:
+            return None
+        if func.attr in cls._ORM_MANAGER_ONLY and name != "objects":
+            return None
+        if not cls._DB_RECEIVER.search(name.lower()):
+            return None
+        return f"{name}.{func.attr}()"
+
+    @staticmethod
+    def _called_name(call: ast.Call) -> Optional[str]:
+        """`helper()` or `self.helper()` / `cls.helper()` - a call we can resolve in this file."""
+        func = call.func
+        if isinstance(func, ast.Name):
+            return func.id
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id in ("self", "cls"):
+            return func.attr
+        return None
+
+    def _find_queries_in_loops(self, tree: ast.AST, file_path: str) -> List[Dict[str, Any]]:
+        # Functions in this file that perform a query themselves. Calling one of
+        # these per iteration is the classic N+1 shape a regex can never see.
+        querying_helpers = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if any(
+                    isinstance(n, ast.Call) and self._db_call_label(n)
+                    for n in self._walk_same_scope(node.body)
+                ):
+                    querying_helpers.add(node.name)
+
+        issues: List[Dict[str, Any]] = []
+        reported = set()  # call nodes already attributed to an (outer) loop
+
+        for node in ast.walk(tree):
+            if isinstance(node, self._LOOPS):
+                body, loop_line = node.body, node.lineno
+            elif isinstance(node, self._COMPREHENSIONS):
+                body = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+                # Conditions also run per element.
+                body += [cond for gen in node.generators for cond in gen.ifs]
+                loop_line = node.lineno
+            else:
+                continue
+
+            for inner in self._walk_same_scope(body):
+                if not isinstance(inner, ast.Call) or id(inner) in reported:
+                    continue
+                label = self._db_call_label(inner)
+                helper = None
+                if not label:
+                    helper = self._called_name(inner)
+                    if helper not in querying_helpers:
+                        continue
+                reported.update(
+                    id(n) for n in self._walk_same_scope(body) if isinstance(n, ast.Call)
+                )
+                what = f"`{label}`" if label else f"`{helper}()`, which queries the database,"
+                issues.append({
+                    "severity": "medium",
+                    "category": "n_plus_one_query",
+                    "file_path": file_path,
+                    "line_number": inner.lineno,
+                    "description": (
+                        f"{what} runs once per iteration of the loop on line {loop_line}: "
+                        "one database round trip per item (N+1 queries)."
+                    ),
+                    "suggestion": (
+                        "Fetch what the loop needs in one query before it (JOIN, WHERE ... IN, "
+                        "bulk lookup into a dict), and batch writes (executemany / bulk insert)."
+                    ),
+                    "auto_fixable": False,
+                    "agent_type": "best_practices",
+                })
+                break  # one finding per loop
+
+        return issues
+
+    def _find_requests_without_timeout(self, tree: ast.AST, file_path: str) -> List[Dict[str, Any]]:
         issues = []
-        
-        # API/Backend file patterns
-        if any(keyword in file_path.lower() for keyword in ['route', 'api', 'controller', 'endpoint', 'handler']):
-            # Check for rate limiting
-            if not re.search(r'(rate_limit|RateLimit|@limiter|throttle)', code, re.IGNORECASE):
-                issues.append({
-                    "severity": "high",
-                    "category": "missing_rate_limiting",
-                    "file_path": file_path,
-                    "line_number": 1,
-                    "description": "API endpoint missing rate limiting protection",
-                    "suggestion": "Add rate limiting middleware (e.g., SlowAPI, Flask-Limiter, express-rate-limit)",
-                    "auto_fixable": False,
-                    "agent_type": "best_practices"
-                })
-            
-            # Check for timeout handling
-            if re.search(r'(requests\.|fetch\(|axios)', code) and not re.search(r'timeout\s*=', code, re.IGNORECASE):
-                issues.append({
-                    "severity": "medium",
-                    "category": "missing_timeout",
-                    "file_path": file_path,
-                    "line_number": 1,
-                    "description": "HTTP requests missing timeout configuration",
-                    "suggestion": "Add timeout parameter to prevent hanging requests (e.g., timeout=30)",
-                    "auto_fixable": False,
-                    "agent_type": "best_practices"
-                })
-            
-            # Check for caching headers
-            if re.search(r'(return|Response|JSONResponse)', code) and not re.search(r'(Cache-Control|ETag|cache)', code, re.IGNORECASE):
-                issues.append({
-                    "severity": "medium",
-                    "category": "missing_cache_headers",
-                    "file_path": file_path,
-                    "line_number": 1,
-                    "description": "API response missing cache headers",
-                    "suggestion": "Add Cache-Control headers for cacheable responses",
-                    "auto_fixable": False,
-                    "agent_type": "best_practices"
-                })
-        
-        # Frontend patterns (React, Vue, etc.)
-        if language in ['javascript', 'typescript'] and ('component' in file_path.lower() or 'page' in file_path.lower()):
-            # Check for debouncing on input handlers
-            if re.search(r'onChange.*setState|onChange.*set[A-Z]', code) and not re.search(r'(debounce|throttle|useDebounc|useThrottle)', code, re.IGNORECASE):
-                matches = re.finditer(r'onChange', code)
-                for match in matches:
-                    line_number = code[:match.start()].count('\n') + 1
-                    issues.append({
-                        "severity": "medium",
-                        "category": "missing_debouncing",
-                        "file_path": file_path,
-                        "line_number": line_number,
-                        "description": "Input onChange handler missing debouncing (can cause excessive re-renders/API calls)",
-                        "suggestion": "Use debounce utility or useDebouncedSearch hook for search inputs",
-                        "auto_fixable": False,
-                        "agent_type": "best_practices"
-                    })
-            
-            # Check for missing memoization
-            if re.search(r'const\s+\w+\s*=\s*\([^)]*\)\s*=>\s*\{', code) and not re.search(r'(useMemo|useCallback|React\.memo)', code):
-                if code.count('useEffect') > 2 or code.count('useState') > 3:
-                    issues.append({
-                        "severity": "low",
-                        "category": "missing_memoization",
-                        "file_path": file_path,
-                        "line_number": 1,
-                        "description": "Component with multiple effects/state may benefit from memoization",
-                        "suggestion": "Consider using React.memo, useMemo, or useCallback to prevent unnecessary re-renders",
-                        "auto_fixable": False,
-                        "agent_type": "best_practices"
-                    })
-            
-            # Check for proper state management in complex components
-            if code.count('useState') > 5 and not re.search(r'(useReducer|Redux|Zustand|useStore|useContext)', code):
-                issues.append({
-                    "severity": "medium",
-                    "category": "missing_state_management",
-                    "file_path": file_path,
-                    "line_number": 1,
-                    "description": "Component with many useState calls should use proper state management",
-                    "suggestion": "Refactor to use useReducer, Zustand, or Redux for complex state",
-                    "auto_fixable": False,
-                    "agent_type": "best_practices"
-                })
-        
-        # Database patterns
-        if re.search(r'(SELECT|INSERT|UPDATE|DELETE)', code, re.IGNORECASE):
-            # Check for N+1 queries pattern
-            if re.search(r'for\s+\w+\s+in.*:\s*.*\.(query|execute|find)', code, re.MULTILINE | re.DOTALL):
-                matches = re.finditer(r'for\s+\w+\s+in', code)
-                for match in matches:
-                    line_number = code[:match.start()].count('\n') + 1
-                    issues.append({
-                        "severity": "high",
-                        "category": "n_plus_one_query",
-                        "file_path": file_path,
-                        "line_number": line_number,
-                        "description": "Potential N+1 query problem (query inside loop)",
-                        "suggestion": "Use JOIN queries or bulk fetch to avoid N+1 queries",
-                        "auto_fixable": False,
-                        "agent_type": "best_practices"
-                    })
-        
-        # Caching patterns
-        if 'service' in file_path.lower() or 'api' in file_path.lower():
-            # Check for Redis usage
-            has_redis = re.search(r'(redis|Redis|RedisClient)', code, re.IGNORECASE)
-            has_cache = re.search(r'(cache|@cache|lru_cache|cached)', code, re.IGNORECASE)
-            has_expensive_operation = re.search(r'(requests\.|http|fetch|query|SELECT)', code, re.IGNORECASE)
-            
-            if has_expensive_operation and not has_cache and not has_redis:
-                issues.append({
-                    "severity": "medium",
-                    "category": "missing_caching",
-                    "file_path": file_path,
-                    "line_number": 1,
-                    "description": "Service performs expensive operations without caching",
-                    "suggestion": "Implement caching with Redis or in-memory cache (lru_cache, @cache)",
-                    "auto_fixable": False,
-                    "agent_type": "best_practices"
-                })
-        
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr in self._HTTP_METHODS
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "requests"
+            ):
+                continue
+            # `**kwargs` may carry a timeout; we cannot tell, so stay quiet.
+            if any(kw.arg in ("timeout", None) for kw in node.keywords):
+                continue
+            issues.append({
+                "severity": "medium",
+                "category": "missing_timeout",
+                "file_path": file_path,
+                "line_number": node.lineno,
+                "description": (
+                    f"requests.{func.attr}() has no timeout. requests waits forever by default, "
+                    "so one unresponsive server hangs this code path."
+                ),
+                "suggestion": "Pass an explicit timeout, e.g. timeout=10 (or (connect, read) seconds).",
+                "auto_fixable": False,
+                "agent_type": "best_practices",
+            })
         return issues
     
     def calculate_score(self, issues: List[Dict[str, Any]]) -> int:
