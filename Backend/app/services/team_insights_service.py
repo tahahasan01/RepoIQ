@@ -5,9 +5,13 @@ A repository assigned to a team is shared with that team: its owner chose to
 assign it. But every repository read elsewhere is owner-only, so a team member
 could see that a teammate's repository was on the team and nothing about it -
 which is why the team page was a wall of "--". This module is the team-scoped
-read: access is team visibility (TeamService.get_team), and it returns
-summaries only - scores, counts, contribution totals - never file contents,
-findings text or anything else the owner-only endpoints guard.
+read. It returns summaries only - scores, counts, contribution totals - never
+file contents, findings text or anything else the owner-only endpoints guard.
+
+SECURITY: access is being ON the team (a member, its manager, or the
+organization's owner) - not TeamService.get_team, which admits anyone in the
+organization. Sharing a repository with a team is not sharing it with every
+other team in the company.
 
 It composes existing pieces rather than re-deriving them:
 TeamComparisonService for the team metrics and trends, and
@@ -33,6 +37,20 @@ class TeamInsightsService:
     def __init__(self):
         self.db = get_service_db()
 
+    async def _on_team(self, team: Dict[str, Any], user_id: str) -> bool:
+        if team.get("manager_id") == user_id:
+            return True
+        member = (await run_blocking(
+            self.db.table("team_members").select("id")
+            .eq("team_id", team["id"]).eq("user_id", user_id).execute
+        )).data
+        if member:
+            return True
+        org = (await run_blocking(
+            self.db.table("organizations").select("owner_id").eq("id", team["organization_id"]).execute
+        )).data
+        return bool(org) and org[0]["owner_id"] == user_id
+
     async def get_summary(self, team_id: str, user_id: str, period_days: int = 30) -> Optional[Dict[str, Any]]:
         from app.services.developer_analytics_service import DeveloperAnalyticsService, _summarise
         from app.services.team_comparison_service import TeamComparisonService
@@ -40,7 +58,7 @@ class TeamInsightsService:
 
         teams = TeamService()
         team = await teams.get_team(team_id, user_id)
-        if not team:
+        if not team or not await self._on_team(team, user_id):
             return None
 
         repositories = await teams.get_team_repositories(team_id, user_id)

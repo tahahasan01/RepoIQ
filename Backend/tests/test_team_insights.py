@@ -62,6 +62,18 @@ class TestSummary:
         bob = next(m for m in summary["members"] if m["user_id"] == team_setup["bob"]["id"])
         assert bob["total_commits"] == 5  # the 50 in an unassigned repository are not the team's
 
+    def test_other_teams_in_the_organization_get_nothing(self, db, user, team_setup):  # noqa: F811
+        """Sharing a repository with a team is not sharing it with the whole company."""
+        from app.services.team_insights_service import TeamInsightsService
+
+        carol = db.table("users").insert({"email": "carol@example.com"}).execute().data[0]
+        other_team = db.table("teams").insert(
+            {"organization_id": team_setup["team"]["organization_id"], "name": "Other"}
+        ).execute().data[0]
+        db.table("team_members").insert({"team_id": other_team["id"], "user_id": carol["id"], "role": "member"}).execute()
+
+        assert asyncio.run(TeamInsightsService().get_summary(team_setup["team"]["id"], carol["id"])) is None
+
     def test_outsiders_get_nothing(self, db, user, team_setup):  # noqa: F811
         from app.services.team_insights_service import TeamInsightsService
 
