@@ -1,3 +1,4 @@
+import asyncio
 from typing import List, Dict, Any, Optional
 from app.db.postgres import get_service_db
 from app.core.concurrency import run_blocking
@@ -111,19 +112,22 @@ class OrganizationService:
     async def list_user_organizations(self, user_id: str) -> List[Dict[str, Any]]:
         """List all organizations a user belongs to (as owner or member)."""
         try:
-            # Get organizations where user is owner
-            owned_result = (await run_blocking(self.db.table("organizations").select("*").eq("owner_id", user_id).execute))
+            # Organizations the user owns, and the teams they are on: independent
+            # reads, so concurrent. Organizations already owned are not fetched
+            # again on the member side.
+            owned_result, teams_result = await asyncio.gather(
+                run_blocking(self.db.table("organizations").select("*").eq("owner_id", user_id).execute),
+                run_blocking(self.db.table("team_members").select("team_id").eq("user_id", user_id).execute),
+            )
             owned_orgs = owned_result.data or []
-            
-            # Get organizations where user is team member
-            teams_result = (await run_blocking(self.db.table("team_members").select("team_id").eq("user_id", user_id).execute))
             team_ids = [t["team_id"] for t in (teams_result.data or [])]
-            
+
             member_orgs = []
             if team_ids:
                 teams_orgs_result = (await run_blocking(self.db.table("teams").select("organization_id").in_("id", team_ids).execute))
-                org_ids = list(set([t["organization_id"] for t in (teams_orgs_result.data or [])]))
-                
+                owned_ids = {o["id"] for o in owned_orgs}
+                org_ids = sorted({t["organization_id"] for t in (teams_orgs_result.data or [])} - owned_ids)
+
                 if org_ids:
                     orgs_result = (await run_blocking(self.db.table("organizations").select("*").in_("id", org_ids).execute))
                     member_orgs = orgs_result.data or []
@@ -183,7 +187,19 @@ class OrganizationService:
             org = await self.get_organization(org_id, user_id)
             if not org:
                 return []
+            return await self.visible_repositories(org, user_id)
+        except Exception as e:
+            logger.error(f"Error getting organization repositories: {e}")
+            return []
 
+    async def visible_repositories(self, org: Dict[str, Any], user_id: str) -> List[Dict[str, Any]]:
+        """
+        get_organization_repositories for an organization row the caller has
+        ALREADY been authorised to see (from get_organization), so a caller that
+        holds the row does not repeat that check.
+        """
+        try:
+            org_id = org["id"]
             teams_result = (await run_blocking(
                 self.db.table("teams").select("id, manager_id").eq("organization_id", org_id).execute
             ))

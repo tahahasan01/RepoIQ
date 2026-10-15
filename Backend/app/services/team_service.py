@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
@@ -72,20 +73,38 @@ class TeamService:
         owner shares it with the team they assign it to, not with every team in
         the company.
         """
-        if not user_id:
-            return False
-        if team.get("manager_id") == user_id:
-            return True
-        member = (await run_blocking(
-            self.db.table("team_members").select("id")
-            .eq("team_id", team["id"]).eq("user_id", user_id).execute
-        )).data
-        if member:
-            return True
-        org = (await run_blocking(
-            self.db.table("organizations").select("owner_id").eq("id", team["organization_id"]).execute
-        )).data
-        return bool(org) and org[0]["owner_id"] == user_id
+        return bool(await self.teams_user_is_on([team], user_id))
+
+    async def teams_user_is_on(self, teams: List[Dict[str, Any]], user_id: str) -> List[Dict[str, Any]]:
+        """
+        The subset of `teams` that user_id is on, by the is_on_team rule.
+
+        PERF: two queries, run concurrently, however many teams there are.
+        Applying is_on_team per team cost up to two sequential round trips each,
+        and the executive comparison and leaderboard do this for every team in
+        the organization.
+        """
+        if not user_id or not teams:
+            return []
+        on = {t["id"] for t in teams if t.get("manager_id") == user_id}
+        undecided = [t for t in teams if t["id"] not in on]
+        if undecided:
+            members, orgs = await asyncio.gather(
+                run_blocking(
+                    self.db.table("team_members").select("team_id")
+                    .in_("team_id", [t["id"] for t in undecided]).eq("user_id", user_id).execute
+                ),
+                run_blocking(
+                    self.db.table("organizations").select("id, owner_id")
+                    .in_("id", sorted({t["organization_id"] for t in undecided})).execute
+                ),
+            )
+            member_of = {m["team_id"] for m in (members.data or [])}
+            owned = {o["id"] for o in (orgs.data or []) if o["owner_id"] == user_id}
+            on.update(
+                t["id"] for t in undecided if t["id"] in member_of or t["organization_id"] in owned
+            )
+        return [t for t in teams if t["id"] in on]
 
     async def _is_team_admin(self, team: Dict[str, Any], user_id: str) -> bool:
         """
@@ -758,15 +777,23 @@ class TeamService:
             team = await self.get_team(team_id, user_id)
             if not team or not await self.is_on_team(team, user_id):
                 return []
-            
-            assignments_result = (await run_blocking(self.db.table("repository_assignments").select("repository_id").eq("team_id", team_id).execute))
-            repo_ids = [a["repository_id"] for a in (assignments_result.data or [])]
-            
-            if not repo_ids:
-                return []
-            
-            repos_result = (await run_blocking(self.db.table("repositories").select("*").in_("id", repo_ids).execute))
-            return repos_result.data or []
+            return await self.assigned_repositories(team_id)
         except Exception as e:
             logger.error(f"Error getting team repositories: {e}")
             return []
+
+    async def assigned_repositories(self, team_id: str) -> List[Dict[str, Any]]:
+        """
+        Repositories assigned to a team, with NO access check: for callers that
+        have already established the caller is on the team (is_on_team), so the
+        team summary does not repeat that check for every figure it shows.
+        """
+        assignments = (await run_blocking(
+            self.db.table("repository_assignments").select("repository_id").eq("team_id", team_id).execute
+        )).data or []
+        repo_ids = [a["repository_id"] for a in assignments]
+        if not repo_ids:
+            return []
+        return (await run_blocking(
+            self.db.table("repositories").select("*").in_("id", repo_ids).execute
+        )).data or []

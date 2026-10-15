@@ -151,24 +151,15 @@ async def get_analysis_results(
     repo_id: str,
     current_user: dict = Depends(get_current_user)
 ):
-    from app.services.redis_service import get_redis_service
-    
     repo_service = RepositoryService()
-    redis = get_redis_service()
-    
+
     repo = await repo_service.get_repository(repo_id, current_user["id"])
     if not repo:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Repository not found"
         )
-    
-    # Check for cached analysis result FIRST for instant loading
-    cached_analysis = redis.get(f"analysis:result:{repo['id']}")
-    if cached_analysis:
-        logger.info(f"[get_analysis_results] ⚡ INSTANT: Using cached analysis for repo {repo_id}")
-        # Still need to get the latest analysis to ensure freshness
-    
+
     analysis = await repo_service.get_latest_analysis(repo["id"])
     logger.info(f"[get_analysis_results] repo_id={repo_id} (resolved={repo['id']}), analysis={analysis}")
     if not analysis:
@@ -529,8 +520,10 @@ async def get_architecture_diagram(
     current_user: dict = Depends(get_current_user),
     github_token: str = Depends(get_github_token)
 ):
-    """Generate an architecture diagram based on the repository's file structure."""
-    from app.agents.documentation_agent import DocumentationAgent
+    """
+    An architecture diagram based on the repository's file structure, generated
+    once per distinct file tree (RepositoryService.get_architecture_diagram).
+    """
     from app.services.github_service import GitHubService
     
     repo_service = RepositoryService()
@@ -560,15 +553,8 @@ async def get_architecture_diagram(
         if not file_paths:
             file_paths = [str(f) for f in files]
         
-        logger.info(f"[get_architecture_diagram] Generating diagram for {len(file_paths)} files")
-        
-        # Generate architecture diagram
-        doc_agent = DocumentationAgent()
-        diagram = await doc_agent.generate_architecture_diagram(
-            files=file_paths,
-            repo_name=repo.get("name", "Repository")
-        )
-        
+        diagram = await repo_service.get_architecture_diagram(repo, file_paths)
+
         return {
             "repository_id": repo_id,
             "repository_name": repo.get("name"),

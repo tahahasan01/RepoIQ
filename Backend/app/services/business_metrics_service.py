@@ -1,9 +1,15 @@
+import asyncio
 from typing import List, Dict, Any
 from app.db.postgres import get_service_db
 from app.core.concurrency import run_blocking
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+_OVERVIEW_ANALYSIS_COLUMNS = (
+    "repository_id, overall_score, security_score, total_issues, critical_issues, "
+    "high_issues, medium_issues"
+)
 
 
 class BusinessMetricsService:
@@ -24,12 +30,15 @@ class BusinessMetricsService:
             if not org:
                 return {}
             
-            # The Executive Dashboard shows these; it read them as 0 because they
-            # were never returned. Definition in get_organization_headcount.
-            headcount = await org_service.get_organization_headcount(org)
-
-            # Get all repositories in organization
-            repos = await org_service.get_organization_repositories(organization_id, user_id)
+            # The Executive Dashboard shows the headcount; it read it as 0
+            # because it was never returned. Definition in
+            # get_organization_headcount. PERF: the headcount and the visible
+            # repositories are independent reads of the checked organization,
+            # so they run concurrently (and the access check is not repeated).
+            headcount, repos = await asyncio.gather(
+                org_service.get_organization_headcount(org),
+                org_service.visible_repositories(org, user_id),
+            )
             repo_ids = [r["id"] for r in repos]
 
             if not repo_ids:
@@ -44,8 +53,13 @@ class BusinessMetricsService:
                     "technical_debt_hours": 0
                 }
             
-            # Get latest analysis results for all repos
-            analyses_result = (await run_blocking(self.db.table("analysis_results").select("*").in_("repository_id", repo_ids).eq("status", "completed").order("completed_at", desc=True).execute))
+            # Get latest analysis results for all repos (every completed one is
+            # read to pick the latest, so only the columns used below).
+            analyses_result = (await run_blocking(
+                self.db.table("analysis_results").select(_OVERVIEW_ANALYSIS_COLUMNS)
+                .in_("repository_id", repo_ids).eq("status", "completed")
+                .order("completed_at", desc=True).execute
+            ))
             analyses = analyses_result.data or []
             
             # Get latest analysis per repository

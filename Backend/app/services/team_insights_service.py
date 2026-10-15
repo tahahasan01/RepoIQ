@@ -17,6 +17,7 @@ It composes existing pieces rather than re-deriving them:
 TeamComparisonService for the team metrics and trends, and
 DeveloperAnalyticsService for contribution totals.
 """
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from app.core.concurrency import run_blocking
@@ -47,35 +48,46 @@ class TeamInsightsService:
         if not team or not await teams.is_on_team(team, user_id):
             return None
 
-        repositories = await teams.get_team_repositories(team_id, user_id)
+        # PERF: access is established once, above. Every figure below used to
+        # re-derive the team's repositories through get_team_repositories, which
+        # re-runs that check each time - 33 sequential queries for one page.
+        # Now the independent reads run concurrently on the checked team.
+        comparison = TeamComparisonService()
+        repositories, members, metrics = await asyncio.gather(
+            teams.assigned_repositories(team_id),
+            run_blocking(
+                self.db.table("team_members")
+                .select(f"user_id, role, created_at, users({TEAM_MEMBER_USER_COLUMNS})")
+                .eq("team_id", team_id).execute
+            ),
+            comparison._metrics_for_teams([team_id]),
+        )
+        members = members.data or []
         repo_ids = [r["id"] for r in repositories]
-
-        latest: Dict[str, Dict[str, Any]] = {}
-        if repo_ids:
-            analyses = (await run_blocking(
-                self.db.table("analysis_results").select(_ANALYSIS_SUMMARY_COLUMNS)
-                .in_("repository_id", repo_ids).eq("status", "completed")
-                .order("completed_at", desc=True).execute
-            )).data or []
-            for analysis in analyses:
-                latest.setdefault(analysis["repository_id"], analysis)
-
-        members = (await run_blocking(
-            self.db.table("team_members")
-            .select(f"user_id, role, created_at, users({TEAM_MEMBER_USER_COLUMNS})")
-            .eq("team_id", team_id).execute
-        )).data or []
         member_ids = [m["user_id"] for m in members]
 
-        # Contributions to THIS team's repositories only.
-        rows = await DeveloperAnalyticsService()._contributions(member_ids, period_days, repo_ids)
+        async def latest_analyses() -> Dict[str, Dict[str, Any]]:
+            latest: Dict[str, Dict[str, Any]] = {}
+            if repo_ids:
+                analyses = (await run_blocking(
+                    self.db.table("analysis_results").select(_ANALYSIS_SUMMARY_COLUMNS)
+                    .in_("repository_id", repo_ids).eq("status", "completed")
+                    .order("completed_at", desc=True).execute
+                )).data or []
+                for analysis in analyses:
+                    latest.setdefault(analysis["repository_id"], analysis)
+            return latest
+
+        latest, rows, trends = await asyncio.gather(
+            latest_analyses(),
+            # Contributions to THIS team's repositories only.
+            DeveloperAnalyticsService()._contributions(member_ids, period_days, repo_ids),
+            comparison._health_trends(repo_ids, days=max(period_days, 30)),
+        )
+        metrics = metrics[team_id]
         by_member: Dict[str, List[Dict[str, Any]]] = {uid: [] for uid in member_ids}
         for row in rows:
             by_member.setdefault(row["user_id"], []).append(row)
-
-        comparison = TeamComparisonService()
-        metrics = await comparison._get_team_metrics(team_id, user_id)
-        trends = await comparison.get_team_health_trends(team_id, user_id, days=max(period_days, 30))
 
         return {
             "team": team,

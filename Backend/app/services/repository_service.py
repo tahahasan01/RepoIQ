@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import hashlib
 import re
 from app.db.postgres import get_service_db
 from app.services.github_service import create_github_service
@@ -10,6 +11,13 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+# A generated architecture diagram, keyed by the file tree it describes (see
+# RepositoryService.get_architecture_diagram). The fallback - what the agent
+# returns when the model call fails - is kept only long enough to absorb a
+# burst of page loads.
+ARCHITECTURE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+ARCHITECTURE_FALLBACK_TTL_SECONDS = 5 * 60
 
 
 class RepositoryService:
@@ -273,8 +281,11 @@ class RepositoryService:
             
             # Fetch all latest completed analyses for these repos in one query
             # Using a subquery approach: get max created_at per repo, then fetch those records
+            # Every completed analysis is read to pick each repository's latest,
+            # so select only the columns returned.
             analyses_result = (await run_blocking(self.db.table("analysis_results")\
-                .select("*")\
+                .select("id, repository_id, status, overall_score, security_score, quality_score, "
+                        "architecture_score, documentation_score, completed_at, total_issues")\
                 .in_("repository_id", repo_ids)\
                 .eq("status", "completed")\
                 .order("created_at", desc=True)\
@@ -830,3 +841,39 @@ class RepositoryService:
         except Exception as e:
             logger.error(f"Get roadmap failed: {str(e)}")
             return None
+
+    async def get_architecture_diagram(self, repo: Dict[str, Any], file_paths: List[str]) -> str:
+        """
+        The architecture diagram for this repository's file tree, generated
+        once per distinct tree and then served from Redis.
+
+        PERF/COST: GET /architecture used to run a model completion on every
+        request - ~12s each locally, and a paid call every time the
+        Documentation page mounted. The diagram is a function of the file paths
+        alone, so the key is the repository plus a digest of its sorted paths:
+        a push that changes the tree gets a new diagram, and an unchanged tree
+        is never paid for twice.
+
+        The agent answers a model failure with a canned fallback diagram rather
+        than raising. That is cached only briefly, so a transient provider
+        outage does not pin the placeholder for a week.
+        """
+        digest = hashlib.sha256("\n".join(sorted(file_paths)).encode("utf-8")).hexdigest()[:32]
+        cache_key = f"architecture:diagram:{repo['id']}:{digest}"
+        cached = self.redis.get(cache_key)
+        if isinstance(cached, str) and cached:
+            return cached
+
+        from app.agents.documentation_agent import DocumentationAgent
+
+        repo_name = repo.get("name") or "Repository"
+        diagram = await DocumentationAgent().generate_architecture_diagram(
+            files=file_paths, repo_name=repo_name
+        )
+        if diagram:
+            # Only the agent's fallback starts with its own "# <name>
+            # Architecture" heading; the model is asked for the bare diagram.
+            is_fallback = diagram.startswith(f"# {repo_name} Architecture\n")
+            ttl = ARCHITECTURE_FALLBACK_TTL_SECONDS if is_fallback else ARCHITECTURE_CACHE_TTL_SECONDS
+            self.redis.set(cache_key, diagram, ttl=ttl)
+        return diagram

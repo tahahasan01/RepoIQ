@@ -136,7 +136,6 @@ class AlertService:
     ) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
         """(repository, its latest completed analysis) for each org repository."""
         from app.services.organization_service import OrganizationService
-        from app.services.repository_service import RepositoryService
 
         org = (await run_blocking(
             self.db.table("organizations").select("owner_id").eq("id", organization_id).single().execute
@@ -149,24 +148,37 @@ class AlertService:
         repos = await OrganizationService().get_organization_repositories(
             organization_id, org["owner_id"]
         )
-        repo_service = RepositoryService()
-        pairs = []
-        for repo in repos:
-            analysis = await repo_service.get_latest_analysis(repo["id"])
-            if analysis:
-                pairs.append((repo, analysis))
-        return pairs
+        if not repos:
+            return []
 
-    async def _critical_security_findings(self, analysis_id: str) -> int:
+        # PERF: one query for every repository's latest completed analysis, in
+        # the order get_latest_analysis uses. It was one query per repository.
+        analyses = (await run_blocking(
+            self.db.table("analysis_results").select("*")
+            .in_("repository_id", [r["id"] for r in repos]).eq("status", "completed")
+            .order("completed_at", desc=True).execute
+        )).data or []
+        latest: Dict[str, Dict[str, Any]] = {}
+        for analysis in analyses:
+            latest.setdefault(analysis["repository_id"], analysis)
+        return [(repo, latest[repo["id"]]) for repo in repos if repo["id"] in latest]
+
+    async def _critical_security_findings(self, analysis_ids: List[str]) -> Dict[str, int]:
+        """{analysis_id: critical security findings}, in one query."""
+        if not analysis_ids:
+            return {}
         rows = (await run_blocking(
             self.db.table("issues")
-            .select("id")
-            .eq("analysis_id", analysis_id)
+            .select("analysis_id")
+            .in_("analysis_id", analysis_ids)
             .eq("agent_type", "security")
             .eq("severity", "critical")
             .execute
         )).data or []
-        return len(rows)
+        counts: Dict[str, int] = {}
+        for row in rows:
+            counts[row["analysis_id"]] = counts.get(row["analysis_id"], 0) + 1
+        return counts
 
     async def evaluate_organization(self, organization_id: str) -> List[Dict[str, Any]]:
         """
@@ -174,15 +186,20 @@ class AlertService:
         Derived only from each repository's latest completed analysis.
         """
         threshold = settings.ALERT_QUALITY_THRESHOLD
+        pairs = await self._latest_analyses(organization_id)
+        # Only an analysis that reported critical issues can have critical
+        # security findings; the others are not looked up.
+        findings = await self._critical_security_findings(
+            [a["id"] for _, a in pairs if (a.get("critical_issues") or 0) > 0]
+        )
         conditions = []
-        for repo, analysis in await self._latest_analyses(organization_id):
+        for repo, analysis in pairs:
             conditions.append(critical_issues_condition(repo, analysis))
             conditions.append(quality_threshold_condition(repo, analysis, threshold))
-            # Only an analysis that reported critical issues can have critical
-            # security findings; skip the query otherwise.
             if (analysis.get("critical_issues") or 0) > 0:
-                findings = await self._critical_security_findings(analysis["id"])
-                conditions.append(security_vulnerability_condition(repo, analysis, findings))
+                conditions.append(
+                    security_vulnerability_condition(repo, analysis, findings.get(analysis["id"], 0))
+                )
         return [c for c in conditions if c]
 
     async def check_organization(self, organization_id: str) -> Dict[str, Any]:
@@ -286,10 +303,14 @@ class AlertService:
         """
         from app.services.organization_service import OrganizationService
 
-        if not await OrganizationService().get_organization(organization_id, user_id):
+        org_service = OrganizationService()
+        org = await org_service.get_organization(organization_id, user_id)
+        if not org:
             return None
 
-        visible = await self.visible_repository_ids(organization_id, user_id)
+        # The visible_repository_ids boundary, on the organization just checked
+        # rather than checking it a second time.
+        visible = [r["id"] for r in await org_service.visible_repositories(org, user_id)]
         if not visible:
             return []
 
