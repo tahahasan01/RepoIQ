@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { ChatMarkdown, safeUrl } from "@/components/chat/ChatMarkdown";
+import { ChatMarkdown } from "@/components/chat/ChatMarkdown";
+import { safeUrl } from "@/lib/safeUrl";
 
 describe("ChatMarkdown (replies are untrusted)", () => {
   it("never renders an image, so nothing loads without a click", () => {

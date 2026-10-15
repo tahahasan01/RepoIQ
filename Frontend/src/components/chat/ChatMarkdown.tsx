@@ -1,5 +1,6 @@
 import { memo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import { safeUrl } from "@/lib/safeUrl";
 import { cn } from "@/lib/utils";
 
 /**
@@ -19,16 +20,6 @@ import { cn } from "@/lib/utils";
  *   in a new tab with noopener/noreferrer and show their real hostname, so link
  *   text can't pass itself off as another destination.
  */
-export function safeUrl(url: string): string {
-  const trimmed = url.trim();
-  try {
-    const parsed = new URL(trimmed);
-    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : "";
-  } catch {
-    return ""; // relative or malformed
-  }
-}
-
 function hostnameOf(href: string): string {
   try {
     return new URL(href).hostname;

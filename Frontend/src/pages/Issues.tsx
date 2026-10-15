@@ -1,11 +1,23 @@
 import { motion } from "framer-motion";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useParams } from "react-router-dom";
 import apiClient from "@/lib/api";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MultiSelectFilter } from "@/components/MultiSelectFilter";
+import { Checkbox } from "@/components/ui/checkbox";
+import { AutofixSheet } from "@/components/autofix/AutofixSheet";
+import { GitHubAccessNotice } from "@/components/GitHubAccessNotice";
+import { useAutoFixIssues, useAutofixRun } from "@/hooks/useApiQueries";
+import {
+  MAX_AUTOFIX_ISSUES,
+  isAutofixInProgress,
+  isFixableIssueId,
+  selectIssues,
+  toggleIssueSelection,
+} from "@/lib/autofix";
+import { isGitHubAccessError } from "@/lib/apiErrors";
 import {
   Search,
   Filter,
@@ -15,6 +27,8 @@ import {
   Copy,
   Check,
   X,
+  Loader2,
+  Wand2,
 } from "lucide-react";
 import type { ScanIssue } from "@/types/scan";
 
@@ -34,6 +48,11 @@ export default function Issues() {
   const [copiedFix, setCopiedFix] = useState(false);
   const [issues, setIssues] = useState<ScanIssue[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  // Auto-fix: the issues picked for a fix, and the run being followed.
+  const [fixSelection, setFixSelection] = useState<string[]>([]);
+  const [limitNotice, setLimitNotice] = useState(false);
+  const [autofixOpen, setAutofixOpen] = useState(false);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   // owner-only app: no role checks
 
   const params = useParams();
@@ -253,6 +272,54 @@ export default function Issues() {
     return matchesQuery && matchesSeverity && matchesType;
   });
 
+  // ── Auto-fix selection ──
+  const startFix = useAutoFixIssues();
+  const activeRun = useAutofixRun(activeRunId);
+  const fixInProgress = isAutofixInProgress(activeRun.data?.status);
+
+  const visibleFixableIds = filteredIssues.map((i) => String(i.id)).filter(isFixableIssueId);
+  const visibleSelected = visibleFixableIds.filter((id) => fixSelection.includes(id)).length;
+  const headerChecked: boolean | "indeterminate" =
+    visibleSelected === 0 ? false : visibleSelected === visibleFixableIds.length ? true : "indeterminate";
+
+  const issueLabels = useMemo(() => {
+    const labels: Record<string, string> = {};
+    for (const i of issues) labels[String(i.id)] = `${i.description} (${i.file}:${i.line})`;
+    return labels;
+  }, [issues]);
+
+  const toggleFix = (id: string) => {
+    const result = toggleIssueSelection(fixSelection, id);
+    setFixSelection(result.selected);
+    setLimitNotice(result.limitReached);
+  };
+
+  const toggleAllVisible = () => {
+    if (visibleSelected > 0) {
+      setFixSelection((current) => current.filter((id) => !visibleFixableIds.includes(id)));
+      setLimitNotice(false);
+      return;
+    }
+    const result = selectIssues(fixSelection, visibleFixableIds);
+    setFixSelection(result.selected);
+    setLimitNotice(result.limitReached);
+  };
+
+  const handleStartFix = () => {
+    if (!repoId || fixSelection.length === 0) return;
+    startFix.mutate(
+      { repoId: String(repoId), issueIds: fixSelection },
+      {
+        onSuccess: (res) => {
+          setActiveRunId(res.run_id);
+          setAutofixOpen(true);
+          setFixSelection([]);
+          setLimitNotice(false);
+        },
+      }
+    );
+  };
+
   const selectedIssueData = issues.find(
     (issue) => issue.id === selectedIssue
   );
@@ -281,7 +348,82 @@ export default function Issues() {
               <span className="text-sm text-muted-foreground">
                 {isLoading ? 'Loading...' : `${filteredIssues.length} found`}
               </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-auto gap-2"
+                onClick={() => setAutofixOpen(true)}
+                aria-haspopup="dialog"
+              >
+                {fixInProgress ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Wand2 className="h-4 w-4" aria-hidden="true" />
+                )}
+                {fixInProgress ? "AI fix in progress" : activeRun.data?.status === "ready" ? "Review AI fix" : "AI fixes"}
+              </Button>
             </div>
+            {fixSelection.length > 0 && (
+              <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2">
+                <span className="text-sm font-medium" aria-live="polite">
+                  {fixSelection.length} of {MAX_AUTOFIX_ISSUES} selected
+                </span>
+                {limitNotice && (
+                  <span className="text-xs text-muted-foreground" role="status">
+                    You can fix up to {MAX_AUTOFIX_ISSUES} issues at a time.
+                  </span>
+                )}
+                <div className="ml-auto flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setFixSelection([]);
+                      setLimitNotice(false);
+                      startFix.reset();
+                    }}
+                  >
+                    Clear selection
+                  </Button>
+                  <Button size="sm" className="gap-2" onClick={handleStartFix} disabled={startFix.isPending}>
+                    {startFix.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Sparkles className="h-4 w-4" aria-hidden="true" />
+                    )}
+                    Fix with AI
+                  </Button>
+                </div>
+              </div>
+            )}
+            {startFix.isError &&
+              (isGitHubAccessError(startFix.error) ? (
+                <GitHubAccessNotice
+                  kind={startFix.error.kind}
+                  message={startFix.error.message}
+                  className="mb-4"
+                />
+              ) : (
+                <div
+                  role="alert"
+                  className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                >
+                  <span>
+                    Couldn't start the fix.{" "}
+                    {startFix.error instanceof Error && startFix.error.message
+                      ? startFix.error.message
+                      : "Try again in a moment."}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => startFix.reset()}
+                    aria-label="Dismiss"
+                    className="shrink-0 rounded-sm opacity-70 hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
             <div className="flex gap-3">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -320,6 +462,18 @@ export default function Issues() {
             <table className="w-full">
               <thead className="sticky top-0 bg-card/90 backdrop-blur">
                 <tr className="border-b border-border text-left">
+                  <th className="w-10 p-3">
+                    <Checkbox
+                      checked={headerChecked}
+                      onCheckedChange={toggleAllVisible}
+                      disabled={visibleFixableIds.length === 0}
+                      aria-label={
+                        visibleSelected > 0
+                          ? "Clear the selection of visible issues"
+                          : `Select visible issues to fix (up to ${MAX_AUTOFIX_ISSUES})`
+                      }
+                    />
+                  </th>
                   <th className="p-3 text-sm font-medium text-muted-foreground">
                     File
                   </th>
@@ -352,6 +506,15 @@ export default function Issues() {
                         : "hover:bg-muted/30"
                     }`}
                   >
+                    <td className="w-10 p-3" onClick={(e) => e.stopPropagation()}>
+                      {isFixableIssueId(String(issue.id)) && (
+                        <Checkbox
+                          checked={fixSelection.includes(String(issue.id))}
+                          onCheckedChange={() => toggleFix(String(issue.id))}
+                          aria-label={`Select ${issue.file} line ${issue.line} to fix with AI`}
+                        />
+                      )}
+                    </td>
                     <td className="p-3">
                       <code className="text-sm font-mono">{issue.file}</code>
                     </td>
@@ -473,6 +636,16 @@ export default function Issues() {
           </motion.div>
         )}
       </div>
+      {repoId && (
+        <AutofixSheet
+          repoId={String(repoId)}
+          open={autofixOpen}
+          onOpenChange={setAutofixOpen}
+          activeRunId={activeRunId}
+          onSelectRun={setActiveRunId}
+          issueLabels={issueLabels}
+        />
+      )}
     </DashboardLayout>
   );
 }
