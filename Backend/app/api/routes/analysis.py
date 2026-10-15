@@ -443,7 +443,49 @@ async def get_autofix_run(run_id: str, current_user: dict = Depends(get_current_
     run = await autofix.get_run(run_id, current_user["id"])
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auto-fix run not found")
-    return run
+    return autofix.public_view(run)
+
+
+@router.post("/autofix/{run_id}/approve", status_code=status.HTTP_202_ACCEPTED)
+async def approve_autofix_run(
+    run_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+    github_token: str = Depends(get_github_token),
+):
+    """
+    Push a reviewed run as a draft pull request. Only a run in 'ready' can be
+    approved. Response (202): {"run_id", "status": "publishing"}; poll
+    GET /analysis/autofix/{run_id} for 'completed' (pr_url) or 'failed'.
+    """
+    from app.services import autofix
+
+    try:
+        await autofix.approve_run(run_id, current_user["id"])
+    except ValueError as e:  # autofix.AutofixError: an authored message
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+    async def _publish():
+        try:
+            await autofix.publish_run(run_id, github_token)
+        except Exception:
+            pass  # recorded on the run
+
+    # Publishing is a handful of GitHub calls, not a model run.
+    background_tasks.add_task(_publish)
+    return {"run_id": run_id, "status": "publishing"}
+
+
+@router.post("/autofix/{run_id}/discard")
+async def discard_autofix_run(run_id: str, current_user: dict = Depends(get_current_user)):
+    """Throw away a run's proposals without pushing anything."""
+    from app.services import autofix
+
+    try:
+        run = await autofix.discard_run(run_id, current_user["id"])
+    except ValueError as e:  # autofix.AutofixError: an authored message
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    return autofix.public_view(run)
 
 
 @router.get("/repositories/{repo_id}/autofix")
@@ -454,7 +496,7 @@ async def list_autofix_runs(repo_id: str, current_user: dict = Depends(get_curre
     repo = await RepositoryService().get_repository(repo_id, current_user["id"])
     if not repo:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
-    return await autofix.list_runs(repo["id"], current_user["id"])
+    return [autofix.public_view(r) for r in await autofix.list_runs(repo["id"], current_user["id"])]
 
 
 @router.get("/repositories/{repo_id}/roadmap")

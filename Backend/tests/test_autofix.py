@@ -60,6 +60,14 @@ def _run(run_id, github, proposals):
         return asyncio.run(autofix.run_autofix(run_id, "token")), agent
 
 
+def _approve_and_publish(run_id, user_id, github):
+    from app.services import autofix
+
+    asyncio.run(autofix.approve_run(run_id, user_id))
+    with patch("app.services.github_service.create_github_service", return_value=github):
+        return asyncio.run(autofix.publish_run(run_id, "token"))
+
+
 def _good(addressed=(1,)):
     return {"changed": True, "updated_file": FIXED, "addressed": list(addressed), "summary": "Use literal_eval"}
 
@@ -101,7 +109,11 @@ class TestCreateRun:
 @requires_db
 class TestRun:
 
-    def test_success_opens_one_pull_request(self, db, user, repo, issues):  # noqa: F811
+    def test_nothing_is_pushed_before_approval(self, db, user, repo, issues):  # noqa: F811
+        """
+        A proposal is model output from untrusted repository content, and a
+        push runs CI with the repository's secrets. A person sees the diff first.
+        """
         from app.services import autofix
 
         run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
@@ -109,14 +121,56 @@ class TestRun:
 
         result, _ = _run(run["id"], github, {"app.py": _good()})
 
+        assert result["status"] == "ready"
+        github.create_branch_at.assert_not_called()
+        github.update_file.assert_not_called()
+        github.create_pull_request.assert_not_called()
+        view = autofix.public_view(asyncio.run(autofix.get_run(run["id"], user["id"])))
+        assert view["proposals"][0]["file_path"] == "app.py"
+        assert "+    return ast.literal_eval(x)" in view["proposals"][0]["diff"]
+        assert "content" not in view["proposals"][0]  # diffs only, never whole files
+
+    def test_approval_opens_one_draft_pull_request_from_the_reviewed_commit(self, db, user, repo, issues):  # noqa: F811
+        from app.services import autofix
+
+        run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
+        github = _github({"app.py": ORIGINAL})
+        _run(run["id"], github, {"app.py": _good()})
+
+        result = _approve_and_publish(run["id"], user["id"], github)
+
         assert result["pull_request"]["number"] == 7
-        github.create_branch.assert_called_once_with("alice/r", f"repoiq/fix-{run['id'][:8]}", "main")
-        github.update_file.assert_called_once()
+        github.create_branch_at.assert_called_once_with("alice/r", f"repoiq/fix-{run['id'][:8]}", "base-sha")
         assert github.update_file.call_args.args[2] == FIXED
+        assert github.create_pull_request.call_args.args[-1] is True  # draft
         stored = asyncio.run(autofix.get_run(run["id"], user["id"]))
         assert stored["status"] == "completed"
         assert stored["pr_url"].endswith("/pull/7")
         assert stored["fixed_issue_ids"] == [issues[0]["id"]]
+
+    def test_a_run_is_approved_once(self, db, user, repo, issues):  # noqa: F811
+        from app.services import autofix
+
+        run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
+        _run(run["id"], _github({"app.py": ORIGINAL}), {"app.py": _good()})
+        asyncio.run(autofix.approve_run(run["id"], user["id"]))
+
+        with pytest.raises(autofix.AutofixError):
+            asyncio.run(autofix.approve_run(run["id"], user["id"]))
+
+    def test_discard_pushes_nothing(self, db, user, repo, issues):  # noqa: F811
+        from app.services import autofix
+
+        run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
+        github = _github({"app.py": ORIGINAL})
+        _run(run["id"], github, {"app.py": _good()})
+
+        discarded = asyncio.run(autofix.discard_run(run["id"], user["id"]))
+
+        assert discarded["status"] == "discarded"
+        with pytest.raises(autofix.AutofixError):
+            asyncio.run(autofix.publish_run(run["id"], "token"))
+        github.create_branch_at.assert_not_called()
 
     def test_content_is_read_at_the_branch_base_commit(self, db, user, repo, issues):  # noqa: F811
         """A cached copy older than the base would silently revert newer commits."""
@@ -159,10 +213,11 @@ class TestRun:
 
         run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
         github = _github({"app.py": ORIGINAL})
-        github.create_branch.side_effect = GitHubWriteError("RepoIQ does not have write access", permission=True)
+        _run(run["id"], github, {"app.py": _good()})
+        github.create_branch_at.side_effect = GitHubWriteError("RepoIQ does not have write access", permission=True)
 
         with pytest.raises(GitHubWriteError):
-            _run(run["id"], github, {"app.py": _good()})
+            _approve_and_publish(run["id"], user["id"], github)
 
         stored = asyncio.run(autofix.get_run(run["id"], user["id"]))
         assert stored["status"] == "failed"
@@ -176,20 +231,12 @@ class TestRun:
         github = _github({"app.py": ORIGINAL}, permission="read")
 
         with pytest.raises(autofix.AutofixError):
-            _run(run["id"], github, {"app.py": _good()})
+            _, agent = _run(run["id"], github, {"app.py": _good()})
 
-        github.create_branch.assert_not_called()
+        github.create_branch_at.assert_not_called()
         github.get_user_permission.assert_called_with("alice/r", "alice")
         assert "write access" in asyncio.run(autofix.get_run(run["id"], user["id"]))["error_message"]
 
-    def test_pull_requests_are_drafts(self, db, user, repo, issues):  # noqa: F811
-        from app.services import autofix
-
-        run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
-        github = _github({"app.py": ORIGINAL})
-        _run(run["id"], github, {"app.py": _good()})
-
-        assert github.create_pull_request.call_args.args[-1] is True
 
     def test_files_ci_executes_are_never_changed(self, db, user, repo):  # noqa: F811
         from app.services import autofix
@@ -221,6 +268,9 @@ class TestProtectedPaths:
     @pytest.mark.parametrize("path", [
         ".github/workflows/ci.yml", "sub/.github/actions/x.yml", "Makefile", "package.json",
         "backend/requirements.txt", "scripts/deploy.sh", "Dockerfile", "pyproject.toml",
+        # Finding paths come from model output; traversal must not slip past.
+        "src/../.github/workflows/ci.yml", "./.github/workflows/ci.yml", "../outside.py",
+        "/etc/passwd", "a/./../.github/x.yml", "",
     ])
     def test_protected(self, path):
         from app.services.autofix import is_protected_path

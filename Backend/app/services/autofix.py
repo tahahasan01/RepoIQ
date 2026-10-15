@@ -2,7 +2,17 @@
 Auto-fix: turn selected findings into a reviewable pull request.
 
     request -> autofix_runs row (pending) -> dispatch (Celery, or in-process
-    when no worker is listening) -> run_autofix -> branch + commits + PR
+    when no worker is listening) -> run_autofix -> proposals + diffs ('ready')
+    -> the user reviews them -> approve -> publish_run -> branch + commits +
+    draft PR ('completed')   (or discard -> 'discarded')
+
+SECURITY: nothing reaches GitHub until a person has seen the exact diff. A
+proposal is model output built from the repository's own content, where
+anyone with write access could have planted instructions, and pushing a
+branch runs CI with the repository's secrets. No list of "files CI executes"
+is complete - any source file a test imports runs in CI - so the protected
+paths and locality checks below narrow what a proposal may touch, and the
+approval step is what actually stands between model output and a push.
 
 One model call per file, covering every selected finding in it. Nothing is
 committed unless the proposed file passes validate_fix, and nothing is pushed
@@ -55,8 +65,23 @@ _PROTECTED_FILES = {
 
 
 def is_protected_path(path: str) -> bool:
-    """Files CI, the build or the package manager execute."""
-    normalised = path.replace("\\", "/").lstrip("/").lower()
+    """
+    Files CI, the build or the package manager execute - and any path that
+    does not normalise to a plain relative path inside the repository.
+    Finding paths come from model output during analysis, so "src/../.github/x"
+    must not slip past a prefix check.
+    """
+    import posixpath
+
+    raw = path.replace("\\", "/")
+    if not raw or raw.startswith("/") or "\x00" in raw:
+        return True
+    collapsed = posixpath.normpath(raw)
+    if collapsed.startswith("..") or collapsed in (".", "") or "/../" in f"/{raw}/":
+        return True
+    # normpath already dropped any leading "./"; never lstrip(".") - that
+    # would turn ".github/x" into "github/x" and past the check below.
+    normalised = collapsed.lower()
     name = normalised.rsplit("/", 1)[-1]
     if any(normalised.startswith(d) or f"/{d}" in normalised for d in _PROTECTED_DIRS):
         return True
@@ -164,6 +189,15 @@ async def create_run(repo: Dict[str, Any], user_id: str, issue_ids: List[str]) -
     return run
 
 
+def public_view(run: Dict[str, Any]) -> Dict[str, Any]:
+    """A run as the API returns it: proposals carry their diff, not the whole file."""
+    view = {k: v for k, v in run.items() if k != "base_sha"}
+    view["proposals"] = [
+        {k: v for k, v in p.items() if k != "content"} for p in (run.get("proposals") or [])
+    ]
+    return view
+
+
 async def get_run(run_id: str, user_id: str) -> Optional[Dict[str, Any]]:
     rows = (await run_blocking(
         get_service_db().table("autofix_runs").select("*")
@@ -178,6 +212,45 @@ async def list_runs(repository_id: str, user_id: str, limit: int = 20) -> List[D
         .eq("repository_id", repository_id).eq("user_id", user_id)
         .order("created_at", desc=True).limit(limit).execute
     )).data or []
+
+
+def _unified_diff(path: str, original: str, updated: str) -> str:
+    import difflib
+
+    return "".join(difflib.unified_diff(
+        original.splitlines(keepends=True), updated.splitlines(keepends=True),
+        fromfile=f"a/{path}", tofile=f"b/{path}", n=3,
+    ))
+
+
+async def _transition(run_id: str, user_id: str, from_status: str, fields: Dict[str, Any]) -> bool:
+    """Conditional update: of two concurrent approvals, exactly one wins."""
+    changed = (await run_blocking(
+        get_service_db().table("autofix_runs").update(fields)
+        .eq("id", run_id).eq("user_id", user_id).eq("status", from_status).execute
+    )).data
+    return bool(changed)
+
+
+async def approve_run(run_id: str, user_id: str) -> Dict[str, Any]:
+    """Mark a 'ready' run for publishing. The caller then runs publish_run."""
+    run = await get_run(run_id, user_id)
+    if not run:
+        raise AutofixError("Auto-fix run not found")
+    if not await _transition(run_id, user_id, "ready", {"status": "publishing"}):
+        raise AutofixError(f"This auto-fix is {run['status']}, not waiting for review")
+    return run
+
+
+async def discard_run(run_id: str, user_id: str) -> Dict[str, Any]:
+    run = await get_run(run_id, user_id)
+    if not run:
+        raise AutofixError("Auto-fix run not found")
+    if not await _transition(run_id, user_id, "ready", {
+        "status": "discarded", "completed_at": datetime.now(timezone.utc).isoformat(),
+    }):
+        raise AutofixError(f"This auto-fix is {run['status']}, not waiting for review")
+    return await get_run(run_id, user_id)
 
 
 async def _update(run_id: str, fields: Dict[str, Any]) -> None:
@@ -245,6 +318,10 @@ async def run_autofix(run_id: str, github_token: str) -> Dict[str, Any]:
             by_file.setdefault(issue.get("file_path"), []).append(issue)
 
         github = create_github_service(github_token)
+        # SECURITY: an installation token can write wherever the app can; the
+        # person asking must be able to write to this repository themselves.
+        # Checked first, so no model call is spent on a fix they cannot open.
+        await _require_write_access(github, repo["full_name"], run["user_id"])
         base_sha = await run_blocking(github.get_branch_head, repo["full_name"], base)
         agent = FixAgent()
 
@@ -270,48 +347,37 @@ async def run_autofix(run_id: str, github_token: str) -> Dict[str, Any]:
             addressed = {n for n in proposal["addressed"] if isinstance(n, int) and 1 <= n <= len(file_issues)}
             fixed.append({
                 "file_path": path,
+                "original": original,
                 "content": proposal["updated_file"],
                 "summary": proposal.get("summary") or "Fix for the listed findings",
                 "issues": [file_issues[n - 1] for n in sorted(addressed)],
             })
 
         if not fixed:
-            # No branch, no empty pull request.
+            # No proposal, so no review and no pull request.
             await _update(run_id, {
                 "status": "completed", "skipped": skipped,
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             })
             return {"run_id": run_id, "status": "completed", "pull_request": None}
 
-        # SECURITY: an installation token can write wherever the app can; the
-        # person asking must be able to write to this repository themselves.
-        await _require_write_access(github, repo["full_name"], run["user_id"])
-
-        # Unique per run: a reused name made the second fix for an analysis fail.
-        branch = f"repoiq/fix-{run_id[:8]}"
-        await run_blocking(github.create_branch, repo["full_name"], branch, base)
-        for change in fixed:
-            await run_blocking(
-                github.update_file, repo["full_name"], change["file_path"], change["content"],
-                f"fix: {change['summary']}"[:200], branch,
-            )
-
-        count = sum(len(c["issues"]) for c in fixed)
-        pr = await run_blocking(
-            github.create_pull_request, repo["full_name"],
-            f"RepoIQ: fix {count} finding{'s' if count != 1 else ''}",
-            _pr_body(fixed, skipped), branch, base, True,
-        )
+        # Stop here. Nothing is pushed until the user approves these diffs.
         await _update(run_id, {
-            "status": "completed",
-            "branch": branch,
-            "pr_number": pr["number"],
-            "pr_url": pr["url"],
-            "fixed_issue_ids": [i["id"] for c in fixed for i in c["issues"]],
+            "status": "ready",
+            "base_sha": base_sha,
             "skipped": skipped,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "proposals": [
+                {
+                    "file_path": c["file_path"],
+                    "summary": c["summary"],
+                    "issue_ids": [i["id"] for i in c["issues"]],
+                    "diff": _unified_diff(c["file_path"], c["original"], c["content"]),
+                    "content": c["content"],
+                }
+                for c in fixed
+            ],
         })
-        return {"run_id": run_id, "status": "completed", "pull_request": pr}
+        return {"run_id": run_id, "status": "ready", "pull_request": None}
     except Exception as e:
         message = str(e) if isinstance(e, (AutofixError, GitHubWriteError)) else "Auto-fix failed unexpectedly"
         logger.error(f"Auto-fix run {run_id} failed: {type(e).__name__}: {e}")
@@ -320,3 +386,78 @@ async def run_autofix(run_id: str, github_token: str) -> Dict[str, Any]:
             "completed_at": datetime.now(timezone.utc).isoformat(),
         })
         raise
+
+
+async def publish_run(run_id: str, github_token: str) -> Dict[str, Any]:
+    """
+    Push an approved run: branch at the commit the proposals were built from,
+    one commit per file, one draft pull request. Always leaves the run
+    completed or failed.
+    """
+    from app.services.github_service import GitHubWriteError, create_github_service
+
+    db = get_service_db()
+    rows = (await run_blocking(db.table("autofix_runs").select("*").eq("id", run_id).execute)).data
+    if not rows or rows[0]["status"] != "publishing":
+        raise AutofixError("This auto-fix has not been approved")
+    run = rows[0]
+
+    try:
+        repo = (await run_blocking(
+            db.table("repositories").select("id, full_name, default_branch")
+            .eq("id", run["repository_id"]).eq("user_id", run["user_id"]).execute
+        )).data
+        if not repo:
+            raise AutofixError("The repository is no longer available")
+        repo = repo[0]
+        base = repo.get("default_branch") or "main"
+        github = create_github_service(github_token)
+        # Permission can change between review and approval.
+        await _require_write_access(github, repo["full_name"], run["user_id"])
+
+        proposals = run.get("proposals") or []
+        issues = {i["id"]: i for i in (await run_blocking(
+            db.table("issues").select("id, severity, category, line_number")
+            .in_("id", [iid for p in proposals for iid in p.get("issue_ids", [])] or [run["issue_ids"][0]]).execute
+        )).data or []}
+
+        # Unique per run: a reused name made the second fix for an analysis fail.
+        branch = f"repoiq/fix-{run_id[:8]}"
+        await run_blocking(github.create_branch_at, repo["full_name"], branch, run["base_sha"])
+        for proposal in proposals:
+            if is_protected_path(proposal["file_path"]):
+                raise AutofixError("A proposal touches a protected path; it was not published")
+            await run_blocking(
+                github.update_file, repo["full_name"], proposal["file_path"], proposal["content"],
+                f"fix: {proposal['summary']}"[:200], branch,
+            )
+
+        fixed = [
+            {"file_path": p["file_path"], "summary": p["summary"],
+             "issues": [issues[i] for i in p.get("issue_ids", []) if i in issues]}
+            for p in proposals
+        ]
+        count = sum(len(p.get("issue_ids", [])) for p in proposals)
+        pr = await run_blocking(
+            github.create_pull_request, repo["full_name"],
+            f"RepoIQ: fix {count} finding{'s' if count != 1 else ''}",
+            _pr_body(fixed, run.get("skipped") or []), branch, base, True,
+        )
+        await _update(run_id, {
+            "status": "completed",
+            "branch": branch,
+            "pr_number": pr["number"],
+            "pr_url": pr["url"],
+            "fixed_issue_ids": [i for p in proposals for i in p.get("issue_ids", [])],
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return {"run_id": run_id, "status": "completed", "pull_request": pr}
+    except Exception as e:
+        message = str(e) if isinstance(e, (AutofixError, GitHubWriteError)) else "Publishing the fix failed unexpectedly"
+        logger.error(f"Auto-fix publish {run_id} failed: {type(e).__name__}: {e}")
+        await _update(run_id, {
+            "status": "failed", "error_message": message,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        })
+        raise
+

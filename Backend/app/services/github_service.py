@@ -706,6 +706,14 @@ class GitHubService:
             logger.error(f"Failed to create branch: {e.status}")
             raise self._write_error("branch creation", e) from e
 
+    def create_branch_at(self, repo_full_name: str, branch_name: str, sha: str) -> None:
+        """Create `branch_name` at exactly `sha`. Raises GitHubWriteError."""
+        try:
+            self.client.get_repo(repo_full_name).create_git_ref(ref=f"refs/heads/{branch_name}", sha=sha)
+        except GithubException as e:
+            logger.error(f"Failed to create branch: {e.status}")
+            raise self._write_error("branch creation", e) from e
+
     def update_file(self, repo_full_name: str, file_path: str, content: str, message: str, branch: str) -> None:
         """
         Commit new content for an EXISTING file on `branch`.
