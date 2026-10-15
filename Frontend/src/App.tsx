@@ -86,8 +86,11 @@ const queryClient = new QueryClient({
       // wait before the page could explain the problem).
       retry: (failureCount, error) => !isNonRetryableClientError(error) && failureCount < 2,
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
-      // Use cached data immediately while the background refetch is in flight
-      placeholderData: (previousData) => previousData,
+      // No app-wide placeholderData. Keeping the previous query's data showed
+      // one repository's (or team's) scores and findings under another's
+      // name until the new request finished. Same-key refetches already keep
+      // their cached data; only paginated lists opt in to keeping the
+      // previous page.
       refetchInterval: false, // Polling is opt-in per query (e.g. analysis status)
     },
     mutations: {

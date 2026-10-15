@@ -151,6 +151,8 @@ export function useRepositories(page = 1, perPage = 30, options?: Partial<UseQue
     queryFn: () => apiClient.getRepositories(page, perPage),
     staleTime: 10 * 60 * 1000, // 10 minutes
     gcTime: 30 * 60 * 1000,
+    // The previous page stays on screen while the next one loads.
+    placeholderData: (previousData) => previousData,
     ...options,
   });
 }
@@ -285,7 +287,7 @@ export function useChatHistory(repoId: string, options?: Partial<UseQueryOptions
     queryFn: () => apiClient.getChatHistory(repoId),
     staleTime: 60 * 1000, // 1 minute - chat updates frequently
     enabled: !!repoId,
-    // The app-wide placeholder keeps the previous query's data; for chat that
+    // Never show the previous query's data: for chat that
     // would show one repository's conversation under another's name.
     placeholderData: undefined,
     ...options,
@@ -573,7 +575,6 @@ export function useOrganization(orgId: string, options?: Partial<UseQueryOptions
     staleTime: 10 * 60 * 1000, // 10 minutes
     gcTime: 60 * 60 * 1000, // 60 minutes
     enabled: !!orgId,
-    placeholderData: (previousData) => previousData,
     refetchOnMount: options?.refetchOnMount ?? false,
     ...options,
   });
@@ -591,7 +592,6 @@ export function useOrganizationTeams(orgId: string, options?: Partial<UseQueryOp
     staleTime: 10 * 60 * 1000, // 10 minutes
     gcTime: 60 * 60 * 1000, // 60 minutes
     enabled: !!orgId && orgId !== 'undefined' && orgId !== 'null',
-    placeholderData: (previousData) => previousData,
     refetchOnMount: options?.refetchOnMount ?? false,
     ...options,
   });
@@ -609,7 +609,6 @@ export function useOrganizationRepositories(orgId: string, options?: Partial<Use
     staleTime: 10 * 60 * 1000, // 10 minutes
     gcTime: 60 * 60 * 1000, // 60 minutes
     enabled: !!orgId && orgId !== 'undefined' && orgId !== 'null',
-    placeholderData: (previousData) => previousData,
     refetchOnMount: options?.refetchOnMount ?? false,
     ...options,
   });
@@ -639,7 +638,6 @@ export function useTeams(orgId?: string, options?: Partial<UseQueryOptions<any[]
     queryFn: () => fetchTeams(orgId),
     staleTime: 10 * 60 * 1000, // 10 minutes
     gcTime: 60 * 60 * 1000, // 60 minutes - keep longer
-    placeholderData: (previousData) => previousData,
     refetchInterval: false, // Don't auto-refetch
     enabled: orgId !== 'undefined', // Don't run if orgId is the string "undefined"
     ...options,
@@ -654,7 +652,6 @@ export function useTeam(teamId: string, options?: Partial<UseQueryOptions<any>>)
     gcTime: 60 * 60 * 1000, // 60 minutes - keep in cache longer
     enabled: !!teamId,
     // Use cached data immediately if available
-    placeholderData: (previousData) => previousData,
     // Don't refetch on mount if data exists (use cached data)
     refetchOnMount: options?.refetchOnMount ?? false,
     // Don't refetch in background - use cached data until explicitly invalidated
