@@ -2,6 +2,16 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 
+// node_modules package paths per vendor chunk (see build.rollupOptions).
+const pkg = (names: string) => new RegExp(`[\\\\/]node_modules[\\\\/](?:${names})[\\\\/]`);
+const REACT_PACKAGES = pkg('react|react-dom|scheduler|react-router|react-router-dom|@remix-run[\\\\/]router');
+const CORE_PACKAGES = pkg('clsx');
+const UI_PACKAGES =pkg('framer-motion|motion-dom|motion-utils|lucide-react');
+// recharts and the packages only it uses.
+const CHART_PACKAGES = pkg(
+  'recharts|recharts-scale|react-smooth|victory-vendor|d3-[^\\\\/]+|internmap|decimal\\.js-light|lodash|eventemitter3|fast-equals'
+);
+
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
@@ -45,10 +55,27 @@ export default defineConfig(({ mode }) => ({
         // rewritten as absolute paths: app code is better split by route (which
         // the lazy() imports in App.tsx already do) than pinned into one chunk
         // that every route has to download.
-        manualChunks: {
-          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-          'ui-vendor': ['framer-motion', 'lucide-react'],
-          'chart-vendor': ['recharts'],
+        //
+        // A function, not the { chunk: [packages] } object form. The object
+        // form puts each listed package's whole dependency graph in its chunk,
+        // so small helpers recharts depends on (clsx, which `cn()` uses on
+        // every page) landed in chart-vendor - and the entry then had to
+        // import, and index.html preload, 400 kB of charting code on the
+        // landing and login pages. Matching package paths keeps each vendor
+        // chunk to the packages named here; shared helpers go wherever Rollup
+        // puts them, next to their real importers.
+        //
+        // Rollup also moves an unassigned dependency of a manual chunk INTO
+        // that chunk, so the small modules every page needs are pinned to the
+        // always-loaded react-vendor chunk rather than left for chart-vendor to
+        // claim: clsx, and Rollup's own CommonJS interop helper.
+        manualChunks(id) {
+          if (id.includes('commonjsHelpers')) return 'react-vendor';
+          if (!id.includes('node_modules')) return undefined;
+          if (CHART_PACKAGES.test(id)) return 'chart-vendor';
+          if (REACT_PACKAGES.test(id) || CORE_PACKAGES.test(id)) return 'react-vendor';
+          if (UI_PACKAGES.test(id)) return 'ui-vendor';
+          return undefined;
         },
       },
     },

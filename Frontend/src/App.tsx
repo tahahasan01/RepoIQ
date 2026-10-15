@@ -73,9 +73,14 @@ const queryClient = new QueryClient({
       gcTime: 60 * 60 * 1000, // 60 minutes - keep cache around for back-navigation
       refetchOnWindowFocus: false, // Too chatty for a dashboard with many panels
       refetchOnReconnect: true, // Coming back online should reconcile
-      // 'always' still serves the cached value first; the request happens in the
-      // background and the UI updates when it lands.
-      refetchOnMount: 'always',
+      // Revalidate on mount once the data is stale; cached data still paints
+      // first and the request happens in the background. Not 'always': that
+      // ignores staleTime, so every navigation refetched every query on the
+      // page - the dashboard's results, history and repository on each click,
+      // and the architecture diagram (a model call) on every Documentation
+      // visit, despite its 60-minute staleTime. Restored queries keep their
+      // real age (queryPersister), so day-old data is still revalidated.
+      refetchOnMount: true,
       // Retry failed requests twice - but not a 4xx, which will not change on
       // retry (a blocked file type or missing GitHub access just tripled the
       // wait before the page could explain the problem).

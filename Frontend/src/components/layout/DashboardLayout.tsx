@@ -21,8 +21,7 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
 import NotificationBell from "@/components/NotificationBell";
-import { Chatbot } from "@/components/Chatbot";
-import { useState, useEffect } from "react";
+import { useState, useEffect, lazy, Suspense } from "react";
 import apiClient from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { ScanResult } from "@/types/scan";
@@ -37,6 +36,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
+
+// The repository chat (and the markdown renderer it brings) is fetched when
+// someone first opens it, not with every dashboard page.
+const loadChatbot = () => import("@/components/Chatbot");
+const Chatbot = lazy(() => loadChatbot().then((m) => ({ default: m.Chatbot })));
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -69,6 +73,11 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const [isScanning, setIsScanning] = useState(false);
   const [scanHistory, setScanHistory] = useState<ScanResult[]>([]);
   const [chatOpen, setChatOpen] = useState(false);
+  // Mounted from the first open onwards, so the sheet can animate closed.
+  const [chatMounted, setChatMounted] = useState(false);
+  useEffect(() => {
+    if (chatOpen) setChatMounted(true);
+  }, [chatOpen]);
   const location = useLocation();
 
   // Function to load repo and history (will be reused for real-time updates)
@@ -450,6 +459,9 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 size="sm"
                 className="gap-2"
                 onClick={() => setChatOpen(true)}
+                // Start the download on intent, ahead of the click.
+                onPointerEnter={() => void loadChatbot()}
+                onFocus={() => void loadChatbot()}
                 aria-haspopup="dialog"
               >
                 <MessageSquare className="h-4 w-4" aria-hidden="true" />
@@ -467,13 +479,15 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         <div className="p-6">{children}</div>
       </main>
 
-      {repoId && (
-        <Chatbot
-          repoId={repoId}
-          repoName={repoName === "Loading..." ? "this repository" : repoName}
-          open={chatOpen}
-          onOpenChange={setChatOpen}
-        />
+      {repoId && chatMounted && (
+        <Suspense fallback={null}>
+          <Chatbot
+            repoId={repoId}
+            repoName={repoName === "Loading..." ? "this repository" : repoName}
+            open={chatOpen}
+            onOpenChange={setChatOpen}
+          />
+        </Suspense>
       )}
     </div>
   );

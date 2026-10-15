@@ -47,7 +47,12 @@ export function persistQueryCache(queryClient: QueryClient, userId?: string) {
           try {
             const queryKey = JSON.parse(key);
             if (value?.data !== undefined) {
-              queryClient.setQueryData(queryKey, value.data);
+              // Keep the data's real age. Without updatedAt a restored query
+              // counts as fetched just now, so it would be served as fresh for
+              // its whole staleTime however old it is.
+              queryClient.setQueryData(queryKey, value.data, {
+                updatedAt: typeof value.dataUpdatedAt === 'number' ? value.dataUpdatedAt : 0,
+              });
               restoredCount++;
             }
           } catch (err) {
