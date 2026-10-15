@@ -302,6 +302,83 @@ class TestEmbeddedResources:
         assert "github_access_token" not in embedded
         assert "email" not in embedded
 
+    def test_embed_with_a_non_conventional_foreign_key(self, db, user):
+        """
+        issues reference analysis_results through analysis_id. The join used to
+        guess analysis_result_id, fail, and the callers' except-blocks turned
+        that into "no data" - executive risk areas and issue blame were always
+        empty.
+        """
+        repo = db.table("repositories").insert({
+            "user_id": user["id"], "github_repo_id": 1, "name": "r", "full_name": "u/r",
+        }).execute().data[0]
+        analysis = db.table("analysis_results").insert(
+            {"repository_id": repo["id"], "status": "completed"}
+        ).execute().data[0]
+        db.table("issues").insert({
+            "analysis_id": analysis["id"], "agent_type": "security", "severity": "high",
+        }).execute()
+
+        rows = db.table("issues").select(
+            "*, analysis_results(repository_id)"
+        ).eq("analysis_id", analysis["id"]).execute()
+
+        assert rows.data[0]["analysis_results"]["repository_id"] == repo["id"]
+
+
+@requires_db
+class TestJsonbColumns:
+    """
+    PostgREST took JSON for JSONB columns, so callers pass dicts and lists.
+    psycopg refused a dict outright and sent a list as a Postgres array literal,
+    which JSONB rejects - so every such write failed: webhook registration,
+    audit logs, alerts, improvement roadmaps.
+    """
+
+    def test_list_round_trips(self, db, user):
+        hook = db.table("webhooks").insert({
+            "user_id": user["id"], "url": "https://example.com/h",
+            "events": ["analysis.completed", "issue.critical"], "secret": "s",
+        }).execute().data[0]
+
+        assert hook["events"] == ["analysis.completed", "issue.critical"]
+
+    def test_dict_round_trips(self, db, user):
+        row = db.table("audit_logs").insert({
+            "user_id": user["id"], "action": "probe",
+            "details_jsonb": {"team": "core", "count": 2},
+        }).execute().data[0]
+
+        assert row["details_jsonb"] == {"team": "core", "count": 2}
+
+    def test_update_writes_json(self, db, user):
+        hook = db.table("webhooks").insert({
+            "user_id": user["id"], "url": "https://example.com/h",
+            "events": ["*"], "secret": "s",
+        }).execute().data[0]
+
+        updated = db.table("webhooks").update(
+            {"events": ["analysis.failed"]}
+        ).eq("id", hook["id"]).execute().data[0]
+
+        assert updated["events"] == ["analysis.failed"]
+
+    def test_nested_datetimes_serialise(self, db, user):
+        from datetime import datetime
+
+        row = db.table("audit_logs").insert({
+            "user_id": user["id"], "action": "probe",
+            "details_jsonb": {"at": datetime(2026, 1, 2, 3, 4, 5)},
+        }).execute().data[0]
+
+        assert row["details_jsonb"]["at"].startswith("2026-01-02T03:04:05")
+
+    def test_in_filter_still_binds_a_list(self, db, user):
+        """Only written values become JSON; a filter list stays an array."""
+        rows = db.table("users").select("id").in_("id", [user["id"]]).execute()
+
+        assert [r["id"] for r in rows.data] == [user["id"]]
+
 
 # ---------------------------------------------------------------------------
 # Safety

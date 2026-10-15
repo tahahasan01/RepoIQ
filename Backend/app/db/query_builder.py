@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from psycopg import sql
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from app.core.logging import get_logger
 
@@ -54,6 +55,15 @@ logger = get_logger(__name__)
 # source, but an identifier can never be a bound parameter, so it is the one
 # place a mistake would become injectable.
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Embeds whose foreign key does not follow the <singular_table>_id convention,
+# keyed by (base table, embedded table). Without an entry the join is guessed,
+# and a wrong guess is a query error that callers swallowed into "no results"
+# - issues reference analysis_results through analysis_id, not
+# analysis_result_id, so executive risk areas and issue blame were always empty.
+_EMBED_FOREIGN_KEYS = {
+    ("issues", "analysis_results"): "analysis_id",
+}
 
 # "users(id, full_name)" or "analysis_results(*)"
 _EMBED = re.compile(r"(\w+)\s*\(([^)]*)\)")
@@ -312,7 +322,9 @@ class QueryBuilder:
 
         clauses = []
         for table, _ in self._embeds:
-            fk = f"{table[:-1]}_id" if table.endswith("s") else f"{table}_id"
+            fk = _EMBED_FOREIGN_KEYS.get((self._table, table)) or (
+                f"{table[:-1]}_id" if table.endswith("s") else f"{table}_id"
+            )
             clauses.append(
                 sql.SQL(" LEFT JOIN {t} ON {t}.id = {base}.{fk}").format(
                     t=_ident(table), base=_ident(self._table), fk=_ident(fk)
@@ -354,7 +366,7 @@ class QueryBuilder:
                 )
                 for _ in rows
             )
-            params = [row.get(c) for row in rows for c in columns]
+            params = [_adapt_write(row.get(c)) for row in rows for c in columns]
 
             query = sql.SQL("INSERT INTO {t} ({cols}) VALUES {vals}").format(
                 t=table,
@@ -378,7 +390,7 @@ class QueryBuilder:
             assignments = sql.SQL(", ").join(
                 sql.SQL("{} = %s").format(_ident(c)) for c in self._payload
             )
-            params = list(self._payload.values())
+            params = [_adapt_write(v) for v in self._payload.values()]
             where, where_params = self._where()
             if not self._filters:
                 # Refuse an unfiltered UPDATE. Every caller scopes by id or
@@ -425,6 +437,32 @@ class QueryBuilder:
         if self._single:
             return Result(rows[0] if rows else None)
         return Result(rows)
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, (uuid.UUID, Decimal)):
+        return str(value)
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")
+
+
+def _adapt_write(value: Any) -> Any:
+    """
+    Adapt a value being written to a column.
+
+    PostgREST accepted JSON for JSONB columns, so callers pass dicts and lists.
+    psycopg does not: a dict raises "cannot adapt type 'dict'", and a list is
+    sent as a Postgres array literal ('{a,b}'), which a JSONB column rejects as
+    invalid JSON. Every write of a dict or list therefore failed - webhook
+    registration, audit logs, alerts and improvement roadmaps.
+
+    The schema has no array columns, so every dict or list written is JSON.
+    Filters are unaffected: in_() binds its list through _where(), not here.
+    """
+    if isinstance(value, (dict, list)):
+        return Jsonb(value, dumps=lambda v: json.dumps(v, default=_json_default))
+    return value
 
 
 def _coerce(value: Any) -> Any:
