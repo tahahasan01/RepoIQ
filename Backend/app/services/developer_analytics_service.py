@@ -39,9 +39,17 @@ class DeveloperAnalyticsService:
         self.db = get_service_db()
 
     async def _contributions(
-        self, user_ids: List[str], period_days: int, repository_id: Optional[str] = None
+        self,
+        user_ids: List[str],
+        period_days: int,
+        repository_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        if not user_ids:
+        """
+        Weekly rows for these users. repository_ids=None means every repository
+        (only ever for a developer viewing themselves); a list restricts to it,
+        and an empty list means nothing is visible.
+        """
+        if not user_ids or repository_ids == []:
             return []
         since = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
 
@@ -49,20 +57,58 @@ class DeveloperAnalyticsService:
             query = self.db.table("developer_contributions").select(
                 "user_id, repository_id, commits_count, lines_added, lines_removed, issues_introduced"
             ).in_("user_id", user_ids).gte("period_start", since)
-            if repository_id:
-                query = query.eq("repository_id", repository_id)
+            if repository_ids is not None:
+                query = query.in_("repository_id", repository_ids)
             return query.execute()
 
         return (await run_blocking(_query)).data or []
 
+    async def _organization_repository_ids(self, organization_ids: List[str]) -> List[str]:
+        """Repositories assigned to any team in these organizations."""
+        if not organization_ids:
+            return []
+        teams = (await run_blocking(
+            self.db.table("teams").select("id").in_("organization_id", organization_ids).execute
+        )).data or []
+        if not teams:
+            return []
+        assignments = (await run_blocking(
+            self.db.table("repository_assignments").select("repository_id")
+            .in_("team_id", [t["id"] for t in teams]).execute
+        )).data or []
+        return sorted({a["repository_id"] for a in assignments})
+
     async def get_developer_performance(
         self,
         user_id: str,
+        viewer_id: str,
         repository_id: Optional[str] = None,
         period_days: int = 30,
     ) -> Dict[str, Any]:
-        """One developer's totals over the trailing period. Access is the route's job."""
-        rows = await self._contributions([user_id], period_days, repository_id)
+        """
+        One developer's totals over the trailing period, as `viewer_id` may see them.
+
+        SECURITY: a developer sees all of their own activity. Anyone else sees
+        only activity in repositories assigned to teams of an organization they
+        both belong to - a colleague's private side projects are not the org's
+        business. (Whether the viewer may look at this developer at all, and
+        owns repository_id, is checked by the route.)
+        """
+        from app.services.organization_service import OrganizationService
+
+        if repository_id:
+            scope: Optional[List[str]] = [repository_id]
+        elif viewer_id == user_id:
+            scope = None
+        else:
+            orgs = OrganizationService()
+            shared = (
+                {o["id"] for o in await orgs.list_user_organizations(viewer_id)}
+                & {o["id"] for o in await orgs.list_user_organizations(user_id)}
+            )
+            scope = await self._organization_repository_ids(sorted(shared))
+
+        rows = await self._contributions([user_id], period_days, scope)
         now = datetime.now(timezone.utc)
         return {
             "user_id": user_id,
@@ -98,8 +144,12 @@ class DeveloperAnalyticsService:
         if not member_ids:
             return []
 
-        # Two queries for the whole organization, not two per developer.
-        rows = await self._contributions(member_ids, period_days)
+        # Only this organization's repositories: members' activity elsewhere is
+        # not visible to the organization. A handful of queries for the whole
+        # organization, not two per developer.
+        rows = await self._contributions(
+            member_ids, period_days, await self._organization_repository_ids([organization_id])
+        )
         people = (await run_blocking(
             self.db.table("users").select(TEAM_MEMBER_USER_COLUMNS).in_("id", member_ids).execute
         )).data or []

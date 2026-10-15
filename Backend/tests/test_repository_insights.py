@@ -33,9 +33,23 @@ def repo(db, user):  # noqa: F811
 
 
 @pytest.fixture
-def bob(db):  # noqa: F811
-    return db.table("users").insert(
+def bob(db, user):  # noqa: F811
+    """A colleague: a member of a team in the repository owner's organization."""
+    bob = db.table("users").insert(
         {"email": "bob@example.com", "full_name": "Bob", "github_username": "bob"}
+    ).execute().data[0]
+    org = db.table("organizations").insert({"name": "Acme", "owner_id": user["id"]}).execute().data[0]
+    team = db.table("teams").insert({"organization_id": org["id"], "name": "Core"}).execute().data[0]
+    db.table("team_members").insert({"team_id": team["id"], "user_id": bob["id"], "role": "member"}).execute()
+    bob["team_id"] = team["id"]
+    return bob
+
+
+@pytest.fixture
+def stranger(db):  # noqa: F811
+    """A RepoIQ user who shares no organization with the repository owner."""
+    return db.table("users").insert(
+        {"email": "eve@example.com", "full_name": "Eve", "github_username": "eve"}
     ).execute().data[0]
 
 
@@ -101,6 +115,28 @@ class TestInsights:
                 .eq("repository_id", repo["id"]).execute().data}
         assert rows[user["id"]]["commits_count"] == 4
         assert rows[bob["id"]]["issues_introduced"] == 1
+
+    def test_strangers_are_never_attributed(self, db, user, repo, stranger):  # noqa: F811
+        """
+        GitHub attributes commits by author email, which anyone can spoof. A
+        repository must not be able to write rows about - or reveal the profile
+        of - a user who shares no organization with its owner.
+        """
+        recent = datetime.now(timezone.utc).isoformat()
+        analysis = _analysis(db, repo, [
+            {"agent_type": "security", "severity": "high", "category": "x",
+             "file_path": "app.py", "line_number": 1},
+        ])
+        _refresh(repo, analysis["id"], ["app.py"], _github(
+            stats=[{"login": "eve", "weeks": [
+                {"week_start": _sunday(1), "additions": 1, "deletions": 0, "commits": 1},
+            ]}],
+            blame={"app.py": [{"start": 1, "end": 5, "login": "eve", "committed_at": recent}]},
+        ))
+
+        for table in ("developer_contributions", "code_ownership", "issue_blame"):
+            rows = db.table(table).select("user_id").eq("user_id", stranger["id"]).execute().data
+            assert not rows, f"{table} has a row for a stranger"
 
     def test_refresh_replaces_ownership(self, db, user, repo, bob):  # noqa: F811
         """Someone whose lines were all rewritten no longer owns the file."""
@@ -183,6 +219,56 @@ class TestResolvedIssues:
 
         current = _analysis(db, repo, [self._issue("a.py")])
         assert asyncio.run(mark_resolved_issues(repo["id"], current["id"], ["a.py"])) == 0
+
+
+@requires_db
+class TestColleagueVisibility:
+    """Another person's figures cover shared-organization repositories only."""
+
+    def _week(self, db, user_id, repo_id, commits):  # noqa: F811
+        start = datetime.fromtimestamp(_sunday(1), tz=timezone.utc)
+        db.table("developer_contributions").insert({
+            "user_id": user_id, "repository_id": repo_id, "commits_count": commits,
+            "period_start": start.isoformat(), "period_end": (start + timedelta(days=7)).isoformat(),
+        }).execute()
+
+    def test_private_activity_is_not_visible_to_colleagues(self, db, user, repo, bob):  # noqa: F811
+        from app.services.developer_analytics_service import DeveloperAnalyticsService
+
+        side_project = db.table("repositories").insert({
+            "user_id": bob["id"], "github_repo_id": 99, "name": "side", "full_name": "bob/side",
+        }).execute().data[0]
+        db.table("repository_assignments").insert(
+            {"repository_id": repo["id"], "team_id": bob["team_id"]}
+        ).execute()
+        self._week(db, bob["id"], repo["id"], 3)          # org repository
+        self._week(db, bob["id"], side_project["id"], 40)  # Bob's own, unassigned
+
+        service = DeveloperAnalyticsService()
+        as_colleague = asyncio.run(service.get_developer_performance(bob["id"], user["id"]))
+        as_himself = asyncio.run(service.get_developer_performance(bob["id"], bob["id"]))
+
+        assert as_colleague["total_commits"] == 3
+        assert as_himself["total_commits"] == 43
+
+    def test_organization_view_counts_only_its_repositories(self, db, user, repo, bob):  # noqa: F811
+        from app.services.developer_analytics_service import DeveloperAnalyticsService
+
+        side_project = db.table("repositories").insert({
+            "user_id": bob["id"], "github_repo_id": 99, "name": "side", "full_name": "bob/side",
+        }).execute().data[0]
+        db.table("repository_assignments").insert(
+            {"repository_id": repo["id"], "team_id": bob["team_id"]}
+        ).execute()
+        self._week(db, bob["id"], repo["id"], 3)
+        self._week(db, bob["id"], side_project["id"], 40)
+        org_id = db.table("teams").select("organization_id").eq("id", bob["team_id"]).execute().data[0]["organization_id"]
+
+        developers = asyncio.run(
+            DeveloperAnalyticsService().get_organization_developers(org_id, user["id"])
+        )
+
+        assert [d["total_commits"] for d in developers] == [3]
 
 
 class TestDeveloperPerformanceAccess:

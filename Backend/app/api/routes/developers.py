@@ -51,7 +51,8 @@ async def get_developer_performance(
             repository_id = (await _require_repository(repository_id, current_user["id"]))["id"]
 
         return await DeveloperAnalyticsService().get_developer_performance(
-            user_id=user_id, repository_id=repository_id, period_days=period_days
+            user_id=user_id, viewer_id=current_user["id"],
+            repository_id=repository_id, period_days=period_days,
         )
     except HTTPException:
         raise

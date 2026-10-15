@@ -21,6 +21,13 @@ Only authors who are RepoIQ users (matched on github_username) are recorded:
 the tables reference users(id). Ownership percentages are still computed over
 ALL lines, so a share is never inflated by contributors who are not users.
 
+SECURITY: and only the repository owner or someone who shares an organization
+with them. GitHub attributes a commit to whichever account owns its author
+email, and anyone can author a commit with anyone's email. Matching every
+RepoIQ user would let a stranger analyse a repository of spoofed commits to
+write contribution and blame rows about any user - and see that user's name
+and avatar in the ownership and blame views of their own repository.
+
 Replaces DeveloperAnalyticsService.track_developer_contributions and
 OwnershipService.analyze_code_ownership, neither of which could ever run: both
 treated GitHubService.get_repository()'s dict as a PyGithub object, the former
@@ -135,9 +142,12 @@ async def refresh_repository_insights(
     logins |= {r["login"] for ranges in blame.values() for r in ranges if r.get("login")}
     users = {}
     if logins:
+        from app.services.organization_service import OrganizationService
+
+        attributable = {repo["user_id"]} | await OrganizationService().get_colleague_ids(repo["user_id"])
         rows = (await run_blocking(
             lambda: db.table("users").select("id, github_username")
-            .in_("github_username", sorted(logins)).execute()
+            .in_("github_username", sorted(logins)).in_("id", sorted(attributable)).execute()
         )).data or []
         users = {r["github_username"]: r["id"] for r in rows}
 
