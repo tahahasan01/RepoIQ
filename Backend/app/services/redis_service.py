@@ -3,6 +3,8 @@ Centralized Redis caching service with connection pooling and utilities.
 """
 from typing import Optional, Any, Callable, Dict
 import json
+import uuid
+from urllib.parse import urlsplit, urlunsplit
 
 from functools import wraps
 from redis import Redis, ConnectionPool
@@ -12,6 +14,20 @@ from app.core.logging import get_logger
 
 settings = get_settings()
 logger = get_logger(__name__)
+
+
+def redact_url(url: str) -> str:
+    """The URL with any password replaced, for logging. Managed Redis URLs carry one."""
+    try:
+        parts = urlsplit(url)
+        if parts.password is None:
+            return url
+        netloc = f"{parts.username or ''}:***@{parts.hostname or ''}"
+        if parts.port:
+            netloc += f":{parts.port}"
+        return urlunsplit(parts._replace(netloc=netloc))
+    except ValueError:
+        return "<unparseable url>"
 
 
 class RedisService:
@@ -33,18 +49,19 @@ class RedisService:
             # Create connection pool for better performance
             self.pool = ConnectionPool.from_url(
                 self.redis_url,
-                max_connections=50,
-                socket_timeout=5,
-                socket_connect_timeout=2,
+                max_connections=settings.REDIS_MAX_CONNECTIONS,
+                socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
+                socket_connect_timeout=settings.REDIS_SOCKET_CONNECT_TIMEOUT,
                 decode_responses=False  # We'll handle encoding ourselves
             )
             self.client = Redis(connection_pool=self.pool)
             # Test connection
             self.client.ping()
             self.available = True
-            logger.info(f"✓ Redis connection established: {self.redis_url}")
+            # SECURITY: redacted - this logged the full URL, password included.
+            logger.info(f"Redis connection established: {redact_url(self.redis_url)}")
         except Exception as e:
-            logger.warning(f"Redis unavailable, caching disabled: {e}")
+            logger.warning(f"Redis unavailable, caching disabled: {type(e).__name__}: {e}")
             self.available = False
     
     def _serialize(self, value: Any) -> bytes:
@@ -231,6 +248,42 @@ class RedisService:
             logger.error(f"Redis INVALIDATE error for {pattern}: {e}")
             return deleted
     
+    # Delete the lock only if it still holds our token: a holder that overran
+    # the TTL must not release the lock a later request has since taken.
+    _RELEASE_LOCK = (
+        "if redis.call('get', KEYS[1]) == ARGV[1] then "
+        "return redis.call('del', KEYS[1]) else return 0 end"
+    )
+
+    def try_lock(self, key: str, ttl: int) -> Optional[str]:
+        """
+        Take a short-lived lock (SET NX EX). Returns a token to pass to
+        release_lock, or None when someone else holds it.
+
+        Fails OPEN: with Redis unavailable or erroring this returns a token as
+        if the lock were taken. These locks only stop duplicate work; refusing
+        the work because the coordinator is down would turn a Redis outage
+        into a feature outage. The TTL bounds how long a crashed holder blocks
+        anyone.
+        """
+        token = uuid.uuid4().hex
+        if not self.available:
+            return token
+        try:
+            return token if self.client.set(key, token, nx=True, ex=ttl) else None
+        except RedisError as e:
+            logger.warning(f"Redis lock error for {key} (proceeding unlocked): {type(e).__name__}")
+            return token
+
+    def release_lock(self, key: str, token: str) -> None:
+        """Release a lock taken with try_lock. Best effort: it expires anyway."""
+        if not self.available:
+            return
+        try:
+            self.client.eval(self._RELEASE_LOCK, 1, key, token)
+        except RedisError as e:
+            logger.warning(f"Redis lock release error for {key}: {type(e).__name__}")
+
     def exists(self, key: str) -> bool:
         """Check if key exists in cache."""
         if not self.available:
