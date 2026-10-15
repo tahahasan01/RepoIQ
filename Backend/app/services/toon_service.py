@@ -150,6 +150,54 @@ class TOONService:
         return json.dumps(compressed_files, separators=(',', ':'))
     
     @classmethod
+    def number_code_context(cls, files: List[Dict[str, str]], max_chars: int = 50000) -> str:
+        """
+        Render files for review with every line prefixed by its REAL line number.
+
+        compress_code_context() dropped blank and `#` comment lines and then
+        JSON-escaped each file onto one line, so the model could only count lines
+        of text it was never shown. Measured on a real analysis, every AI
+        finding's line number matched its position in the COMPRESSED text exactly
+        and was 4-52 lines off in the actual file. Prefixing the original number
+        makes line_number something the model reads rather than reconstructs.
+
+        Blank lines are still dropped (the numbering stays true because it is
+        explicit). Comments are kept: misleading-comment findings need them, and
+        the old inline `#` stripping also cut strings like "#fff" or URLs.
+
+        Format, one block per file:
+            --- FILE: path/to/file.py ---
+            12| code
+        A line inside a file always carries an `N|` prefix, so file content
+        cannot pass itself off as a header or as the end of the fenced block.
+        """
+        blocks = []
+        total_chars = 0
+        for file in files:
+            chars_left = max_chars - total_chars
+            if chars_left <= 0:
+                break
+            path = file.get("path", "unknown")
+            lines = [f"--- FILE: {path} ---"]
+            used = 0
+            truncated = False
+            for number, line in enumerate(file.get("content", "").split("\n"), 1):
+                if not line.strip():
+                    continue
+                rendered = f"{number}| {line.rstrip()}"
+                if used + len(rendered) > chars_left:
+                    lines.append("...[truncated]")
+                    truncated = True
+                    break
+                lines.append(rendered)
+                used += len(rendered) + 1
+            blocks.append("\n".join(lines))
+            total_chars += used
+            if truncated:
+                break  # budget spent; a header with no code helps no one
+        return "\n\n".join(blocks)
+
+    @classmethod
     def _compress_code(cls, code: str) -> str:
         """
         Compress code by removing comments and excess whitespace.

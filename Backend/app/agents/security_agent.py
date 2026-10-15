@@ -129,8 +129,14 @@ Identify all security issues and return them in JSON format."""
                 re.IGNORECASE,
             ),
             # SQL injection - several shapes, all requiring an actual call.
+            # The `+` must be in the FIRST argument, right after a string
+            # literal or a name. The old `\([^)]*\+[^)]*\)` matched a `+` in the
+            # parameter tuple, so the safe, parameterised
+            # `execute("UPDATE t SET n = ?", (n + 1,))` was a CRITICAL.
             "sql_injection_concat": (
-                r'\b(execute|query|cursor\.execute|db\.execute|raw|sql)\s*\([^)]*\+[^)]*\)',
+                r'\b(execute|query|raw|sql)\s*\(\s*'
+                r'(?:[rbuf]{0,2}"""[\s\S]*?"""|[rbuf]{0,2}\'\'\'[\s\S]*?\'\'\''
+                r'|[rbuf]{0,2}"[^"\n]*"|[rbuf]{0,2}\'[^\'\n]*\'|[\w.\[\]]+)\s*\+',
                 "SQL injection risk: String concatenation in SQL query",
                 "critical",
                 self.SQL_HOSTS,
@@ -212,8 +218,15 @@ Identify all security issues and return them in JSON format."""
             # substring "exec" anywhere - "executed", "executor", "EXECUTE" -
             # and was case-insensitive, so a code comment produced a critical.
             # exec() as a call is covered by exec_usage above.
+            #
+            # Any subprocess call used to match, so `subprocess.run(["git",
+            # "status"])` - the list-argument form that is the recommended SAFE
+            # way to run a command - was a CRITICAL. Only a shell is a command
+            # injection surface: shell=True, or os.system/os.popen with anything
+            # other than a plain string literal.
             "command_injection": (
-                r'\b(os\.system|subprocess\.call|subprocess\.run|subprocess\.Popen)\s*\(|shell\s*=\s*True',
+                r'\bos\.(system|popen)\s*\(\s*(?![rbu]?"[^"\n{%]*"\s*\)|[rbu]?\'[^\'\n{%]*\'\s*\))'
+                r'|shell\s*=\s*True',
                 "Potential command injection vulnerability",
                 "critical",
                 self.PY,

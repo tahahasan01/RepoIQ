@@ -34,7 +34,7 @@ settings = get_settings()
 
 # Bumped when the prompt, model or issue schema changes, so cached findings from
 # an older analyser are not served against a newer one.
-ANALYSER_VERSION = "v4"
+ANALYSER_VERSION = "v5"
 
 _KEY = "analysis:file:{version}:{model}:{sha}"
 
