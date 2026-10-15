@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/useAuth";
+import { useCurrentUser } from "@/hooks/useApiQueries";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -21,7 +22,9 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 export default function UserSettings() {
   const auth = useAuth();
-  const user = auth.user;
+  // /auth/me carries fields the cached login user does not (created_at).
+  const { data: currentUser } = useCurrentUser();
+  const user = currentUser ?? auth.user;
 
   return (
     <div className="min-h-screen bg-background">

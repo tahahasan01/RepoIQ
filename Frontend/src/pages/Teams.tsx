@@ -134,8 +134,8 @@ export default function Teams() {
       await queryClient.cancelQueries({ queryKey: queryKeys.teams(orgId || undefined) });
       
       // Snapshot previous values
-      const previousTeamsAll = queryClient.getQueryData(queryKeys.teams());
-      const previousTeamsOrg = queryClient.getQueryData(queryKeys.teams(orgId || undefined));
+      const previousTeamsAll = queryClient.getQueryData<any[]>(queryKeys.teams());
+      const previousTeamsOrg = queryClient.getQueryData<any[]>(queryKeys.teams(orgId || undefined));
       
       console.log('[Teams] 📸 Snapshot before delete. All teams:', previousTeamsAll?.length, 'Org teams:', previousTeamsOrg?.length);
       

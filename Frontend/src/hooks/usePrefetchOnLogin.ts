@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useCurrentUser } from './useApiQueries';
+import { fetchTeams, queryKeys, useCurrentUser } from './useApiQueries';
 import apiClient from '@/lib/api';
 
 /**
@@ -18,29 +18,29 @@ export function usePrefetchOnLogin() {
 
     // Prefetch repositories list (most common first page)
     queryClient.prefetchQuery({
-      queryKey: ['repositories', 1, 30],
+      queryKey: queryKeys.repositories(1, 30),
       queryFn: () => apiClient.getRepositories(1, 30),
       staleTime: 10 * 60 * 1000,
     }).catch(() => {});
 
     // Prefetch organizations (if user navigates to orgs page)
     queryClient.prefetchQuery({
-      queryKey: ['organizations'],
-      queryFn: () => apiClient.getOrganizations(),
+      queryKey: queryKeys.organizations,
+      queryFn: () => apiClient.listOrganizations(),
       staleTime: 10 * 60 * 1000,
     }).catch(() => {});
 
     // Prefetch teams (if user navigates to teams page)
     queryClient.prefetchQuery({
-      queryKey: ['teams'],
-      queryFn: () => apiClient.getTeams(),
+      queryKey: queryKeys.teams(),
+      queryFn: () => fetchTeams(),
       staleTime: 10 * 60 * 1000,
     }).catch(() => {});
 
     // Small delay then prefetch batch analysis results (for dashboard scores)
     setTimeout(() => {
       queryClient.prefetchQuery({
-        queryKey: ['batchAnalysis'],
+        queryKey: queryKeys.batchAnalysis,
         queryFn: () => apiClient.getBatchAnalysisResults(),
         staleTime: 5 * 60 * 1000,
       }).catch(() => {});

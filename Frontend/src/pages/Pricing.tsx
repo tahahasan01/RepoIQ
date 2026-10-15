@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { motion } from "framer-motion";
 import { Check, Zap, Building2, Rocket } from "lucide-react";
 import { Button } from "@/components/ui/button";

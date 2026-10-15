@@ -54,14 +54,31 @@ class TestCIHasRealGates:
             assert blocking, f"{job_name} has no blocking step"
 
     def test_frontend_typecheck_actually_typechecks(self, workflow):
-        """`npm run build -- --noEmit` forwards a tsc flag to vite, which ignores it."""
+        """
+        Two hollow gates have shipped here. `npm run build -- --noEmit` forwards
+        a tsc flag to vite, which ignores it. Its replacement, a bare
+        `npx tsc --noEmit`, was just as hollow: the root tsconfig.json has
+        "files": [] and only project references, so tsc checked zero files and
+        passed while the app had eight type errors - one of them a page that
+        crashed on render.
+        """
+        import json
+
         runs = [
             s.get("run", "")
             for s in workflow["jobs"]["frontend-test"]["steps"]
         ]
-        assert any("npx tsc --noEmit" in r for r in runs)
+        assert any("npm run typecheck" in r for r in runs)
         # Check the executed commands, not the comment explaining the old one.
         assert not any("npm run build -- --noEmit" in r for r in runs)
+
+        frontend = BACKEND.parent / "Frontend"
+        script = json.loads((frontend / "package.json").read_text(encoding="utf-8"))["scripts"]["typecheck"]
+        root = json.loads((frontend / "tsconfig.json").read_text(encoding="utf-8"))
+        for ref in root.get("references", []):
+            assert f"-p {ref['path'].lstrip('./')}" in script, (
+                f"typecheck does not check project {ref['path']}"
+            )
 
     def test_coverage_floor_is_enforced(self, workflow_text):
         assert "--cov-fail-under" in workflow_text

@@ -145,7 +145,10 @@ jobs:
       # tsc flag and this forwards it to vite build, which ignores it. Run tsc.
       - name: Run type check (blocking)
         working-directory: Frontend
-        run: npx tsc --noEmit
+        # Not a bare `tsc --noEmit`: the root tsconfig.json has "files": [] and
+        # only project references, so that command checks zero files and
+        # always passes. The typecheck script names each real project.
+        run: npm run typecheck
 
       - name: Run tests (blocking)
         working-directory: Frontend

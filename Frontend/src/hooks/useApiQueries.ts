@@ -430,25 +430,24 @@ export function useOrganizationRepositories(orgId: string, options?: Partial<Use
 // TEAM QUERIES
 // ============================================
 
+/** Teams for one organization, or across every organization when orgId is omitted. */
+export async function fetchTeams(orgId?: string) {
+  if (orgId && orgId !== 'undefined') {
+    return apiClient.listOrganizationTeams(orgId);
+  }
+  const orgs = await apiClient.listOrganizations();
+  const teamsArrays = await Promise.all(
+    orgs
+      .filter(org => org.id && org.id !== 'undefined') // Filter out invalid orgs
+      .map(org => apiClient.listOrganizationTeams(org.id).catch(() => []))
+  );
+  return teamsArrays.flat();
+}
+
 export function useTeams(orgId?: string, options?: Partial<UseQueryOptions<any[]>>) {
   return useQuery({
     queryKey: queryKeys.teams(orgId),
-    queryFn: async () => {
-      if (orgId && orgId !== 'undefined') {
-        return apiClient.listOrganizationTeams(orgId);
-      } else {
-        // Load teams from all organizations
-        const orgs = await apiClient.listOrganizations();
-        const teamsArrays = await Promise.all(
-          orgs
-            .filter(org => org.id && org.id !== 'undefined') // Filter out invalid orgs
-            .map(org => 
-              apiClient.listOrganizationTeams(org.id).catch(() => [])
-            )
-        );
-        return teamsArrays.flat();
-      }
-    },
+    queryFn: () => fetchTeams(orgId),
     staleTime: 10 * 60 * 1000, // 10 minutes
     gcTime: 60 * 60 * 1000, // 60 minutes - keep longer
     placeholderData: (previousData) => previousData,
