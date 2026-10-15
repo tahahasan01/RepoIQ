@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertCircle, AlertTriangle, CheckCircle2, Loader2, OctagonX, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertCircle, AlertTriangle, CheckCircle2, Info, Loader2, OctagonX, RefreshCw, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,15 +17,25 @@ import type { Alert, AlertSeverity, AlertType } from "@/lib/api";
 import { checkResultMessage } from "@/lib/notifications";
 import { formatRelativeTime } from "@/lib/timeUtils";
 
-// Severity is always shown as an icon AND a word, never colour alone.
-const SEVERITY: Record<
-  AlertSeverity,
-  { label: string; icon: React.ComponentType<{ className?: string }>; className: string }
-> = {
+// Severity is always shown as an icon AND a word, never colour alone. Colour
+// runs red > orange > amber for the severities that need action; anything
+// below that (a "low" alert, or a severity this build doesn't know) is
+// neutral slate - green would read as "fine", which an alert never is.
+type SeverityStyle = { label: string; icon: React.ComponentType<{ className?: string }>; className: string };
+
+const SEVERITY: Record<AlertSeverity | "low", SeverityStyle> = {
   critical: { label: "Critical", icon: OctagonX, className: "border-red-500/40 text-red-700 dark:text-red-400" },
   high: { label: "High", icon: AlertTriangle, className: "border-orange-500/40 text-orange-700 dark:text-orange-400" },
   medium: { label: "Medium", icon: AlertCircle, className: "border-amber-500/40 text-amber-700 dark:text-amber-400" },
+  low: { label: "Low", icon: Info, className: "border-slate-500/40 text-slate-600 dark:text-slate-400" },
 };
+
+function severityStyle(severity: string | undefined): SeverityStyle {
+  const known = SEVERITY[severity as keyof typeof SEVERITY];
+  if (known) return known;
+  // Unknown severity: neutral, but still labelled with the word we were sent.
+  return { ...SEVERITY.low, label: severity ? severity.charAt(0).toUpperCase() + severity.slice(1) : "Unknown" };
+}
 
 const TYPE_LABELS: Record<AlertType, string> = {
   critical_issues: "Critical issues",
@@ -36,7 +46,7 @@ const TYPE_LABELS: Record<AlertType, string> = {
 function AlertRow({ alert, orgId }: { alert: Alert; orgId: string }) {
   const { toast } = useToast();
   const acknowledge = useAcknowledgeAlert(orgId);
-  const severity = SEVERITY[alert.severity] ?? SEVERITY.medium;
+  const severity = severityStyle(alert.severity);
   const Icon = severity.icon;
   const repository = alert.details?.repository_full_name || alert.details?.repository_name || "Unknown repository";
 
@@ -60,7 +70,7 @@ function AlertRow({ alert, orgId }: { alert: Alert; orgId: string }) {
       </div>
       {alert.acknowledged ? (
         <span className="text-xs text-muted-foreground flex items-center gap-1 shrink-0">
-          <CheckCircle2 className="h-4 w-4" />
+          <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
           Acknowledged {alert.acknowledged_at ? formatRelativeTime(alert.acknowledged_at).toLowerCase() : ""}
         </span>
       ) : (
@@ -131,7 +141,8 @@ export function OrganizationAlerts({ orgId }: { orgId: string }) {
       </CardHeader>
       <CardContent aria-busy={isFetching}>
         {isLoading ? (
-          <div className="space-y-3">
+          <div className="space-y-3" role="status">
+            <p className="text-sm text-muted-foreground">Loading alerts…</p>
             <Skeleton className="h-20 w-full" />
             <Skeleton className="h-20 w-full" />
           </div>
@@ -139,12 +150,12 @@ export function OrganizationAlerts({ orgId }: { orgId: string }) {
           <div className="p-4 rounded-lg bg-destructive/10 text-sm space-y-3" role="alert">
             <p>Couldn't load alerts. {error instanceof Error ? error.message : ""}</p>
             <Button size="sm" variant="outline" onClick={() => refetch()}>
-              Try again
+              Retry
             </Button>
           </div>
         ) : alerts.length === 0 ? (
           <div className="py-10 text-center text-muted-foreground">
-            <ShieldCheck className="h-8 w-8 mx-auto mb-2 opacity-60" />
+            <ShieldCheck className="h-8 w-8 mx-auto mb-2" aria-hidden="true" />
             <p className="text-sm">
               {hideAcknowledged
                 ? `No open alerts in the last ${ALERT_WINDOW_DAYS} days.`
