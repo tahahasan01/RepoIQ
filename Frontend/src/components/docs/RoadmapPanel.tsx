@@ -1,6 +1,9 @@
-import { AlertTriangle, CalendarClock, Map as MapIcon, RefreshCw, Rocket, Zap } from "lucide-react";
+import { CalendarClock, Map as MapIcon, Rocket, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { LoadingState } from "@/components/shared/LoadingState";
+import { SeverityBadge } from "@/components/shared/SeverityBadge";
+import { FilePath } from "@/components/shared/FilePath";
 import { useRoadmap } from "@/hooks/useApiQueries";
 import { ApiRequestError } from "@/lib/apiErrors";
 import { Link } from "react-router-dom";
@@ -12,47 +15,38 @@ export function RoadmapPanel({ repoId }: { repoId: string }) {
   const { data, isLoading, isError, error, refetch, isFetching } = useRoadmap(repoId);
 
   if (isLoading) {
-    return (
-      <div className="py-16 text-center" role="status">
-        <RefreshCw className="mx-auto mb-3 h-6 w-6 animate-spin text-muted-foreground" aria-hidden="true" />
-        <p className="text-sm text-muted-foreground">Loading roadmap…</p>
-      </div>
-    );
+    return <LoadingState variant="list" count={4} label="Loading roadmap" />;
   }
 
   const noAnalysis = error instanceof ApiRequestError && error.status === 404;
   if (noAnalysis) {
     return (
-      <div className="py-16 text-center">
-        <MapIcon className="mx-auto mb-4 h-10 w-10 text-muted-foreground" aria-hidden="true" />
-        <p className="mb-1 text-base font-medium text-foreground">No roadmap yet</p>
-        <p className="text-sm text-muted-foreground">
-          Run an analysis from the Overview page and RepoIQ will order its findings into a roadmap.
-        </p>
-      </div>
+      <EmptyState
+        icon={MapIcon}
+        title="No roadmap yet"
+        body="Run an analysis from the Overview page and RepoIQ will order its findings into a roadmap."
+      />
     );
   }
 
   if (isError || !data) {
     return (
-      <div className="py-16 text-center">
-        <AlertTriangle className="mx-auto mb-4 h-10 w-10 text-muted-foreground" aria-hidden="true" />
-        <p className="mb-1 text-base font-medium text-foreground">Couldn't load the roadmap</p>
-        <p className="mb-4 text-sm text-muted-foreground">Check your connection and try again.</p>
-        <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isFetching} className="gap-2">
-          <RefreshCw className={isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} aria-hidden="true" />
-          Retry
-        </Button>
-      </div>
+      <EmptyState
+        variant="error"
+        title="Couldn't load the roadmap"
+        body="Check your connection and try again."
+        onRetry={() => refetch()}
+        retrying={isFetching}
+      />
     );
   }
 
   const impact = data.estimated_impact ?? {};
   const counts = [
-    { label: "Critical", value: impact.critical_issues ?? 0, color: "text-red-600 dark:text-red-400" },
-    { label: "High", value: impact.high_issues ?? 0, color: "text-orange-600 dark:text-orange-400" },
-    { label: "Medium", value: impact.medium_issues ?? 0, color: "text-amber-600 dark:text-amber-400" },
-    { label: "Low", value: impact.low_issues ?? 0, color: "text-emerald-600 dark:text-emerald-400" },
+    { severity: "critical", value: impact.critical_issues ?? 0 },
+    { severity: "high", value: impact.high_issues ?? 0 },
+    { severity: "medium", value: impact.medium_issues ?? 0 },
+    { severity: "low", value: impact.low_issues ?? 0 },
   ];
 
   const quick = data.quick_wins ?? [];
@@ -62,12 +56,14 @@ export function RoadmapPanel({ repoId }: { repoId: string }) {
   return (
     <div className="space-y-8">
       <div>
-        <h3 className="mb-4 text-base font-semibold text-foreground">Findings in the latest analysis</h3>
+        <h4 className="mb-3 text-base font-semibold text-foreground">Findings in the latest analysis</h4>
         <dl className="grid grid-cols-2 gap-4 md:grid-cols-4">
           {counts.map((c) => (
-            <div key={c.label} className="rounded-lg border border-border p-5 text-center">
-              <dd className={`mb-1 text-2xl font-bold ${c.color}`}>{c.value}</dd>
-              <dt className="text-xs font-medium text-muted-foreground">{c.label}</dt>
+            <div key={c.severity} className="flex flex-col-reverse gap-2 rounded-xl border border-border p-4">
+              <dd className="text-2xl font-semibold tabular-nums text-foreground">{c.value}</dd>
+              <dt>
+                <SeverityBadge severity={c.severity} />
+              </dt>
             </div>
           ))}
         </dl>
@@ -130,15 +126,15 @@ function RoadmapColumn({
   repoId: string;
 }) {
   return (
-    <section className="flex flex-col rounded-lg border border-border" aria-label={title}>
-      <header className="border-b border-border bg-muted/30 px-4 py-3">
-        <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <Icon className="h-4 w-4 text-primary" aria-hidden="true" />
+    <section className="flex flex-col rounded-xl border border-border" aria-label={title}>
+      <header className="border-b border-border px-4 py-3">
+        <h5 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Icon className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
           {title}
           <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
             {total}
           </span>
-        </h4>
+        </h5>
         <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
       </header>
       {items.length === 0 ? (
@@ -146,17 +142,19 @@ function RoadmapColumn({
       ) : (
         <ol className="max-h-[420px] divide-y divide-border overflow-y-auto">
           {items.map((item, i) => (
-            <li key={`${item.issue}-${i}`} className="px-4 py-3">
-              <p className="text-sm text-foreground">{item.issue}</p>
-              <p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                {item.file_path && (
-                  <code className="font-mono" title={item.file_path}>
-                    {item.file_path.split("/").pop()}
-                    {item.line_number ? `:${item.line_number}` : ""}
-                  </code>
+            <li key={`${item.issue}-${i}`} className="space-y-1.5 px-4 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm text-foreground">{item.issue}</p>
+                {item.severity && <SeverityBadge severity={item.severity} />}
+              </div>
+              {item.file_path && <FilePath path={item.file_path} line={item.line_number} />}
+              <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+                {item.area && (
+                  <>
+                    <span className="font-medium text-foreground/80">{AREA_LABELS[findingArea(item.area)]}</span>
+                    <span aria-hidden="true">·</span>
+                  </>
                 )}
-                {item.severity && <span className="capitalize">{item.severity}</span>}
-                {item.area && <span>{AREA_LABELS[findingArea(item.area)]}</span>}
                 <span>{formatCategory(item.category)}</span>
               </p>
             </li>

@@ -54,6 +54,9 @@ describe("RoadmapPanel", () => {
     expect(within(first).getByText("Hard-coded secret")).toBeInTheDocument();
     expect(within(first).getByText("config.py:12")).toBeInTheDocument();
     expect(within(first).getByText("Hardcoded secret")).toBeInTheDocument();
+    // Severity as a labelled badge, and the folder under the file name.
+    expect(within(first).getByText("High")).toBeInTheDocument();
+    expect(within(first).getByText("app")).toBeInTheDocument();
     const next = screen.getByRole("region", { name: "Next" });
     expect(within(next).getByText("14")).toBeInTheDocument();
     expect(within(next).getByRole("link", { name: "12 more in Issues" })).toHaveAttribute(

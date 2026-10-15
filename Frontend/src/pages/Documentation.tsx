@@ -1,11 +1,11 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, type ReactNode } from "react";
 import { useParams, useLocation } from "react-router-dom";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   FileText,
   Download,
-  RefreshCw,
   Bug,
   AlertTriangle,
   Shield,
@@ -15,39 +15,85 @@ import {
   GitBranch,
   Map as MapIcon,
   Network,
+  TrendingUp,
 } from "lucide-react";
 import type { BugReport } from "@/types/scan";
 import { generateFullAnalysisReport, generateBugReportPDF, AnalysisReport } from "@/services/reportService";
 import { useRepository, useAnalysisResults, useAnalysisById } from "@/hooks/useApiQueries";
+import { useToast } from "@/hooks/use-toast";
 import { RoadmapPanel } from "@/components/docs/RoadmapPanel";
 import { ArchitecturePanel } from "@/components/docs/ArchitecturePanel";
+import { PageHeader } from "@/components/shared/PageHeader";
+import { StatTile } from "@/components/shared/StatTile";
+import { SeverityBadge } from "@/components/shared/SeverityBadge";
+import { FilePath } from "@/components/shared/FilePath";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { LoadingState } from "@/components/shared/LoadingState";
+import { scoreBgClass } from "@/lib/scoreColor";
+import { formatCategory } from "@/lib/findings";
 
 type DocsTab = "report" | "bugreport" | "roadmap" | "architecture";
 
+const TABS: { id: DocsTab; label: string; icon: typeof FileText }[] = [
+  { id: "report", label: "Full analysis report", icon: FileText },
+  { id: "bugreport", label: "Bug report", icon: Bug },
+  { id: "roadmap", label: "Roadmap", icon: MapIcon },
+  { id: "architecture", label: "Architecture", icon: Network },
+];
+
+/** The title bar of a tab's panel: heading, one line of description, and its action. */
+function PanelHeader({ title, description, action }: { title: string; description: string; action?: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-4 sm:px-6">
+      <div className="min-w-0">
+        <h3 className="text-lg font-semibold text-foreground">{title}</h3>
+        <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+/** Total plus one tile per severity. Total spans two columns on phones so no tile sits alone. */
+function SeverityCounts({ total, counts }: { total: number; counts: Record<"critical" | "high" | "medium" | "low", number> }) {
+  return (
+    <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+      <StatTile label="Total" value={total} className="col-span-2 md:col-span-1" />
+      {(["critical", "high", "medium", "low"] as const).map((severity) => (
+        <div key={severity} className="rounded-xl border border-border bg-card p-4">
+          <SeverityBadge severity={severity} />
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-foreground">{counts[severity]}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Documentation() {
   const [activeTab, setActiveTab] = useState<DocsTab>("report");
-  
+  const { toast } = useToast();
+
   const params = useParams();
   const repoId = (params as any).id || (params as any).repoId;
-  
+
   const location = useLocation();
   const queryParams = new URLSearchParams(location.search);
   const analysisId = queryParams.get('analysis_id');
-  
+
   // Use React Query hooks — data persists across navigations
   const { data: repoData } = useRepository(repoId || '', { enabled: !!repoId });
-  
+
   // Fetch analysis by specific ID or latest for the repo
-  const { data: analysisById, isLoading: isLoadingById } = useAnalysisById(analysisId || '', { 
-    enabled: !!analysisId 
+  const { data: analysisById, isLoading: isLoadingById } = useAnalysisById(analysisId || '', {
+    enabled: !!analysisId
   });
-  const { data: analysisLatest, isLoading: isLoadingLatest } = useAnalysisResults(repoId || '', { 
-    enabled: !!repoId && !analysisId 
+  const { data: analysisLatest, isLoading: isLoadingLatest } = useAnalysisResults(repoId || '', {
+    enabled: !!repoId && !analysisId
   });
-  
+
   const analysisData = analysisId ? analysisById : analysisLatest;
   const isLoadingReport = analysisId ? isLoadingById : isLoadingLatest;
-  
+
   // Derive bug reports from analysis data (memoized so it doesn't recompute on every render)
   const bugReports = useMemo<BugReport[]>(() => {
     if (!analysisData?.issues || !Array.isArray(analysisData.issues)) return [];
@@ -68,10 +114,10 @@ export default function Documentation() {
   // Generate comprehensive PDF report
   const handleDownloadReport = () => {
     if (!analysisData || !repoData) {
-      alert('Please wait for analysis data to load');
+      toast({ title: "The analysis is still loading", description: "Try again in a moment." });
       return;
     }
-    
+
     const report: AnalysisReport = {
       repository: {
         name: repoData?.name || 'Repository',
@@ -110,14 +156,14 @@ export default function Documentation() {
       architectureIssues: [],
       bestPractices: [],
     };
-    
+
     generateFullAnalysisReport(report);
   };
 
   // Generate bug report PDF
   const handleDownloadBugReport = () => {
     if (bugReports.length === 0) {
-      alert('No bugs to export');
+      toast({ title: "No bugs to export", description: "The latest analysis found no issues." });
       return;
     }
     generateBugReportPDF(bugReports, repoData?.name || 'Repository');
@@ -132,374 +178,218 @@ export default function Documentation() {
     low: analysisData?.issues?.filter((i: any) => i.severity === 'low').length || 0,
   };
 
+  const scoreItems = [
+    { label: "Overall", score: analysisData?.overall_score || 0, icon: TrendingUp, className: "col-span-2 lg:col-span-1" },
+    { label: "Security", score: analysisData?.security_score || 0, icon: Shield },
+    { label: "Quality", score: analysisData?.quality_score || 0, icon: Code },
+    { label: "Architecture", score: analysisData?.architecture_score || 0, icon: GitBranch },
+    { label: "Documentation", score: analysisData?.documentation_score || 0, icon: FileText },
+  ];
+
+  const contents = [
+    {
+      label: "Security vulnerabilities",
+      count: analysisData?.issues?.filter((i: any) => i.agent_type === 'security' || i.category?.toLowerCase().includes('security')).length || 0,
+      icon: Shield,
+    },
+    {
+      label: "Code quality issues",
+      count: analysisData?.issues?.filter((i: any) => i.agent_type === 'quality').length || 0,
+      icon: Code,
+    },
+    {
+      label: "Architecture issues",
+      count: analysisData?.issues?.filter((i: any) => i.agent_type === 'architecture').length || 0,
+      icon: GitBranch,
+    },
+    {
+      label: "Best practice suggestions",
+      count: analysisData?.issues?.filter((i: any) => i.category?.toLowerCase().includes('practice')).length || 0,
+      icon: CheckCircle,
+    },
+  ];
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-border">
-          <div>
-            <h1 className="text-3xl font-semibold text-foreground mb-1">Reports & Documentation</h1>
-            <p className="text-sm text-muted-foreground">Generate professional PDF reports for stakeholder review and team collaboration</p>
+        {/* The layout already renders the repository name as the page's h1. */}
+        <PageHeader
+          as="h2"
+          title="Reports & documentation"
+          description="PDF reports for stakeholder review, the improvement roadmap, and the repository's architecture."
+        />
+
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as DocsTab)}>
+          <div className="overflow-x-auto">
+            <TabsList className="h-auto">
+              {TABS.map((tab) => (
+                <TabsTrigger key={tab.id} value={tab.id} className="gap-2">
+                  <tab.icon className="h-4 w-4" aria-hidden="true" />
+                  {tab.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
           </div>
-        </div>
 
-        {/* Tabs */}
-        <div className="flex gap-1 border-b border-border overflow-x-auto">
-          {[
-            { id: "report", label: "Full Analysis Report", icon: FileText },
-            { id: "bugreport", label: "Bug Report", icon: Bug },
-            { id: "roadmap", label: "Roadmap", icon: MapIcon },
-            { id: "architecture", label: "Architecture", icon: Network },
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as DocsTab)}
-              aria-pressed={activeTab === tab.id} 
-              className={`flex shrink-0 items-center gap-2 px-4 sm:px-6 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-all ${
-                activeTab === tab.id 
-                  ? "border-primary text-primary bg-primary/5" 
-                  : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50"
-              }`}
-            >
-              <tab.icon className="h-4 w-4" />
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Content */}
-        <div className="bg-card border border-border rounded-lg overflow-hidden">
-          
           {/* FULL REPORT TAB */}
-          {activeTab === "report" && (
-            <>
-              <div className="px-6 py-4 border-b border-border bg-muted/30 flex items-center justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold text-foreground">Full Analysis Report</h2>
-                  <p className="text-xs text-muted-foreground mt-1">Comprehensive code quality assessment with detailed findings</p>
-                </div>
-                <Button 
-                  onClick={handleDownloadReport} 
-                  disabled={isLoadingReport || !analysisData}
-                  className="gap-2"
-                  size="sm"
-                >
-                  <Download className="h-4 w-4" />
+          <TabsContent value="report" className="mt-4 overflow-hidden rounded-xl border border-border bg-card">
+            <PanelHeader
+              title="Full analysis report"
+              description="Scores, issue counts and every finding from the analysis."
+              action={
+                <Button onClick={handleDownloadReport} disabled={isLoadingReport || !analysisData} className="gap-2" size="sm">
+                  <Download className="h-4 w-4" aria-hidden="true" />
                   Download PDF
                 </Button>
-              </div>
+              }
+            />
 
-              <div className="p-8">
-                {isLoadingReport ? (
-                  <div className="text-center py-16">
-                    <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-3 text-muted-foreground" />
-                    <p className="text-sm text-muted-foreground">Loading analysis data...</p>
-                  </div>
-                ) : !analysisData ? (
-                  <div className="text-center py-16">
-                    <AlertTriangle className="h-10 w-10 mx-auto mb-4 text-muted-foreground" />
-                    <p className="text-base font-medium mb-1 text-foreground">No Analysis Data Available</p>
-                    <p className="text-sm text-muted-foreground">Run an analysis first to generate reports.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-10">
-                    {/* Scores Overview */}
-                    <div>
-                      <h3 className="text-base font-semibold text-foreground mb-4 uppercase tracking-wide">Analysis Scores</h3>
-                      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
-                        {[
-                          { label: "Overall", score: analysisData?.overall_score || 0, icon: CheckCircle },
-                          { label: "Security", score: analysisData?.security_score || 0, icon: Shield },
-                          { label: "Quality", score: analysisData?.quality_score || 0, icon: Code },
-                          { label: "Architecture", score: analysisData?.architecture_score || 0, icon: GitBranch },
-                          { label: "Documentation", score: analysisData?.documentation_score || 0, icon: FileText },
-                        ].map((item) => {
-                          const Icon = item.icon;
-                          const scoreColor = item.score >= 80 ? "text-green-600" : item.score >= 60 ? "text-amber-600" : "text-red-600";
-                          const borderColor = item.score >= 80 ? "border-green-200" : item.score >= 60 ? "border-amber-200" : "border-red-200";
-                          const bgColor = item.score >= 80 ? "bg-green-50 dark:bg-green-950/20" : item.score >= 60 ? "bg-amber-50 dark:bg-amber-950/20" : "bg-red-50 dark:bg-red-950/20";
-                          
-                          return (
-                            <div
-                              key={item.label}
-                              className={`p-5 border ${borderColor} ${bgColor} rounded-lg`}
-                            >
-                              <div className="flex items-center justify-between mb-3">
-                                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{item.label}</span>
-                                <Icon className="h-4 w-4 text-muted-foreground" />
-                              </div>
-                              <div className={`text-3xl font-bold mb-2 ${scoreColor}`}>
-                                {item.score}
-                              </div>
-                              <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
-                                <div
-                                  className={`h-full ${
-                                    item.score >= 80 ? "bg-green-600" : 
-                                    item.score >= 60 ? "bg-amber-600" : 
-                                    "bg-red-600"
-                                  }`}
-                                  style={{ width: `${item.score}%` }}
-                                />
-                              </div>
+            <div className="p-4 sm:p-6">
+              {isLoadingReport ? (
+                <LoadingState variant="tiles" count={5} label="Loading analysis data" />
+              ) : !analysisData ? (
+                <EmptyState
+                  icon={AlertTriangle}
+                  title="No analysis yet"
+                  body="Run an analysis first to generate reports."
+                />
+              ) : (
+                <div className="space-y-8">
+                  <section>
+                    <h4 className="mb-3 text-base font-semibold text-foreground">Scores</h4>
+                    <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
+                      {scoreItems.map((item) => (
+                        <StatTile
+                          key={item.label}
+                          label={item.label}
+                          score={item.score}
+                          icon={item.icon}
+                          className={item.className}
+                          hint={
+                            <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
+                              <div className={`h-full ${scoreBgClass(item.score)}`} style={{ width: `${item.score}%` }} />
                             </div>
-                          );
-                        })}
-                      </div>
+                          }
+                        />
+                      ))}
                     </div>
+                  </section>
 
-                    {/* Issue Summary */}
-                    <div>
-                      <h3 className="text-base font-semibold text-foreground mb-4 uppercase tracking-wide">Issues Summary</h3>
-                      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                        {[
-                          { label: "Total Issues", count: stats.total, color: "text-blue-600", border: "border-blue-200", bg: "bg-blue-50 dark:bg-blue-950/20" },
-                          { label: "Critical", count: stats.critical, color: "text-red-600", border: "border-red-200", bg: "bg-red-50 dark:bg-red-950/20" },
-                          { label: "High", count: stats.high, color: "text-orange-600", border: "border-orange-200", bg: "bg-orange-50 dark:bg-orange-950/20" },
-                          { label: "Medium", count: stats.medium, color: "text-amber-600", border: "border-amber-200", bg: "bg-amber-50 dark:bg-amber-950/20" },
-                          { label: "Low", count: stats.low, color: "text-green-600", border: "border-green-200", bg: "bg-green-50 dark:bg-green-950/20" },
-                        ].map((stat) => (
-                          <div
-                            key={stat.label}
-                            className={`p-5 border ${stat.border} ${stat.bg} rounded-lg text-center`}
-                          >
-                            <div className={`text-2xl font-bold mb-1 ${stat.color}`}>
-                              {stat.count}
-                            </div>
-                            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                              {stat.label}
+                  <section>
+                    <h4 className="mb-3 text-base font-semibold text-foreground">Issues summary</h4>
+                    <SeverityCounts total={stats.total} counts={stats} />
+                  </section>
+
+                  <section>
+                    <h4 className="mb-3 text-base font-semibold text-foreground">Report contents</h4>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      {contents.map((item) => (
+                        <div key={item.label} className="flex items-center justify-between gap-3 rounded-xl border border-border p-4">
+                          <div className="flex items-center gap-3">
+                            <item.icon className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+                            <div>
+                              <div className="text-sm font-medium text-foreground">{item.label}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {item.count === 1 ? '1 issue' : `${item.count} issues`}
+                              </div>
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Report Contents */}
-                    <div>
-                      <h3 className="text-base font-semibold text-foreground mb-4 uppercase tracking-wide">Report Contents</h3>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {[
-                          { 
-                            label: "Security Vulnerabilities", 
-                            count: analysisData?.issues?.filter((i: any) => i.agent_type === 'security' || i.category?.toLowerCase().includes('security')).length || 0,
-                            icon: Shield
-                          },
-                          { 
-                            label: "Code Quality Issues", 
-                            count: analysisData?.issues?.filter((i: any) => i.agent_type === 'quality').length || 0,
-                            icon: Code
-                          },
-                          { 
-                            label: "Architecture Issues", 
-                            count: analysisData?.issues?.filter((i: any) => i.agent_type === 'architecture').length || 0,
-                            icon: GitBranch
-                          },
-                          { 
-                            label: "Best Practice Suggestions", 
-                            count: analysisData?.issues?.filter((i: any) => i.category?.toLowerCase().includes('practice')).length || 0,
-                            icon: CheckCircle
-                          },
-                        ].map((item) => {
-                          const Icon = item.icon;
-                          return (
-                            <div
-                              key={item.label}
-                              className="p-5 border border-border rounded-lg hover:border-primary/50 transition-colors"
-                            >
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-3">
-                                  <div className="p-2 rounded bg-muted">
-                                    <Icon className="h-5 w-5 text-muted-foreground" />
-                                  </div>
-                                  <div>
-                                    <h4 className="text-sm font-semibold text-foreground">{item.label}</h4>
-                                    <p className="text-xs text-muted-foreground mt-0.5">
-                                      {item.count === 1 ? '1 issue' : `${item.count} issues`}
-                                    </p>
-                                  </div>
-                                </div>
-                                <div className="text-xl font-bold text-foreground">
-                                  {item.count}
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Download Section */}
-                    <div className="pt-6 border-t border-border">
-                      <div className="flex items-center justify-between p-6 bg-muted/50 rounded-lg border border-border">
-                        <div>
-                          <p className="text-sm font-semibold text-foreground mb-1">Ready to Download</p>
-                          <p className="text-xs text-muted-foreground">
-                            Generate a professional PDF report formatted for stakeholder review and team collaboration.
-                          </p>
+                          <div className="text-xl font-semibold tabular-nums text-foreground" aria-hidden="true">
+                            {item.count}
+                          </div>
                         </div>
-                        <Button 
-                          onClick={handleDownloadReport}
-                          className="gap-2"
-                          size="sm"
-                        >
-                          <Download className="h-4 w-4" />
-                          Download Report
-                        </Button>
-                      </div>
+                      ))}
                     </div>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
+                  </section>
+                </div>
+              )}
+            </div>
+          </TabsContent>
 
           {/* ROADMAP TAB */}
-          {activeTab === "roadmap" && (
-            <>
-              <div className="px-6 py-4 border-b border-border bg-muted/30">
-                <h2 className="text-lg font-semibold text-foreground">Improvement roadmap</h2>
-                <p className="text-xs text-muted-foreground mt-1">The latest analysis' findings, ordered by what to fix first</p>
-              </div>
-              <div className="p-8">
-                {repoId && <RoadmapPanel repoId={repoId} />}
-              </div>
-            </>
-          )}
+          <TabsContent value="roadmap" className="mt-4 overflow-hidden rounded-xl border border-border bg-card">
+            <PanelHeader
+              title="Improvement roadmap"
+              description="The latest analysis' findings, ordered by what to fix first."
+            />
+            <div className="p-4 sm:p-6">{repoId && <RoadmapPanel repoId={repoId} />}</div>
+          </TabsContent>
 
-          {/* ARCHITECTURE TAB - mounted only when open: generating the diagram is a model call */}
-          {activeTab === "architecture" && (
-            <>
-              <div className="px-6 py-4 border-b border-border bg-muted/30">
-                <h2 className="text-lg font-semibold text-foreground">Architecture</h2>
-                <p className="text-xs text-muted-foreground mt-1">How the repository is organised, drawn from its file layout</p>
-              </div>
-              <div className="p-8">
-                {repoId && <ArchitecturePanel repoId={repoId} />}
-              </div>
-            </>
-          )}
+          {/* ARCHITECTURE TAB - Radix mounts a tab's content only while it is
+              open, which matters here: generating the diagram is a model call. */}
+          <TabsContent value="architecture" className="mt-4 overflow-hidden rounded-xl border border-border bg-card">
+            <PanelHeader
+              title="Architecture"
+              description="How the repository is organised, drawn from its file layout."
+            />
+            <div className="p-4 sm:p-6">{repoId && <ArchitecturePanel repoId={repoId} />}</div>
+          </TabsContent>
 
           {/* BUG REPORT TAB */}
-          {activeTab === "bugreport" && (
-            <>
-              <div className="px-6 py-4 border-b border-border bg-muted/30 flex items-center justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold text-foreground">Bug Report</h2>
-                  <p className="text-xs text-muted-foreground mt-1">Detailed bug tracking report with severity classification</p>
-                </div>
-                <Button 
-                  onClick={handleDownloadBugReport}
-                  disabled={bugReports.length === 0}
-                  className="gap-2"
-                  size="sm"
-                >
-                  <FileDown className="h-4 w-4" />
+          <TabsContent value="bugreport" className="mt-4 overflow-hidden rounded-xl border border-border bg-card">
+            <PanelHeader
+              title="Bug report"
+              description="Every finding as a bug, with its severity, location and suggested fix."
+              action={
+                <Button onClick={handleDownloadBugReport} disabled={bugReports.length === 0} className="gap-2" size="sm">
+                  <FileDown className="h-4 w-4" aria-hidden="true" />
                   Download PDF
                 </Button>
-              </div>
+              }
+            />
 
-              <div className="p-8">
-                {isLoadingReport ? (
-                  <div className="text-center py-16">
-                    <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-3 text-muted-foreground" />
-                    <p className="text-sm text-muted-foreground">Loading bug reports...</p>
-                  </div>
-                ) : bugReports.length === 0 ? (
-                  <div className="text-center py-16">
-                    <CheckCircle className="h-10 w-10 mx-auto mb-4 text-muted-foreground" />
-                    <p className="text-base font-medium mb-1 text-foreground">No Bugs Found</p>
-                    <p className="text-sm text-muted-foreground">Code analysis completed with no issues detected.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-6">
-                    {/* Stats Bar */}
-                    <div>
-                      <h3 className="text-base font-semibold text-foreground mb-4 uppercase tracking-wide">Bug Statistics</h3>
-                      <div className="grid grid-cols-5 gap-4">
-                        {[
-                          { label: "Total", count: bugReports.length, color: "text-blue-600", border: "border-blue-200", bg: "bg-blue-50 dark:bg-blue-950/20" },
-                          { label: "Critical", count: stats.critical, color: "text-red-600", border: "border-red-200", bg: "bg-red-50 dark:bg-red-950/20" },
-                          { label: "High", count: stats.high, color: "text-orange-600", border: "border-orange-200", bg: "bg-orange-50 dark:bg-orange-950/20" },
-                          { label: "Medium", count: stats.medium, color: "text-amber-600", border: "border-amber-200", bg: "bg-amber-50 dark:bg-amber-950/20" },
-                          { label: "Low", count: stats.low, color: "text-green-600", border: "border-green-200", bg: "bg-green-50 dark:bg-green-950/20" },
-                        ].map((stat) => (
-                          <div
-                            key={stat.label}
-                            className={`p-5 border ${stat.border} ${stat.bg} rounded-lg text-center`}
-                          >
-                            <div className={`text-2xl font-bold mb-1 ${stat.color}`}>
-                              {stat.count}
-                            </div>
-                            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                              {stat.label}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+            <div className="p-4 sm:p-6">
+              {isLoadingReport ? (
+                <LoadingState variant="list" count={4} label="Loading bug reports" />
+              ) : bugReports.length === 0 ? (
+                <EmptyState
+                  icon={CheckCircle}
+                  title="No bugs found"
+                  body="The analysis completed with no issues detected."
+                />
+              ) : (
+                <div className="space-y-8">
+                  <section>
+                    <h4 className="mb-3 text-base font-semibold text-foreground">Bug statistics</h4>
+                    <SeverityCounts total={bugReports.length} counts={stats} />
+                  </section>
 
-                    {/* Bug List */}
-                    <div>
-                      <h3 className="text-base font-semibold text-foreground mb-4 uppercase tracking-wide">Bug Details</h3>
-                      <div className="space-y-3 max-h-[500px] overflow-y-auto">
-                        {bugReports.slice(0, 20).map((bug, index) => (
-                          <div key={bug.id} className="border border-border rounded-lg overflow-hidden">
-                            <div className="px-4 py-3 bg-muted/30 border-b border-border flex items-start justify-between gap-4">
-                              <div className="flex-1">
-                                <div className="font-medium text-sm text-foreground mb-1">
-                                  #{index + 1}: {bug.title}
-                                </div>
-                                <div className="text-xs text-muted-foreground">
-                                  {bug.file_path && <span className="font-mono">{bug.file_path}</span>}
-                                  {bug.line_number && <span className="ml-2">Line {bug.line_number}</span>}
-                                  {bug.category && <span className="ml-2">• {bug.category}</span>}
-                                </div>
+                  <section>
+                    <h4 className="mb-3 text-base font-semibold text-foreground">Bug details</h4>
+                    <ol className="max-h-[500px] space-y-3 overflow-y-auto">
+                      {bugReports.slice(0, 20).map((bug, index) => (
+                        <li key={bug.id} className="overflow-hidden rounded-lg border border-border">
+                          <div className="flex items-start justify-between gap-4 border-b border-border px-4 py-3">
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="text-sm font-medium text-foreground">
+                                {index + 1}. {bug.title}
                               </div>
-                              <span className={`px-2.5 py-1 rounded text-xs font-semibold text-white whitespace-nowrap ${
-                                bug.severity === 'critical' ? 'bg-red-600' :
-                                bug.severity === 'high' ? 'bg-orange-600' :
-                                bug.severity === 'medium' ? 'bg-amber-600' : 'bg-green-600'
-                              }`}>
-                                {bug.severity?.toUpperCase()}
-                              </span>
+                              {bug.file_path && <FilePath path={bug.file_path} line={bug.line_number} />}
+                              {bug.category && (
+                                <div className="text-xs text-muted-foreground">{formatCategory(bug.category)}</div>
+                              )}
                             </div>
-                            <div className="p-4">
-                              <pre className="whitespace-pre-wrap font-mono text-xs bg-muted/50 p-3 rounded border border-border text-foreground">{bug.details}</pre>
-                            </div>
+                            <SeverityBadge severity={bug.severity} />
                           </div>
-                        ))}
-                        {bugReports.length > 20 && (
-                          <div className="text-center text-sm text-muted-foreground py-4 border-t border-border pt-6">
-                            Showing 20 of {bugReports.length} bugs. Download the full report to see all issues.
+                          <div className="p-4">
+                            <pre className="whitespace-pre-wrap rounded-md bg-muted/50 p-3 font-mono text-xs text-foreground">
+                              {bug.details}
+                            </pre>
                           </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Download Section */}
-                    <div className="pt-6 border-t border-border">
-                      <div className="flex items-center justify-between p-6 bg-muted/50 rounded-lg border border-border">
-                        <div>
-                          <p className="text-sm font-semibold text-foreground mb-1">Ready to Download</p>
-                          <p className="text-xs text-muted-foreground">
-                            Generate a professional bug report PDF for your development team.
-                          </p>
-                        </div>
-                        <Button 
-                          onClick={handleDownloadBugReport}
-                          className="gap-2"
-                          size="sm"
-                        >
-                          <FileDown className="h-4 w-4" />
-                          Download Report
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
+                        </li>
+                      ))}
+                    </ol>
+                    {bugReports.length > 20 && (
+                      <p className="mt-4 text-center text-sm text-muted-foreground">
+                        Showing 20 of {bugReports.length} bugs. Download the full report to see all of them.
+                      </p>
+                    )}
+                  </section>
+                </div>
+              )}
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </DashboardLayout>
   );

@@ -1,6 +1,9 @@
 import { useEffect, useId, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Check, Copy, GitBranch, RefreshCw } from "lucide-react";
+import { Check, Copy, GitBranch, RefreshCw } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { LoadingState } from "@/components/shared/LoadingState";
 import { Button } from "@/components/ui/button";
 import { GitHubAccessNotice } from "@/components/GitHubAccessNotice";
 import { queryKeys, useArchitecture } from "@/hooks/useApiQueries";
@@ -102,9 +105,11 @@ function MermaidDiagram({ source, label }: { source: string; label: string }) {
   }
   if (!svg) {
     return (
-      <div className="py-10 text-center" role="status">
-        <RefreshCw className="mx-auto mb-2 h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
-        <p className="text-sm text-muted-foreground">Drawing the diagram…</p>
+      <div className="py-6">
+        <Skeleton className="mx-auto h-48 w-full max-w-xl" aria-hidden="true" />
+        <p className="mt-3 text-center text-sm text-muted-foreground" role="status">
+          Drawing the diagram…
+        </p>
       </div>
     );
   }
@@ -132,9 +137,11 @@ export function ArchitecturePanel({ repoId }: { repoId: string }) {
 
   if (isLoading) {
     return (
-      <div className="py-16 text-center" role="status">
-        <RefreshCw className="mx-auto mb-3 h-6 w-6 animate-spin text-muted-foreground" aria-hidden="true" />
-        <p className="text-sm text-muted-foreground">Working out the architecture from the file layout…</p>
+      <div className="py-6">
+        <LoadingState variant="list" count={3} label="Working out the architecture from the file layout" />
+        <p className="mt-3 text-center text-sm text-muted-foreground" aria-hidden="true">
+          Working out the architecture from the file layout…
+        </p>
       </div>
     );
   }
@@ -145,18 +152,13 @@ export function ArchitecturePanel({ repoId }: { repoId: string }) {
 
   if (isError || layers.length === 0) {
     return (
-      <div className="py-16 text-center">
-        <AlertTriangle className="mx-auto mb-4 h-10 w-10 text-muted-foreground" aria-hidden="true" />
-        <p className="mb-1 text-base font-medium text-foreground">Couldn't describe the architecture</p>
-        <p className="mb-4 text-sm text-muted-foreground">
-          {error instanceof Error && error.message ? error.message : "Nothing came back for this repository."} Try
-          again.
-        </p>
-        <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isFetching} className="gap-2">
-          <RefreshCw className={isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} aria-hidden="true" />
-          Retry
-        </Button>
-      </div>
+      <EmptyState
+        variant="error"
+        title="Couldn't describe the architecture"
+        body={`${error instanceof Error && error.message ? error.message : "Nothing came back for this repository."} Try again.`}
+        onRetry={() => refetch()}
+        retrying={isFetching}
+      />
     );
   }
 
@@ -222,7 +224,7 @@ export function ArchitecturePanel({ repoId }: { repoId: string }) {
       <div className="grid gap-4 md:grid-cols-2">
         {layers.map((layer) => (
           <section key={layer.id} className="rounded-lg border border-border p-4">
-            <h3 className="font-medium text-foreground">{layer.name}</h3>
+            <h4 className="font-medium text-foreground">{layer.name}</h4>
             {layer.description && <p className="mt-0.5 text-sm text-muted-foreground">{layer.description}</p>}
             {layer.components.length > 0 && (
               <ul className="mt-3 space-y-2.5">
