@@ -466,3 +466,26 @@ class TestLifecycle:
         import main
         source = inspect.getsource(main.lifespan)
         assert "Database.close" in source
+
+
+class TestCeleryCancellation:
+    """A cancelled analysis on the Celery path ended as "failed" (on_failure)."""
+
+    def test_cancellation_is_recorded_as_cancelled_not_failed(self):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+        from app.tasks import analysis_tasks
+
+        update = AsyncMock()
+        with patch("app.services.github_token.resolve_github_token_for_user", AsyncMock(return_value="t")), \
+                patch.object(analysis_tasks, "_run_analysis",
+                             AsyncMock(side_effect=analysis_tasks.AnalysisCancelled("a1"))), \
+                patch.object(analysis_tasks.RepositoryService, "__init__", lambda self: None), \
+                patch.object(analysis_tasks.RepositoryService, "update_analysis", update), \
+                patch.object(analysis_tasks, "clear_cancellation"), \
+                patch.object(analysis_tasks, "clear_running") as clear_running:
+            result = asyncio.run(analysis_tasks._run_analysis_for_user("r", "u", "a1"))
+
+        assert result["status"] == "cancelled"
+        assert update.call_args.args[1]["status"] == "cancelled"
+        clear_running.assert_called_once_with("u", "a1")

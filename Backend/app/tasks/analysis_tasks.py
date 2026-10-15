@@ -150,11 +150,32 @@ def analyze_repository_task(self, repo_id: str, user_id: str, analysis_id: str):
 
 
 async def _run_analysis_for_user(repo_id: str, user_id: str, analysis_id: str) -> Dict[str, Any]:
-    """Resolve the caller's GitHub token inside the worker, then run the analysis."""
+    """
+    Resolve the caller's GitHub token inside the worker, then run the analysis.
+
+    A cancellation is handled here, as run_analysis_sync handles it for the
+    in-process path. It used to escape the task, so Celery's on_failure marked
+    every cancelled analysis "failed" - the user pressed Cancel and was told
+    the analysis had broken.
+    """
     from app.services.github_token import resolve_github_token_for_user
 
-    github_token = await resolve_github_token_for_user(user_id)
-    return await _run_analysis(repo_id, user_id, github_token, analysis_id)
+    try:
+        github_token = await resolve_github_token_for_user(user_id)
+        return await _run_analysis(repo_id, user_id, github_token, analysis_id)
+    except AnalysisCancelled:
+        logger.info(f"Analysis {analysis_id} was cancelled by user for repo {repo_id}")
+        try:
+            await RepositoryService().update_analysis(analysis_id, {
+                "status": "cancelled",
+                "error_message": "Cancelled by user",
+            })
+        except Exception as update_error:
+            logger.error(f"Failed to record cancellation: {update_error}")
+        clear_cancellation(analysis_id)
+        return {"analysis_id": analysis_id, "status": "cancelled"}
+    finally:
+        clear_running(user_id, analysis_id)
 
 
 async def _run_analysis(repo_id: str, user_id: str, github_token: str, analysis_id: str) -> Dict[str, Any]:
