@@ -794,10 +794,11 @@ class ApiClient {
   }
 
   // Organization endpoints
-  async createOrganization(name: string, planType: string = 'free') {
+  // Organizations are free-plan only; the backend ignores any plan_type.
+  async createOrganization(name: string) {
     return this.request<any>('/organizations', {
       method: 'POST',
-      body: JSON.stringify({ name, plan_type: planType }),
+      body: JSON.stringify({ name }),
     });
   }
 
@@ -809,7 +810,7 @@ class ApiClient {
     return this.request<any>(`/organizations/${orgId}`);
   }
 
-  async updateOrganization(orgId: string, data: { name?: string; plan_type?: string }) {
+  async updateOrganization(orgId: string, data: { name?: string }) {
     return this.request<any>(`/organizations/${orgId}`, {
       method: 'PUT',
       body: JSON.stringify(data),
