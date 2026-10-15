@@ -190,8 +190,6 @@ async def get_github_token(current_user: dict = Depends(get_current_user)) -> st
 
 def require_password_auth() -> None:
     """Refuse email + password endpoints unless PASSWORD_AUTH_ENABLED is set."""
-    from app.core.config import get_settings
-
     if not get_settings().PASSWORD_AUTH_ENABLED:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -200,6 +198,4 @@ def require_password_auth() -> None:
 
 
 def password_auth_enabled() -> bool:
-    from app.core.config import get_settings
-
     return get_settings().PASSWORD_AUTH_ENABLED

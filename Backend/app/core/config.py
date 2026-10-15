@@ -320,6 +320,16 @@ class Settings(BaseSettings):
             # global handler includes exception text when DEBUG is on.
             problems.append("DEBUG must be false in production")
 
+        # The defaults point at a developer's machine (and carry the dev
+        # database password); a deploy that forgot to set them would boot and
+        # then fail on its first request instead of here.
+        for name in ("DATABASE_URL", "REDIS_URL"):
+            host = (urlparse(getattr(self, name) or "").hostname or "").lower()
+            if not host or host in _LOCAL_HOSTS:
+                problems.append(f"{name} must point at your production server, not localhost")
+        if "repoiq_dev" in (self.DATABASE_URL or ""):
+            problems.append("DATABASE_URL still uses the development password")
+
         # SECRET_KEY signs every session token.
         if len(self.SECRET_KEY or "") < MIN_SECRET_LENGTH or _looks_like_placeholder(self.SECRET_KEY):
             problems.append(

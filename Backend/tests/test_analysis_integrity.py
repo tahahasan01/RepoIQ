@@ -191,3 +191,29 @@ class TestAFailedAIReviewIsNotAResult:
 
         assert result["ai_batches_total"] == 4
         assert 0 < result["ai_batches_succeeded"] < 4
+
+
+class TestFindingDimension:
+
+    @pytest.mark.asyncio
+    async def test_reviewer_dimension_decides_the_score_it_counts_against(self, monkeypatch):
+        """'information_disclosure' used to be guessed as quality, leaving Security at 100."""
+        import json
+        from app.agents.orchestrator import AgentOrchestrator
+
+        orchestrator = AgentOrchestrator()
+        issues = [
+            {"severity": "medium", "dimension": "security", "category": "information_disclosure",
+             "file_path": "app.py", "line_number": 3, "description": "d", "suggestion": "s"},
+            # No dimension (an older response shape): the category guess still applies.
+            {"severity": "low", "category": "sql_injection",
+             "file_path": "app.py", "line_number": 4, "description": "d", "suggestion": "s"},
+        ]
+
+        async def fake_llm(*args, **kwargs):
+            return json.dumps({"issues": issues, "security_score": 1, "quality_score": 1, "architecture_score": 1})
+
+        monkeypatch.setattr(orchestrator.security_agent, "_call_llm", fake_llm)
+        result = await orchestrator._analyze_file_batch([{"path": "app.py", "content": "x = 1\n"}], None)
+
+        assert [i["agent_type"] for i in result["issues"]] == ["security", "security"]

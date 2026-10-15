@@ -106,19 +106,20 @@ async def start_analysis(
             "repository_name": repo["name"],
             "status": "in_progress",
             "message": "Analysis started successfully. Check status using the results endpoint.",
-            "estimated_time_seconds": 60,
             "execution_mode": mode,
         }
     except Exception as e:
         logger.error(f"[start_analysis] ❌ Failed to add background task: {str(e)}")
         # Mark analysis as failed since background task couldn't start
         try:
+            # The record is shown to the user; the exception text (hosts,
+            # broker URLs) stays in the log above.
             await repo_service.update_analysis(analysis_id, {
                 "status": "failed",
-                "error_message": f"Failed to start background task: {str(e)}"
+                "error_message": "The analysis could not be queued. Please try again."
             })
-        except:
-            pass
+        except Exception as update_error:
+            logger.error(f"[start_analysis] Could not mark {analysis_id} failed: {type(update_error).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=safe_detail(e, "Failed to start analysis task")
@@ -162,7 +163,7 @@ async def get_analysis_results(
         )
 
     analysis = await repo_service.get_latest_analysis(repo["id"])
-    logger.info(f"[get_analysis_results] repo_id={repo_id} (resolved={repo['id']}), analysis={analysis}")
+    logger.debug(f"[get_analysis_results] repo_id={repo_id} (resolved={repo['id']})")
     if not analysis:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -172,9 +173,7 @@ async def get_analysis_results(
     issues = []
     if analysis["status"] == "completed":
         issues = await repo_service.get_issues(analysis["id"])
-        logger.info(f"[get_analysis_results] Found {len(issues)} issues for analysis {analysis['id']}")
-        if issues:
-            logger.info(f"[get_analysis_results] Sample issue: {issues[0] if issues else 'none'}")
+        logger.debug(f"[get_analysis_results] Found {len(issues)} issues for analysis {analysis['id']}")
     else:
         logger.warning(f"[get_analysis_results] Analysis status is {analysis['status']}, not returning issues")
     
@@ -193,7 +192,11 @@ async def get_analysis_results(
         "medium_issues": analysis.get("medium_issues", 0),
         "low_issues": analysis.get("low_issues", 0),
         "issues": issues,
-        "started_at": analysis["started_at"],
+        # Coverage: scores describe the files reviewed, which can be a sample.
+        "files_analyzed": analysis.get("files_analyzed"),
+        "files_eligible": analysis.get("files_eligible"),
+        "commit_sha": analysis.get("commit_sha"),
+        "started_at": analysis.get("started_at"),
         "completed_at": analysis.get("completed_at"),
         "error_message": analysis.get("error_message")
     }
@@ -246,9 +249,11 @@ async def get_analysis_by_id(
         # Verify user owns the repository
         repo = await repo_service.get_repository(analysis["repository_id"], current_user["id"])
         if not repo:
+            # Same answer as a missing analysis: 403 here confirmed that an
+            # analysis id exists in someone else's account.
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Analysis not found"
             )
         
         # Get issues for this analysis
@@ -286,9 +291,11 @@ async def cancel_analysis(
         # Verify user owns the repository
         repo = await repo_service.get_repository(analysis["repository_id"], current_user["id"])
         if not repo:
+            # Same answer as a missing analysis: 403 here confirmed that an
+            # analysis id exists in someone else's account.
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Analysis not found"
             )
         
         # Only cancel if not finished. "pending" is an analysis waiting in the

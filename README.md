@@ -287,6 +287,7 @@ problem at once, if:
 - `ALLOWED_ORIGINS` is empty or contains `*`, localhost, or a plain `http://` origin
 - no Anthropic credential is set, `DEBUG` is on, or the dev-only Agent SDK provider is selected
 - the GitHub App settings are incomplete or `GITHUB_REDIRECT_URI` is not https
+- `DATABASE_URL` or `REDIS_URL` still points at localhost, or the database uses the development password
 
 **Frontend environment.** Set `VITE_API_BASE_URL=https://<api-host>/api/v1` for
 both the build and the runtime: `server.js` reads it at runtime to build its

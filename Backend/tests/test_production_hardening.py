@@ -26,6 +26,8 @@ def _prod(**overrides):
         ANTHROPIC_AUTH_TOKEN=None,
         GITHUB_AUTH_MODE="oauth",
         GITHUB_REDIRECT_URI="https://app.repoiq.dev/auth/github/callback",
+        DATABASE_URL="postgresql://app:strong-password@db.internal:5432/repoiq",
+        REDIS_URL="redis://default:pw@redis.internal:6379/0",
     )
     values.update(overrides)
     return Settings(**values)
@@ -243,3 +245,19 @@ class TestSecurityHeaders:
 
     def test_a_header_the_route_set_is_kept(self):
         assert self._app().get("/own").headers["x-frame-options"] == "SAMEORIGIN"
+
+
+class TestProductionInfrastructureUrls:
+
+    @pytest.mark.parametrize("overrides, message", [
+        ({"DATABASE_URL": "postgresql://repoiq:repoiq_dev@localhost:5432/repoiq"}, "DATABASE_URL"),
+        ({"DATABASE_URL": "postgresql://repoiq:repoiq_dev@db.internal:5432/repoiq"}, "development password"),
+        ({"REDIS_URL": "redis://localhost:6379/0"}, "REDIS_URL"),
+    ])
+    def test_development_defaults_are_refused(self, overrides, message):
+        with pytest.raises(ValueError) as exc:
+            _prod(**overrides)
+        assert message in str(exc.value)
+
+    def test_real_hosts_pass(self):
+        _prod()

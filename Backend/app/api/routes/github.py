@@ -181,7 +181,7 @@ async def get_file_content(
         if e.status == 404:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File not found: {file_path}"
+                detail="File not found"
             )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -193,7 +193,7 @@ async def get_file_content(
         if "not found" in error_msg or "404" in error_msg:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File not found: {file_path}"
+                detail="File not found"
             )
         # Other server errors
         raise HTTPException(

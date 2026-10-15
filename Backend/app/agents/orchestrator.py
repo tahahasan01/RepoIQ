@@ -37,6 +37,15 @@ BATCH_REVIEW_SCHEMA: Dict[str, Any] = {
                 "type": "object",
                 "properties": {
                     "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                    # Which score the finding counts against, chosen by the
+                    # reviewer. It used to be guessed from substrings of the
+                    # free-text category, so "information_disclosure" or
+                    # "race_condition" counted as quality and a repository with
+                    # real security findings showed Security 100.
+                    "dimension": {
+                        "type": "string",
+                        "enum": ["security", "quality", "architecture", "documentation"],
+                    },
                     "category": {"type": "string"},
                     "file_path": {"type": "string"},
                     "line_number": {"type": "integer"},
@@ -44,7 +53,7 @@ BATCH_REVIEW_SCHEMA: Dict[str, Any] = {
                     "suggestion": {"type": "string"},
                 },
                 "required": [
-                    "severity", "category", "file_path",
+                    "severity", "dimension", "category", "file_path",
                     "line_number", "description", "suggestion",
                 ],
                 "additionalProperties": False,
@@ -325,14 +334,19 @@ count lines yourself.
 
 Look for:
 
-🔴 SECURITY:
+🔴 SECURITY (dimension "security"): anything an attacker or a malicious user
+could exploit, whatever the category name:
 - SQL injection: ANY string concatenation/f-string/format in queries
 - Hardcoded passwords, API keys, tokens
-- Missing input validation
+- Missing input validation that lets untrusted input reach a dangerous sink
 - Command injection (os.system, subprocess with shell=True)
 - Path traversal vulnerabilities
 - XSS vulnerabilities
-- Missing authentication/authorization
+- Missing authentication/authorization, or ownership checks
+- Information disclosure (exception text, internals or other users' data in responses or logs)
+- SSRF, unsafe deserialization, weak cryptography
+- Missing rate limits on authentication or on endpoints that are expensive to abuse
+- Race conditions that let a check be bypassed
 
 ⚠️ CODE QUALITY:
 - Long functions (>50 lines)
@@ -386,6 +400,7 @@ Return a JSON object with exactly this shape:
   "issues": [
     {{
       "severity": "critical|high|medium|low",
+      "dimension": "security|quality|architecture|documentation",
       "category": "sql_injection|hardcoded_secret|missing_error_handling|long_function|etc",
       "file_path": "exact/path/from/list",
       "line_number": 1,
@@ -427,7 +442,11 @@ Accuracy over volume. An empty issues array is an acceptable answer."""
                     issue["file_path"] = files[0]["path"]
                 if "line_number" not in issue:
                     issue["line_number"] = 1
-                # Set agent_type based on category (required by database)
+                # The reviewer's own classification wins; the category guess
+                # below only covers a response without one.
+                dimension = str(issue.get("dimension", "")).lower()
+                if "agent_type" not in issue and dimension in ("security", "quality", "architecture", "documentation"):
+                    issue["agent_type"] = dimension
                 if "agent_type" not in issue:
                     category = issue.get("category", "").lower()
                     if "security" in category or "vulnerability" in category or "injection" in category:
