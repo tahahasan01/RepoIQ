@@ -6,8 +6,6 @@ import {
   AlertTriangle,
   FileCode,
   FileText,
-  Settings,
-  Zap,
   ChevronLeft,
   ChevronRight,
   Play,
@@ -22,6 +20,8 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import AccountDropdown from "@/components/layout/AccountDropdown";
 import NotificationBell from "@/components/NotificationBell";
+import { Logo } from "@/components/Logo";
+import { MAIN_CONTENT_ID, SkipLink } from "@/components/layout/AppHeader";
 import { useState, useEffect, useCallback, lazy, Suspense } from "react";
 import apiClient from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -65,7 +65,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     { href: `/dashboard/${repoId}/issues`, icon: AlertTriangle, label: "Issues" },
     { href: `/dashboard/${repoId}/files`, icon: FileCode, label: "Files" },
     { href: `/dashboard/${repoId}/docs`, icon: FileText, label: "Documentation" },
-    { href: `/dashboard/${repoId}/settings`, icon: Settings, label: "Settings" },
   ] : [];
 
   const [repoName, setRepoName] = useState<string>("Loading...");
@@ -312,6 +311,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
   return (
     <div className="min-h-screen bg-background flex">
+      <SkipLink />
       {isMobile && mobileNavOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/50"
@@ -339,38 +339,34 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       >
         {/* Logo */}
         <div className="h-16 flex items-center justify-between px-4 border-b border-border">
-          <Link to="/repos" className="flex items-center gap-2 overflow-hidden">
-            <div className="w-8 h-8 min-w-[32px] rounded-lg bg-gradient-to-br from-primary to-cyan-400 flex items-center justify-center">
-              <Zap className="h-4 w-4 text-primary-foreground" />
-            </div>
-            {!collapsed && (
-              <motion.span
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="font-bold text-lg whitespace-nowrap"
-              >
-                Repo<span className="gradient-text">IQ</span>
-              </motion.span>
-            )}
+          <Link
+            to="/repos"
+            className="flex items-center overflow-hidden rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Logo size="sm" markOnly={collapsed} />
           </Link>
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-3 space-y-1">
+        <nav aria-label="Repository" className="flex-1 p-3 space-y-1">
           {sidebarLinks.map((link) => {
             const isActive = location.pathname === link.href;
             return (
               <Link
                 key={link.href}
                 to={link.href}
+                aria-current={isActive ? "page" : undefined}
+                // Collapsed, the link is icon-only; the label stays its name.
+                aria-label={collapsed ? link.label : undefined}
+                title={collapsed ? link.label : undefined}
                 className={cn(
-                  "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors",
+                  "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   isActive
                     ? "bg-primary/10 text-primary"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 )}
               >
-                <link.icon className="h-5 w-5 min-w-[20px]" />
+                <link.icon className="h-5 w-5 min-w-[20px]" aria-hidden="true" />
                 {!collapsed && (
                   <span className="text-sm font-medium">{link.label}</span>
                 )}
@@ -381,18 +377,16 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
         {/* Back to repos */}
         <div className="p-3 border-t border-border">
-          <Link to="/repos">
-            <Button
-              variant="ghost"
-              className={cn(
-                "w-full justify-start gap-3",
-                collapsed && "justify-center"
-              )}
-            >
-              <ChevronLeft className="h-4 w-4" />
-              {!collapsed && <span>All Repos</span>}
-            </Button>
-          </Link>
+          <Button
+            variant="ghost"
+            className={cn("w-full justify-start gap-3", collapsed && "justify-center")}
+            asChild
+          >
+            <Link to="/repos" aria-label={collapsed ? "All repositories" : undefined}>
+              <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+              {!collapsed && <span>All repositories</span>}
+            </Link>
+          </Button>
         </div>
 
         {/* Collapse toggle */}
@@ -457,7 +451,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-64">
-                <DropdownMenuLabel>Recent Scans</DropdownMenuLabel>
+                <DropdownMenuLabel>Recent scans</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {!Array.isArray(scanHistory) || scanHistory.length === 0 ? (
                   <div className="p-2 text-sm text-muted-foreground text-center">
@@ -511,7 +505,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               ) : (
                 <>
                   <Play className="h-4 w-4" aria-hidden="true" />
-                  <span className="sr-only sm:not-sr-only">Run Scan</span>
+                  <span className="sr-only sm:not-sr-only">Run scan</span>
                 </>
               )}
             </Button>
@@ -537,6 +531,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               </Button>
             )}
 
+            {/* Same utility cluster, in the same order, as the app header. */}
             <NotificationBell />
             <div className="hidden sm:block">
               <ThemeToggle />
@@ -546,7 +541,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         </header>
 
         {/* Page content */}
-        <div className="p-4 md:p-6">{children}</div>
+        <div id={MAIN_CONTENT_ID} tabIndex={-1} className="p-4 md:p-6 focus:outline-none">{children}</div>
       </main>
 
       {repoId && chatMounted && (

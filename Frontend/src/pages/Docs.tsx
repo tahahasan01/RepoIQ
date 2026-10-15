@@ -245,7 +245,7 @@ const sections: DocSection[] = [
     blocks: [
       {
         kind: "p",
-        text: "Organisations group teams, and teams group people and repositories. Open Organizations or Teams from your avatar menu.",
+        text: "Organisations group teams, and teams group people and repositories. Open Organizations or Teams from the top navigation.",
       },
       {
         kind: "list",
