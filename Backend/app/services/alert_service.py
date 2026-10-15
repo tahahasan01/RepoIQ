@@ -20,27 +20,38 @@ What was broken, and why it is shaped like this now:
     condition 24 times a day. Each alert carries a dedupe key naming the
     analysis it describes; one condition in one analysis is one alert, however
     often the checks run, and acknowledging it is final.
+  - The quality bar was one deployment-wide setting, although every user has
+    their own "alert me below N" (and a security-alerts toggle) in
+    user_settings. Evaluation now raises a quality alert when ANY member of the
+    organisation would want it (score below the highest member threshold), and
+    each reader is shown only the alerts their own settings ask for
+    (wanted_by). Storage stays one row per condition per analysis.
 
 Alert types (alert_type):
   critical_issues         latest analysis has critical_issues > 0 (any agent)
   security_vulnerability  latest analysis has >= 1 critical finding from the
                           security agent (counted from `issues`)
-  quality_threshold       latest analysis overall_score < ALERT_QUALITY_THRESHOLD
+  quality_threshold       latest analysis overall_score < the highest
+                          alert_score_threshold among the organisation's
+                          members; shown to a member only when it is below
+                          their own threshold
 
 Which repositories belong to an organisation is OrganizationService's answer
 (repositories assigned to one of its teams).
 """
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.concurrency import run_blocking
-from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.postgres import get_service_db
+from app.services.user_settings_service import DEFAULT_USER_SETTINGS, get_user_settings, get_users_settings
 
 logger = get_logger(__name__)
-settings = get_settings()
+
+DEFAULT_ALERT_THRESHOLD = DEFAULT_USER_SETTINGS["alert_score_threshold"]
 
 
 class AlertTypes:
@@ -99,7 +110,9 @@ def quality_threshold_condition(
         "severity": "high" if score < 50 else "medium",
         "repository_id": repo["id"],
         "dedupe_key": _analysis_key(analysis),
-        "message": f"Quality score {score} is below the threshold of {threshold} in {repo.get('name')}",
+        # "your": the alert is only ever shown to someone whose own threshold
+        # the score is below (wanted_by), which may be lower than this one.
+        "message": f"Quality score {score} in {repo.get('name')} is below your alert threshold",
         "details": {**_base_details(repo, analysis), "score": score, "threshold": threshold},
     }
 
@@ -125,6 +138,36 @@ def security_vulnerability_condition(
     }
 
 
+def wanted_by(alert: Dict[str, Any], prefs: Dict[str, Any]) -> bool:
+    """
+    Whether a stored alert is one this user's settings ask to see.
+
+    A quality alert is stored when the score is below ANY member's threshold;
+    this narrows it to members whose own threshold the score is below. An
+    alert without a recorded score (rows from before scores were stored) is
+    shown - there is nothing to compare.
+    """
+    alert_type = alert.get("alert_type")
+    if alert_type == AlertTypes.QUALITY_THRESHOLD:
+        score = (alert.get("details") or {}).get("score")
+        return score is None or score < prefs["alert_score_threshold"]
+    if alert_type == AlertTypes.SECURITY_VULNERABILITY:
+        return bool(prefs["security_alerts"])
+    return True
+
+
+def personalise(alerts: List[Dict[str, Any]], prefs: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The alerts this user wants, with a quality alert's threshold shown as theirs."""
+    shown = []
+    for alert in alerts:
+        if not wanted_by(alert, prefs):
+            continue
+        if alert.get("alert_type") == AlertTypes.QUALITY_THRESHOLD and isinstance(alert.get("details"), dict):
+            alert = {**alert, "details": {**alert["details"], "threshold": prefs["alert_score_threshold"]}}
+        shown.append(alert)
+    return shown
+
+
 class AlertService:
     def __init__(self):
         self.db = get_service_db()
@@ -132,16 +175,10 @@ class AlertService:
     # -- evaluation --------------------------------------------------------
 
     async def _latest_analyses(
-        self, organization_id: str
+        self, organization_id: str, org: Dict[str, Any]
     ) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
         """(repository, its latest completed analysis) for each org repository."""
         from app.services.organization_service import OrganizationService
-
-        org = (await run_blocking(
-            self.db.table("organizations").select("owner_id").eq("id", organization_id).single().execute
-        )).data
-        if not org:
-            return []
 
         # The owner always passes the organisation access check, so this is the
         # organisation's full repository set, not one member's view of it.
@@ -162,6 +199,30 @@ class AlertService:
         for analysis in analyses:
             latest.setdefault(analysis["repository_id"], analysis)
         return [(repo, latest[repo["id"]]) for repo in repos if repo["id"] in latest]
+
+    async def _quality_threshold(self, organization_id: str, org: Dict[str, Any]) -> int:
+        """
+        The highest alert_score_threshold among the organisation's members:
+        the owner, team managers and team members.
+
+        Raising at the highest bar and filtering per reader (wanted_by) keeps
+        one stored alert per condition while honouring every member's setting.
+        Three queries however many members there are.
+        """
+        teams = (await run_blocking(
+            self.db.table("teams").select("id, manager_id").eq("organization_id", organization_id).execute
+        )).data or []
+        people = {org.get("owner_id")} | {t.get("manager_id") for t in teams}
+        if teams:
+            members = (await run_blocking(
+                self.db.table("team_members").select("user_id")
+                .in_("team_id", [t["id"] for t in teams]).execute
+            )).data or []
+            people.update(m["user_id"] for m in members)
+
+        prefs = await get_users_settings(people)
+        thresholds = [p["alert_score_threshold"] for p in prefs.values()]
+        return max(thresholds, default=DEFAULT_ALERT_THRESHOLD)
 
     async def _critical_security_findings(self, analysis_ids: List[str]) -> Dict[str, int]:
         """{analysis_id: critical security findings}, in one query."""
@@ -185,8 +246,18 @@ class AlertService:
         Every alert condition currently true for the organisation, unstored.
         Derived only from each repository's latest completed analysis.
         """
-        threshold = settings.ALERT_QUALITY_THRESHOLD
-        pairs = await self._latest_analyses(organization_id)
+        org = (await run_blocking(
+            self.db.table("organizations").select("owner_id").eq("id", organization_id).single().execute
+        )).data
+        if not org:
+            return []
+
+        # Independent reads: the repositories' latest analyses and the members'
+        # thresholds.
+        pairs, threshold = await asyncio.gather(
+            self._latest_analyses(organization_id, org),
+            self._quality_threshold(organization_id, org),
+        )
         # Only an analysis that reported critical issues can have critical
         # security findings; the others are not looked up.
         findings = await self._critical_security_findings(
@@ -275,6 +346,10 @@ class AlertService:
         row.pop("dedupe_key", None)
         return row
 
+    async def alerts_for_user(self, alerts: List[Dict[str, Any]], user_id: str) -> List[Dict[str, Any]]:
+        """`alerts` narrowed to what this user's notification settings ask for."""
+        return personalise(alerts, await get_user_settings(user_id))
+
     async def visible_repository_ids(self, organization_id: str, user_id: str) -> List[str]:
         """
         Repositories whose alerts this user may see: the organization's owner
@@ -324,8 +399,11 @@ class AlertService:
         )
         if not include_acknowledged:
             query = query.eq("acknowledged", False)
-        result = await run_blocking(query.order("created_at", desc=True).execute)
-        return result.data or []
+        result, prefs = await asyncio.gather(
+            run_blocking(query.order("created_at", desc=True).execute),
+            get_user_settings(user_id),
+        )
+        return personalise(result.data or [], prefs)
 
     async def acknowledge_alert(self, alert_id: str, user_id: str) -> Optional[Dict[str, Any]]:
         """

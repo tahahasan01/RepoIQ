@@ -1,7 +1,9 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import asyncio
 import hashlib
 import re
+import time
 from app.db.postgres import get_service_db
 from app.services.github_service import create_github_service
 from app.services.redis_service import get_redis_service
@@ -18,6 +20,12 @@ settings = get_settings()
 # burst of page loads.
 ARCHITECTURE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 ARCHITECTURE_FALLBACK_TTL_SECONDS = 5 * 60
+# Single-flight for a cold diagram: the generating request holds a lock this
+# long at most (a crashed holder blocks no one past it); the others poll the
+# cache for up to ARCHITECTURE_WAIT_SECONDS. A generation normally takes ~12s.
+ARCHITECTURE_LOCK_TTL_SECONDS = 120
+ARCHITECTURE_WAIT_SECONDS = 45.0
+ARCHITECTURE_POLL_SECONDS = 0.5
 
 
 class RepositoryService:
@@ -871,10 +879,48 @@ class RepositoryService:
         """
         digest = hashlib.sha256("\n".join(sorted(file_paths)).encode("utf-8")).hexdigest()[:32]
         cache_key = f"architecture:diagram:{repo['id']}:{digest}"
-        cached = self.redis.get(cache_key)
-        if isinstance(cached, str) and cached:
+        cached = self._cached_diagram(cache_key)
+        if cached:
             return cached
 
+        # COST: single-flight. Two cold requests for the same tree (the page
+        # mounting twice, two members opening it) each made a paid model call.
+        # One request generates; the others wait for its result in the cache.
+        lock_key = f"{cache_key}:lock"
+        token = self.redis.try_lock(lock_key, ttl=ARCHITECTURE_LOCK_TTL_SECONDS)
+        if token is None:
+            deadline = time.monotonic() + ARCHITECTURE_WAIT_SECONDS
+            while time.monotonic() < deadline:
+                await asyncio.sleep(ARCHITECTURE_POLL_SECONDS)
+                cached = self._cached_diagram(cache_key)
+                if cached:
+                    return cached
+                # The holder finished without caching (no diagram) or died and
+                # its lock expired: take over rather than keep waiting.
+                token = self.redis.try_lock(lock_key, ttl=ARCHITECTURE_LOCK_TTL_SECONDS)
+                if token is not None:
+                    break
+            # Still locked after the wait: generate anyway. A slow holder costs
+            # one duplicate call; a user waiting indefinitely costs more.
+
+        try:
+            # A holder may have cached its result between our last read and the
+            # lock coming free.
+            cached = self._cached_diagram(cache_key)
+            if cached:
+                return cached
+            return await self._generate_architecture_diagram(repo, file_paths, cache_key, user_id)
+        finally:
+            if token is not None:
+                self.redis.release_lock(lock_key, token)
+
+    def _cached_diagram(self, cache_key: str) -> Optional[str]:
+        cached = self.redis.get(cache_key)
+        return cached if isinstance(cached, str) and cached else None
+
+    async def _generate_architecture_diagram(
+        self, repo: Dict[str, Any], file_paths: List[str], cache_key: str, user_id: Optional[str]
+    ) -> str:
         from app.agents.documentation_agent import DocumentationAgent
 
         repo_name = repo.get("name") or "Repository"

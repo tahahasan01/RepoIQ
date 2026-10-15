@@ -254,6 +254,21 @@ class TestArchitectureDiagramIsCached:
                 store[key] = (value, ttl)
                 return True
 
+            # SET NX semantics, kept apart from `store` so cache assertions
+            # see only cached diagrams.
+            locks = {}
+
+            def try_lock(self, key, ttl):
+                if key in self.locks:
+                    return None
+                self.locks[key] = token = f"token-{len(self.locks)}-{key}"
+                return token
+
+            def release_lock(self, key, token):
+                if self.locks.get(key) == token:
+                    del self.locks[key]
+
+        monkeypatch.setattr(repository_service, "ARCHITECTURE_POLL_SECONDS", 0.01)
         svc = repository_service.RepositoryService.__new__(repository_service.RepositoryService)
         svc.redis = Redis()
         svc.db = None
@@ -297,3 +312,154 @@ class TestArchitectureDiagramIsCached:
         await svc.get_architecture_diagram({"id": "r1", "name": "api"}, ["a.py"])
 
         assert [ttl for _, ttl in store.values()] == [ARCHITECTURE_FALLBACK_TTL_SECONDS]
+
+    async def test_concurrent_cold_requests_make_one_model_call(self, service):
+        import asyncio
+
+        svc, generate, _ = service
+
+        async def slow(**_):
+            await asyncio.sleep(0.1)
+            return "+--+\n|ui|\n+--+"
+
+        generate.side_effect = slow
+        repo = {"id": "r1", "name": "api"}
+
+        results = await asyncio.gather(*(svc.get_architecture_diagram(repo, ["a.py"]) for _ in range(3)))
+
+        assert results == ["+--+\n|ui|\n+--+"] * 3
+        assert generate.await_count == 1
+        assert svc.redis.locks == {}  # released
+
+    async def test_a_dead_lock_holder_does_not_block_generation(self, service, monkeypatch):
+        """A crashed holder never caches or releases; the waiter gives up and generates."""
+        from app.services import repository_service
+
+        monkeypatch.setattr(repository_service, "ARCHITECTURE_WAIT_SECONDS", 0.05)
+        svc, generate, store = service
+        svc.redis.locks[_diagram_key("r1", ["a.py"]) + ":lock"] = "dead-holder"
+
+        diagram = await svc.get_architecture_diagram({"id": "r1", "name": "api"}, ["a.py"])
+
+        assert diagram == "+--+\n|ui|\n+--+"
+        assert generate.await_count == 1
+        assert len(store) == 1
+        # Not ours to release: someone else holds it.
+        assert list(svc.redis.locks.values()) == ["dead-holder"]
+
+    async def test_an_expired_lock_is_taken_over_without_waiting_out_the_deadline(self, service, monkeypatch):
+        import asyncio
+        import time
+
+        from app.services import repository_service
+
+        monkeypatch.setattr(repository_service, "ARCHITECTURE_WAIT_SECONDS", 30.0)
+        svc, generate, _ = service
+        lock_key = _diagram_key("r1", ["a.py"]) + ":lock"
+        svc.redis.locks[lock_key] = "dead-holder"
+
+        async def expire():
+            await asyncio.sleep(0.05)
+            svc.redis.locks.pop(lock_key)  # its TTL ran out
+
+        started = time.monotonic()
+        diagram, _ = await asyncio.gather(
+            svc.get_architecture_diagram({"id": "r1", "name": "api"}, ["a.py"]), expire()
+        )
+
+        assert diagram == "+--+\n|ui|\n+--+"
+        assert generate.await_count == 1
+        assert time.monotonic() - started < 5
+
+    async def test_a_waiter_returns_the_holders_result(self, service):
+        import asyncio
+
+        svc, generate, store = service
+        key = _diagram_key("r1", ["a.py"])
+        svc.redis.locks[key + ":lock"] = "other-request"
+
+        async def finish():
+            await asyncio.sleep(0.05)
+            store[key] = ("from the holder", 60)
+
+        diagram, _ = await asyncio.gather(
+            svc.get_architecture_diagram({"id": "r1", "name": "api"}, ["a.py"]), finish()
+        )
+
+        assert diagram == "from the holder"
+        assert generate.await_count == 0
+
+
+def _diagram_key(repo_id, paths):
+    import hashlib
+
+    digest = hashlib.sha256("\n".join(sorted(paths)).encode("utf-8")).hexdigest()[:32]
+    return f"architecture:diagram:{repo_id}:{digest}"
+
+
+class TestRedisLock:
+
+    @pytest.fixture
+    def redis(self):
+        from app.services.redis_service import RedisService
+
+        service = RedisService()
+        if not service.available:
+            pytest.skip("Redis is not available")
+        yield service
+        service.client.delete("test:lock:a")
+        service.close()
+
+    def test_only_one_holder_at_a_time(self, redis):
+        token = redis.try_lock("test:lock:a", ttl=30)
+
+        assert token
+        assert redis.try_lock("test:lock:a", ttl=30) is None
+        assert 0 < redis.client.ttl("test:lock:a") <= 30
+
+        redis.release_lock("test:lock:a", token)
+        assert redis.try_lock("test:lock:a", ttl=30)
+
+    def test_release_with_another_token_keeps_the_lock(self, redis):
+        """A holder that overran its TTL must not release its successor's lock."""
+        redis.try_lock("test:lock:a", ttl=30)
+
+        redis.release_lock("test:lock:a", "stale-token")
+
+        assert redis.try_lock("test:lock:a", ttl=30) is None
+
+    def test_fails_open_when_redis_is_down(self):
+        from app.services.redis_service import RedisService
+
+        down = RedisService.__new__(RedisService)
+        down.available = False
+
+        assert down.try_lock("k", ttl=5)
+        down.release_lock("k", "t")  # no error
+
+    def test_fails_open_when_redis_errors(self):
+        from unittest.mock import MagicMock
+
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        from app.services.redis_service import RedisService
+
+        broken = RedisService.__new__(RedisService)
+        broken.available = True
+        broken.client = MagicMock()
+        broken.client.set.side_effect = RedisConnectionError("gone")
+        broken.client.eval.side_effect = RedisConnectionError("gone")
+
+        assert broken.try_lock("k", ttl=5)
+        broken.release_lock("k", "t")  # no error
+
+
+class TestRedisUrlIsNotLogged:
+
+    def test_the_password_is_redacted(self):
+        from app.services.redis_service import redact_url
+
+        assert redact_url("rediss://default:s3cret@cache.example.com:6380/0") == \
+            "rediss://default:***@cache.example.com:6380/0"
+        assert redact_url("redis://:s3cret@host/1") == "redis://:***@host/1"
+        assert redact_url("redis://localhost:6379/0") == "redis://localhost:6379/0"
