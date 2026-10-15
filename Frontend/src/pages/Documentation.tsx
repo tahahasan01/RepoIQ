@@ -13,13 +13,19 @@ import {
   CheckCircle,
   FileDown,
   GitBranch,
+  Map as MapIcon,
+  Network,
 } from "lucide-react";
 import type { BugReport } from "@/types/scan";
 import { generateFullAnalysisReport, generateBugReportPDF, AnalysisReport } from "@/services/reportService";
 import { useRepository, useAnalysisResults, useAnalysisById } from "@/hooks/useApiQueries";
+import { RoadmapPanel } from "@/components/docs/RoadmapPanel";
+import { ArchitecturePanel } from "@/components/docs/ArchitecturePanel";
+
+type DocsTab = "report" | "bugreport" | "roadmap" | "architecture";
 
 export default function Documentation() {
-  const [activeTab, setActiveTab] = useState<"report" | "bugreport">("report");
+  const [activeTab, setActiveTab] = useState<DocsTab>("report");
   
   const params = useParams();
   const repoId = (params as any).id || (params as any).repoId;
@@ -141,11 +147,14 @@ export default function Documentation() {
         <div className="flex gap-1 border-b border-border">
           {[
             { id: "report", label: "Full Analysis Report", icon: FileText },
-            { id: "bugreport", label: "Bug Report", icon: Bug }
+            { id: "bugreport", label: "Bug Report", icon: Bug },
+            { id: "roadmap", label: "Roadmap", icon: MapIcon },
+            { id: "architecture", label: "Architecture", icon: Network },
           ].map((tab) => (
-            <button 
-              key={tab.id} 
-              onClick={() => setActiveTab(tab.id as any)} 
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as DocsTab)}
+              aria-pressed={activeTab === tab.id} 
               className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-all ${
                 activeTab === tab.id 
                   ? "border-primary text-primary bg-primary/5" 
@@ -339,6 +348,32 @@ export default function Documentation() {
                     </div>
                   </div>
                 )}
+              </div>
+            </>
+          )}
+
+          {/* ROADMAP TAB */}
+          {activeTab === "roadmap" && (
+            <>
+              <div className="px-6 py-4 border-b border-border bg-muted/30">
+                <h2 className="text-lg font-semibold text-foreground">Improvement roadmap</h2>
+                <p className="text-xs text-muted-foreground mt-1">The latest analysis' findings, ordered by what to fix first</p>
+              </div>
+              <div className="p-8">
+                {repoId && <RoadmapPanel repoId={repoId} />}
+              </div>
+            </>
+          )}
+
+          {/* ARCHITECTURE TAB - mounted only when open: generating the diagram is a model call */}
+          {activeTab === "architecture" && (
+            <>
+              <div className="px-6 py-4 border-b border-border bg-muted/30">
+                <h2 className="text-lg font-semibold text-foreground">Architecture</h2>
+                <p className="text-xs text-muted-foreground mt-1">How the repository is organised, drawn from its file layout</p>
+              </div>
+              <div className="p-8">
+                {repoId && <ArchitecturePanel repoId={repoId} />}
               </div>
             </>
           )}
