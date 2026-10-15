@@ -376,6 +376,16 @@ class TestValidation:
         reason = validate_fix(planted, {"changed": True, "updated_file": updated, "addressed": [1]})
         assert reason and "invisible" in reason
 
+    def test_summary_cannot_forge_commit_trailers(self):
+        from app.services.autofix import clean_summary
+
+        forged = "Fix eval\n\nCo-authored-by: Someone Else <x@example.com>\u202e"
+        cleaned = clean_summary(forged)
+        assert "\n" not in cleaned and "\u202e" not in cleaned
+        assert cleaned.startswith("Fix eval Co-authored-by")  # inert on one line
+        assert clean_summary("") == "Fix for the listed findings"
+        assert len(clean_summary("x" * 500)) == 200
+
     def test_ordinary_unicode_is_allowed(self):
         from app.services.autofix import validate_fix
 
@@ -423,3 +433,22 @@ class TestDispatch:
                 patch("app.tasks.autofix_tasks.autofix_task") as task:
             analysis_dispatch.dispatch_autofix("run-1", "tok", None)
         task.delay.assert_called_once_with(run_id="run-1")
+
+
+@requires_db
+class TestHiddenContext:
+
+    def test_hidden_characters_in_surrounding_code_block_the_proposal(self, db, user, repo, issues):  # noqa: F811
+        """Context lines in the diff come from the original file."""
+        from app.services import autofix
+
+        run = asyncio.run(autofix.create_run(repo, user["id"], [issues[0]["id"]]))
+        planted = ORIGINAL.replace("def g():", "def g():  # \u200b")
+        github = _github({"app.py": planted})
+        proposal = dict(_good(), updated_file=FIXED.replace("def g():", "def g():  # \u200b"))
+
+        result, _ = _run(run["id"], github, {"app.py": proposal})
+
+        assert result["status"] == "completed"
+        stored = asyncio.run(autofix.get_run(run["id"], user["id"]))
+        assert "invisible" in stored["skipped"][0]["reason"]

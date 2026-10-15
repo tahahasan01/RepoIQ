@@ -170,7 +170,15 @@ class TOONService:
             12| code
         A line inside a file always carries an `N|` prefix, so file content
         cannot pass itself off as a header or as the end of the fenced block.
+
+        SECURITY: both the path and the content are untrusted. Git allows
+        newlines in file names, so a raw path could close the fence and start
+        "instructions"; and a line split only on \\n can still carry \\r,
+        \\u2028 and friends, which the model may read as a line break and so
+        as an unprefixed line. The path is rendered as a JSON string and every
+        control or line-separator character inside a line is shown escaped.
         """
+        import json
         blocks = []
         total_chars = 0
         for file in files:
@@ -178,13 +186,13 @@ class TOONService:
             if chars_left <= 0:
                 break
             path = file.get("path", "unknown")
-            lines = [f"--- FILE: {path} ---"]
+            lines = [f"--- FILE: {json.dumps(path, ensure_ascii=True)} ---"]
             used = 0
             truncated = False
             for number, line in enumerate(file.get("content", "").split("\n"), 1):
                 if not line.strip():
                     continue
-                rendered = f"{number}| {line.rstrip()}"
+                rendered = f"{number}| {cls._visible_inline(line.rstrip())}"
                 if used + len(rendered) > chars_left:
                     lines.append("...[truncated]")
                     truncated = True
@@ -196,6 +204,19 @@ class TOONService:
             if truncated:
                 break  # budget spent; a header with no code helps no one
         return "\n\n".join(blocks)
+
+    @staticmethod
+    def _visible_inline(text: str) -> str:
+        """Escape anything that could act as a line break or hide text (tab is kept)."""
+        import unicodedata
+
+        out = []
+        for ch in text:
+            if ch != "\t" and unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp"):
+                out.append(f"\\u{ord(ch):04x}")
+            else:
+                out.append(ch)
+        return "".join(out)
 
     @classmethod
     def _compress_code(cls, code: str) -> str:

@@ -130,6 +130,24 @@ def hidden_characters(text: str) -> List[str]:
     return sorted(found)
 
 
+def clean_summary(text: Optional[str], limit: int = 200) -> str:
+    """
+    The model's one-line summary, made safe to put in a commit message and a
+    pull request. Model output is shaped by repository content: a newline
+    would let it append trailers ("Co-authored-by: ...", "Signed-off-by: ...")
+    that forge attribution, and control/format characters hide text.
+    """
+    import unicodedata
+
+    kept = [
+        " " if unicodedata.category(ch) in ("Zl", "Zp") or ch in "\r\n\t" else ch
+        for ch in (text or "")
+        if ch in "\r\n\t" or unicodedata.category(ch) not in _FORBIDDEN_CATEGORIES
+    ]
+    single = " ".join("".join(kept).split())
+    return (single[:limit].rstrip() or "Fix for the listed findings")
+
+
 def _lines(text: str) -> List[str]:
     """Split on \\n only - the one line break every viewer agrees on."""
     return text.split("\n")
@@ -424,6 +442,15 @@ async def run_autofix(run_id: str, github_token: str) -> Dict[str, Any]:
                 skipped.append({"file_path": path, "reason": "The fix could not be generated"})
                 continue
             reason = validate_fix(original, proposal, [i.get("line_number") for i in file_issues])
+            if not reason:
+                # Context and removed lines come from the original file; a
+                # hidden character there would mislead the review just as well.
+                hidden = hidden_characters(_unified_diff(path, original, proposal["updated_file"]))
+                if hidden:
+                    reason = (
+                        "The surrounding code contains invisible characters that would hide part of "
+                        f"the change from review ({', '.join(hidden[:5])})"
+                    )
             if reason:
                 skipped.append({"file_path": path, "reason": reason})
                 continue
@@ -435,7 +462,7 @@ async def run_autofix(run_id: str, github_token: str) -> Dict[str, Any]:
                 ),
                 "original": original,
                 "content": proposal["updated_file"],
-                "summary": proposal.get("summary") or "Fix for the listed findings",
+                "summary": clean_summary(proposal.get("summary")),
                 "issues": [file_issues[n - 1] for n in sorted(addressed)],
             })
 
