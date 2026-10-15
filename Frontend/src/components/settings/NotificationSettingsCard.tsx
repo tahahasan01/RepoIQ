@@ -174,7 +174,7 @@ export function NotificationSettingsCard() {
               role={thresholdError ? "alert" : undefined}
             >
               {thresholdError ??
-                "A score from 0 to 100. Saved with your preferences; organization alerts still use RepoIQ's standard threshold for now."}
+                "A score from 0 to 100. Organization alerts use this threshold for you."}
             </p>
           </div>
         </div>
