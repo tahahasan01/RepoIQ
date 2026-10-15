@@ -30,3 +30,30 @@ export function formatCategory(category: string | null | undefined): string {
   if (!words) return "Other";
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
+
+export type Severity = "critical" | "high" | "medium" | "low";
+
+export const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
+
+/**
+ * A finding's severity, from whatever the API sent. Anything unrecognised
+ * (an empty value, "info", a typo) is treated as low rather than dropped.
+ */
+export function normalizeSeverity(severity: string | null | undefined): Severity {
+  const value = (severity || "").toLowerCase().trim();
+  return (SEVERITIES as string[]).includes(value) ? (value as Severity) : "low";
+}
+
+/** "critical" -> "Critical". */
+export function severityLabel(severity: string | null | undefined): string {
+  const value = normalizeSeverity(severity);
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/** "src/app/config.py" -> { name: "config.py", folder: "src/app" }. */
+export function splitPath(path: string | null | undefined): { name: string; folder: string } {
+  const clean = (path || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  const cut = clean.lastIndexOf("/");
+  if (cut === -1) return { name: clean, folder: "" };
+  return { name: clean.slice(cut + 1), folder: clean.slice(0, cut) };
+}

@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
-import { useState, useEffect, useMemo } from "react";
-import { useParams } from "react-router-dom";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
 import apiClient from "@/lib/api";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
@@ -21,7 +21,8 @@ import {
 import { isGitHubAccessError } from "@/lib/apiErrors";
 import {
   Search,
-  AlertTriangle,
+  SearchX,
+  CheckCircle2,
   Sparkles,
   Copy,
   Check,
@@ -30,13 +31,10 @@ import {
   Wand2,
 } from "lucide-react";
 import type { ScanIssue } from "@/types/scan";
-
-const severityColors: Record<string, string> = {
-  critical: "severity-critical",
-  high: "severity-high",
-  medium: "severity-medium",
-  low: "severity-low",
-};
+import { FindingRow } from "@/components/shared/FindingRow";
+import { SeverityBadge } from "@/components/shared/SeverityBadge";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { LoadingState } from "@/components/shared/LoadingState";
 
 // Issues caching functions. Module scope: they read nothing from the
 // component, and the load effect below can then depend on repoId alone.
@@ -88,7 +86,34 @@ export default function Issues() {
   const [selectedSeverities, setSelectedSeverities] = useState<string[]>([]);
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
-  const [selectedIssue, setSelectedIssue] = useState<number | null>(null);
+  // The open finding lives in the URL (?finding=<id>), so the dashboard and
+  // anywhere else can link straight to one and the panel opens on arrival.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedIssue = searchParams.get("finding");
+  const openIssue = useCallback(
+    (id: string) =>
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("finding", id);
+          return next;
+        },
+        { replace: true }
+      ),
+    [setSearchParams]
+  );
+  const closeIssue = useCallback(
+    () =>
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("finding");
+          return next;
+        },
+        { replace: true }
+      ),
+    [setSearchParams]
+  );
   const [copiedFix, setCopiedFix] = useState(false);
   const [issues, setIssues] = useState<ScanIssue[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -329,9 +354,9 @@ export default function Issues() {
     );
   };
 
-  const selectedIssueData = issues.find(
-    (issue) => issue.id === selectedIssue
-  );
+  const selectedIssueData = selectedIssue
+    ? issues.find((issue) => String(issue.id) === selectedIssue)
+    : undefined;
 
   const handleCopyFix = () => {
     if (selectedIssueData) {
@@ -341,21 +366,65 @@ export default function Issues() {
     }
   };
 
+  const filtersActive =
+    searchQuery !== "" || selectedSeverities.length > 0 || selectedTypes.length > 0 || selectedAreas.length > 0;
+
+  const clearFilters = () => {
+    setSearchQuery("");
+    setSelectedSeverities([]);
+    setSelectedTypes([]);
+    setSelectedAreas([]);
+  };
+
+  const issueCheckbox = (issue: ScanIssue) =>
+    isFixableIssueId(String(issue.id)) ? (
+      <Checkbox
+        checked={fixSelection.includes(String(issue.id))}
+        onCheckedChange={() => toggleFix(String(issue.id))}
+        aria-label={`Select ${issue.file} line ${issue.line} to fix with AI`}
+      />
+    ) : null;
+
+  const suggestionsButton = (issue: ScanIssue) => (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="gap-1 text-link"
+      onClick={() => openIssue(String(issue.id))}
+      aria-label={`Suggestions for ${issue.file} line ${issue.line}`}
+    >
+      <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+      Suggestions
+    </Button>
+  );
+
+  const selectVisibleCheckbox = (
+    <Checkbox
+      checked={headerChecked}
+      onCheckedChange={toggleAllVisible}
+      disabled={visibleFixableIds.length === 0}
+      aria-label={
+        visibleSelected > 0
+          ? "Clear the selection of visible issues"
+          : `Select visible issues to fix (up to ${MAX_AUTOFIX_ISSUES})`
+      }
+    />
+  );
+
   return (
     <DashboardLayout>
-      <div className="flex gap-6 h-[calc(100vh-8rem)]">
+      <div className="flex gap-6 md:h-[calc(100vh-8rem)]">
         {/* Issues list */}
-        <motion.div
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          className="flex-1 flex flex-col glass-panel rounded-xl overflow-hidden"
+        <section
+          aria-label="Findings"
+          className="flex min-w-0 flex-1 flex-col glass-panel rounded-xl md:overflow-hidden"
         >
           {/* Header */}
-          <div className="p-4 border-b border-border">
-            <div className="flex items-center gap-4 mb-4">
+          <div className="space-y-4 border-b border-border p-4">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <h2 className="text-xl font-semibold">Issues</h2>
-              <span className="text-sm text-muted-foreground">
-                {isLoading ? 'Loading...' : `${filteredIssues.length} found`}
+              <span className="text-sm text-muted-foreground" aria-live="polite">
+                {isLoading ? "Loading…" : `${filteredIssues.length} found`}
               </span>
               <Button
                 variant="outline"
@@ -373,7 +442,7 @@ export default function Issues() {
               </Button>
             </div>
             {fixSelection.length > 0 && (
-              <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2">
                 <span className="text-sm font-medium" aria-live="polite">
                   {fixSelection.length} of {MAX_AUTOFIX_ISSUES} selected
                 </span>
@@ -407,15 +476,11 @@ export default function Issues() {
             )}
             {startFix.isError &&
               (isGitHubAccessError(startFix.error) ? (
-                <GitHubAccessNotice
-                  kind={startFix.error.kind}
-                  message={startFix.error.message}
-                  className="mb-4"
-                />
+                <GitHubAccessNotice kind={startFix.error.kind} message={startFix.error.message} />
               ) : (
                 <div
                   role="alert"
-                  className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                  className="flex items-start justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
                 >
                   <span>
                     Couldn't start the fix.{" "}
@@ -433,17 +498,22 @@ export default function Issues() {
                   </button>
                 </div>
               ))}
-            <div className="flex gap-3">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <div className="flex flex-col gap-3 md:flex-row">
+              <div className="relative w-full md:flex-1">
+                <Search
+                  className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                  aria-hidden="true"
+                />
                 <Input
-                  placeholder="Search issues..."
+                  type="search"
+                  placeholder="Search issues…"
+                  aria-label="Search issues"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="pl-10"
                 />
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <MultiSelectFilter
                   label="Severity"
                   options={severityOptions}
@@ -472,150 +542,122 @@ export default function Issues() {
             </div>
           </div>
 
-          {/* Issues table */}
-          <div className="flex-1 overflow-auto">
-            <table className="w-full">
-              <thead className="sticky top-0 bg-card/90 backdrop-blur">
-                <tr className="border-b border-border text-left">
-                  <th className="w-10 p-3">
-                    <Checkbox
-                      checked={headerChecked}
-                      onCheckedChange={toggleAllVisible}
-                      disabled={visibleFixableIds.length === 0}
-                      aria-label={
-                        visibleSelected > 0
-                          ? "Clear the selection of visible issues"
-                          : `Select visible issues to fix (up to ${MAX_AUTOFIX_ISSUES})`
-                      }
-                    />
-                  </th>
-                  <th className="p-3 text-sm font-medium text-muted-foreground">
-                    File
-                  </th>
-                  <th className="p-3 text-sm font-medium text-muted-foreground">
-                    Severity
-                  </th>
-                  <th className="p-3 text-sm font-medium text-muted-foreground">
-                    Finding
-                  </th>
-                  <th className="p-3 text-sm font-medium text-muted-foreground">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredIssues.map((issue, index) => (
-                  <motion.tr
-                    key={issue.id}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.03 }}
-                    onClick={() => setSelectedIssue(issue.id)}
-                    className={`border-b border-border/50 cursor-pointer transition-colors ${
-                      selectedIssue === issue.id
-                        ? "bg-primary/5"
-                        : "hover:bg-muted/30"
-                    }`}
-                  >
-                    <td className="w-10 p-3 align-top" onClick={(e) => e.stopPropagation()}>
-                      {isFixableIssueId(String(issue.id)) && (
-                        <Checkbox
-                          checked={fixSelection.includes(String(issue.id))}
-                          onCheckedChange={() => toggleFix(String(issue.id))}
-                          aria-label={`Select ${issue.file} line ${issue.line} to fix with AI`}
-                        />
-                      )}
-                    </td>
-                    <td className="p-3 align-top w-[12rem] max-w-[14rem]" title={`${issue.file}:${issue.line}`}>
-                      <div className="font-mono text-sm font-medium truncate">
-                        {issue.file.split("/").pop()}
-                        <span className="text-muted-foreground font-normal">:{issue.line}</span>
-                      </div>
-                      {issue.file.includes("/") && (
-                        <div className="font-mono text-xs text-muted-foreground truncate">
-                          {issue.file.slice(0, issue.file.lastIndexOf("/"))}
-                        </div>
-                      )}
-                    </td>
-                    <td className="p-3 align-top">
-                      <span
-                        className={`text-xs px-2 py-1 rounded-full border ${severityColors[issue.severity]}`}
-                      >
-                        {issue.severity}
-                      </span>
-                    </td>
-                    <td className="p-3 align-top text-sm min-w-[16rem]">
-                      <p>{issue.description}</p>
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                        <span className="font-medium text-foreground/80">{AREA_LABELS[issue.area ?? "quality"]}</span>
-                        <span aria-hidden="true">/</span>
-                        <span>{formatCategory(issue.type)}</span>
-                      </div>
-                    </td>
-                    <td className="p-3 align-top">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="gap-1 text-primary"
-                      >
-                        <Sparkles className="h-3 w-3" />
-                          Suggestions
-                      </Button>
-                    </td>
-                  </motion.tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </motion.div>
+          {/* Findings: a table at md+, stacked cards on phones (the table used
+              to scroll sideways there). */}
+          <div className="md:flex-1 md:overflow-auto">
+            {isLoading && issues.length === 0 ? (
+              <div className="p-4">
+                <LoadingState variant="list" count={6} label="Loading issues" />
+              </div>
+            ) : issues.length === 0 ? (
+              <EmptyState
+                icon={CheckCircle2}
+                title="No findings"
+                body="This repository hasn't been analyzed yet, or its latest analysis found nothing to fix."
+              />
+            ) : filteredIssues.length === 0 ? (
+              <EmptyState
+                icon={SearchX}
+                title="No findings match these filters"
+                body="Try a different search, or clear the filters to see every finding."
+                action={
+                  filtersActive ? (
+                    <Button variant="outline" size="sm" onClick={clearFilters}>
+                      Clear filters
+                    </Button>
+                  ) : undefined
+                }
+              />
+            ) : (
+              <>
+                <table className="hidden w-full md:table">
+                  <thead className="sticky top-0 z-10 bg-card">
+                    <tr className="border-b border-border text-left">
+                      <th className="w-10 p-3">{selectVisibleCheckbox}</th>
+                      <th className="p-3 text-sm font-medium text-muted-foreground">File</th>
+                      <th className="p-3 text-sm font-medium text-muted-foreground">Severity</th>
+                      <th className="p-3 text-sm font-medium text-muted-foreground">Finding</th>
+                      <th className="p-3 text-sm font-medium text-muted-foreground">
+                        <span className="sr-only">Actions</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredIssues.map((issue) => (
+                      <FindingRow
+                        key={issue.id}
+                        variant="row"
+                        finding={issue}
+                        selected={selectedIssue === String(issue.id)}
+                        onOpen={() => openIssue(String(issue.id))}
+                        checkbox={issueCheckbox(issue)}
+                        actions={suggestionsButton(issue)}
+                      />
+                    ))}
+                  </tbody>
+                </table>
 
-          {/* Suggestions panel */}
+                <div className="space-y-3 p-3 md:hidden">
+                  <div className="flex items-center gap-2 px-1 text-sm text-muted-foreground">
+                    {selectVisibleCheckbox}
+                    <span aria-hidden="true">Select visible</span>
+                  </div>
+                  <ul className="space-y-2">
+                    {filteredIssues.map((issue) => (
+                      <FindingRow
+                        key={issue.id}
+                        variant="card"
+                        finding={issue}
+                        selected={selectedIssue === String(issue.id)}
+                        onOpen={() => openIssue(String(issue.id))}
+                        checkbox={issueCheckbox(issue)}
+                        actions={suggestionsButton(issue)}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              </>
+            )}
+          </div>
+        </section>
+
+        {/* Suggestions panel */}
         {selectedIssueData && (
-          <motion.div
+          <motion.aside
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
-            className="fixed inset-y-4 right-4 z-40 w-[min(24rem,calc(100vw-2rem))] shadow-2xl bg-card xl:bg-transparent xl:static xl:inset-auto xl:z-auto xl:w-96 xl:shadow-none glass-panel rounded-xl overflow-hidden flex flex-col"
+            aria-label="Suggestions"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") closeIssue();
+            }}
+            className="fixed inset-y-4 right-4 z-40 flex w-[min(24rem,calc(100vw-2rem))] flex-col overflow-hidden glass-panel rounded-xl shadow-2xl xl:static xl:inset-auto xl:z-auto xl:w-96 xl:shadow-none"
           >
             {/* Header */}
-            <div className="p-4 border-b border-border flex items-center justify-between">
+            <div className="flex items-center justify-between border-b border-border p-4">
               <div className="flex items-center gap-2">
-                <Sparkles className="h-5 w-5 text-primary" />
+                <Sparkles className="h-5 w-5 text-primary" aria-hidden="true" />
                 <h3 className="font-semibold">Suggestions</h3>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setSelectedIssue(null)}
-              >
+              <Button variant="ghost" size="icon" onClick={closeIssue} aria-label="Close suggestions">
                 <X className="h-4 w-4" />
               </Button>
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-auto p-4 space-y-4">
+            <div className="flex-1 space-y-4 overflow-auto p-4">
               {/* Issue info */}
-              <div className="p-3 bg-muted/30 rounded-lg space-y-2">
-                <div className="flex items-center gap-2">
-                  <AlertTriangle
-                    className={`h-4 w-4 ${
-                      selectedIssueData.severity === "critical"
-                        ? "text-destructive"
-                        : selectedIssueData.severity === "high"
-                        ? "text-orange-500"
-                        : selectedIssueData.severity === "medium"
-                        ? "text-warning"
-                        : "text-success"
-                    }`}
-                  />
-                  <span className="text-xs font-medium capitalize">{selectedIssueData.severity}</span>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-                    {AREA_LABELS[selectedIssueData.area ?? "quality"]}
-                  </span>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+              <div className="space-y-2 rounded-lg border border-border p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <SeverityBadge severity={selectedIssueData.severity} />
+                  <span className="text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground/80">
+                      {AREA_LABELS[selectedIssueData.area ?? "quality"]}
+                    </span>
+                    {" · "}
                     {formatCategory(selectedIssueData.type)}
                   </span>
                 </div>
-                <p className="font-mono text-xs text-muted-foreground break-all">
+                <p className="break-all font-mono text-xs text-muted-foreground">
                   {selectedIssueData.file}:{selectedIssueData.line}
                 </p>
                 <p className="text-sm">{selectedIssueData.description}</p>
@@ -623,22 +665,17 @@ export default function Issues() {
 
               {/* Code fix */}
               <div>
-                <div className="flex items-center justify-between mb-2">
+                <div className="mb-2 flex items-center justify-between">
                   <span className="text-sm font-medium">How to fix</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="gap-2"
-                    onClick={handleCopyFix}
-                  >
+                  <Button variant="ghost" size="sm" className="gap-2" onClick={handleCopyFix}>
                     {copiedFix ? (
                       <>
-                        <Check className="h-3 w-3 text-success" />
+                        <Check className="h-3 w-3" aria-hidden="true" />
                         Copied
                       </>
                     ) : (
                       <>
-                        <Copy className="h-3 w-3" />
+                        <Copy className="h-3 w-3" aria-hidden="true" />
                         Copy
                       </>
                     )}
@@ -647,13 +684,12 @@ export default function Issues() {
                 {/* The suggestion is prose from the reviewer, not code, so it is
                     set as text; it used to be a monospace block that scrolled
                     sideways and repeated the paragraph above it. */}
-                <p className="p-3 bg-foreground/5 rounded-lg text-sm leading-relaxed whitespace-pre-wrap">
+                <p className="whitespace-pre-wrap rounded-lg bg-muted/50 p-3 text-sm leading-relaxed">
                   {selectedIssueData.fix}
                 </p>
               </div>
             </div>
-
-          </motion.div>
+          </motion.aside>
         )}
       </div>
       {repoId && (

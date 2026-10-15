@@ -15,7 +15,7 @@ import {
   Lock,
   Unlink,
 } from "lucide-react";
-import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { ScoreTrendChart } from "@/components/shared/ScoreTrendChart";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -119,62 +119,15 @@ function StatCard({
 
 function ScoreTrend({ trends }: { trends: TeamSummary["trends"] }) {
   const data = trends.map((t) => ({ date: t.date, score: Math.round(t.average_score) }));
-
-  // A trend needs two points; one dot in an empty grid reads as a broken chart.
-  if (data.length < 2) {
-    return (
-      <div className="h-56 flex flex-col items-center justify-center gap-2 text-muted-foreground text-center">
-        {data.length === 1 ? (
-          <>
-            <div className="text-4xl font-bold" style={{ color: scoreColor(data[0].score) }}>
-              {data[0].score}
-            </div>
-            <p className="text-sm">Average on {data[0].date}. Analyze again to see the trend.</p>
-          </>
-        ) : (
-          <p className="text-sm max-w-xs">
-            No analyses in this period. Analyze a team repository to start the trend.
-          </p>
-        )}
-      </div>
-    );
-  }
-
   return (
-    <div className="h-56" role="img" aria-label={`Average team score over ${data.length} days`}>
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={data} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-          <defs>
-            <linearGradient id="teamScoreFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.25} />
-              <stop offset="95%" stopColor="#06b6d4" stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <XAxis
-            dataKey="date"
-            axisLine={false}
-            tickLine={false}
-            tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
-          />
-          <YAxis
-            domain={[0, 100]}
-            axisLine={false}
-            tickLine={false}
-            tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
-          />
-          <Tooltip
-            formatter={(value: number) => [value, "Average score"]}
-            contentStyle={{
-              backgroundColor: "hsl(var(--card))",
-              border: "1px solid hsl(var(--border))",
-              borderRadius: "8px",
-              color: "hsl(var(--foreground))",
-            }}
-          />
-          <Area type="monotone" dataKey="score" stroke="#06b6d4" strokeWidth={2} fill="url(#teamScoreFill)" />
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
+    <ScoreTrendChart
+      data={data}
+      seriesLabel="Average score"
+      ariaLabel={`Average team score over ${data.length} days`}
+      heightClassName="h-56"
+      singlePointMessage={(point) => `Average on ${point.date}. Analyze again to see the trend.`}
+      emptyMessage="No analyses in this period. Analyze a team repository to start the trend."
+    />
   );
 }
 

@@ -1,39 +1,17 @@
-import { motion } from "framer-motion";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useParams, useLocation } from "react-router-dom";
-import {
-  PieChart,
-  Pie,
-  Cell,
-  ResponsiveContainer,
-  XAxis,
-  YAxis,
-  Tooltip,
-  AreaChart,
-  Area,
-} from "recharts";
+import { Link, useParams, useLocation } from "react-router-dom";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
-import {
-  Shield,
-  Code2,
-  GitBranch,
-  FileText,
-  TrendingUp,
-  AlertTriangle,
-  CheckCircle2,
-  ArrowUpRight,
-  ArrowDownRight,
-} from "lucide-react";
+import { Shield, Code2, GitBranch, FileText, TrendingUp, CheckCircle2, Info } from "lucide-react";
 import apiClient from "@/lib/api";
-import { scoreColor } from '@/lib/scoreColor';
+import { scoreTextClass } from "@/lib/scoreColor";
 import { buildTrend } from "@/lib/trend";
-
-const severityColors: Record<string, string> = {
-  critical: "severity-critical",
-  high: "severity-high",
-  medium: "severity-medium",
-  low: "severity-low",
-};
+import { findingArea, type FindingArea } from "@/lib/findings";
+import { StatTile } from "@/components/shared/StatTile";
+import { FindingRow } from "@/components/shared/FindingRow";
+import { ScoreTrendChart } from "@/components/shared/ScoreTrendChart";
+import { LoadingState } from "@/components/shared/LoadingState";
+import { EmptyState } from "@/components/shared/EmptyState";
 
 interface DashboardIssue {
   id: number | string;
@@ -41,8 +19,20 @@ interface DashboardIssue {
   line: number;
   severity: string;
   type: string;
-  message: string;
+  area: FindingArea;
+  description: string;
 }
+
+/** An API finding in the shape the dashboard lists. */
+const toDashboardIssue = (issue: any): DashboardIssue => ({
+  id: issue.id,
+  file: issue.file_path || issue.file,
+  line: issue.line_number || issue.line,
+  severity: issue.severity,
+  type: issue.category || issue.type,
+  area: findingArea(issue.agent_type),
+  description: issue.description || issue.message || '',
+});
 
 // sessionStorage cache of the latest analysis per repository. Module scope so
 // the loader below can be memoised without depending on them.
@@ -93,14 +83,7 @@ export default function Dashboard() {
       documentation: cached.documentation_score || 0,
     };
 
-    const mappedIssues = (cached.issues || []).map((issue: any) => ({
-      id: issue.id,
-      file: issue.file_path || issue.file,
-      line: issue.line_number || issue.line,
-      severity: issue.severity,
-      type: issue.category || issue.type,
-      message: issue.description || issue.message,
-    }));
+    const mappedIssues = (cached.issues || []).map(toDashboardIssue);
 
     const stats = {
       critical: mappedIssues.filter((i: any) => i.severity === 'critical').length,
@@ -176,14 +159,7 @@ export default function Dashboard() {
               documentation: cached.documentation_score || 0,
             });
 
-            const mappedIssues = cached.issues.map((issue: any) => ({
-              id: issue.id,
-              file: issue.file_path || issue.file,
-              line: issue.line_number || issue.line,
-              severity: issue.severity,
-              type: issue.category || issue.type,
-              message: issue.description || issue.message,
-            }));
+            const mappedIssues = cached.issues.map(toDashboardIssue);
             setRecentIssues(mappedIssues.slice(0, 5));
 
             const statsCalc = {
@@ -274,14 +250,7 @@ export default function Dashboard() {
           });
           
           // Map backend issues to frontend format (may be empty array)
-          const mappedIssues = (results.issues || []).map((issue: any) => ({
-            id: issue.id,
-            file: issue.file_path || issue.file,
-            line: issue.line_number || issue.line,
-            severity: issue.severity,
-            type: issue.category || issue.type,
-            message: issue.description || issue.message,
-          }));
+          const mappedIssues = (results.issues || []).map(toDashboardIssue);
           
           setRecentIssues(mappedIssues.slice(0, 5));
           console.log('[Dashboard] Mapped issues count:', mappedIssues.length);
@@ -382,436 +351,282 @@ export default function Dashboard() {
   // it was the worst-looking number on the page. A metric you do not compute
   // should not be displayed.
   const scoreData = [
-    { name: "Overall", score: scores.overall, icon: TrendingUp, change: 0 },
-    { name: "Security", score: scores.security, icon: Shield, change: 0 },
-    { name: "Quality", score: scores.quality, icon: Code2, change: 0 },
-    { name: "Architecture", score: scores.architecture, icon: GitBranch, change: 0 },
-    { name: "Docs", score: scores.documentation, icon: FileText, change: 0 },
+    // Overall spans two columns on phones and tablets so no tile sits alone
+    // in a row (2 + 2 + 1, or 3 + 2, otherwise).
+    { name: "Overall", score: scores.overall, icon: TrendingUp, className: "col-span-2 lg:col-span-1" },
+    { name: "Security", score: scores.security, icon: Shield },
+    { name: "Quality", score: scores.quality, icon: Code2 },
+    { name: "Architecture", score: scores.architecture, icon: GitBranch },
+    { name: "Docs", score: scores.documentation, icon: FileText },
   ];
 
   const severityData = [
-    { name: 'Critical', value: stats.critical, color: '#ef4444' },
-    { name: 'High', value: stats.high, color: '#f97316' },
-    { name: 'Medium', value: stats.medium, color: '#f59e0b' },
-    { name: 'Low', value: stats.low, color: '#10b981' },
+    { name: 'Critical', value: stats.critical, color: 'hsl(var(--sev-critical))' },
+    { name: 'High', value: stats.high, color: 'hsl(var(--sev-high))' },
+    { name: 'Medium', value: stats.medium, color: 'hsl(var(--sev-medium))' },
+    { name: 'Low', value: stats.low, color: 'hsl(var(--sev-low))' },
   ];
+
+  const issuesHref = `/dashboard/${repoId}/issues`;
+
+  if (loading && !analyzing) {
+    return (
+      <DashboardLayout>
+        <div className="space-y-6">
+          <LoadingState variant="tiles" count={5} label="Loading analysis" />
+          <LoadingState variant="list" count={3} label="Loading recent issues" />
+        </div>
+      </DashboardLayout>
+    );
+  }
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
         {/* No analysis banner */}
-        {!loading && !analyzing && scores.overall === 0 && recentIssues.length === 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="glass-panel rounded-xl p-6 bg-yellow-500/10 border-yellow-500/20"
-          >
-            <div className="flex items-center gap-3">
-              <AlertTriangle className="h-6 w-6 text-yellow-500" />
-              <div>
-                <div className="font-semibold text-yellow-500">No Analysis Data Found</div>
-                <div className="text-sm text-muted-foreground">
-                  This repository hasn't been analyzed yet. Click "Run Scan" to start your first analysis.
-                </div>
+        {!analyzing && scores.overall === 0 && recentIssues.length === 0 && (
+          <div className="flex items-start gap-3 rounded-xl border border-border bg-card p-4">
+            <Info className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <div>
+              <div className="font-medium text-foreground">No analysis yet</div>
+              <div className="text-sm text-muted-foreground">
+                This repository hasn't been analyzed yet. Use Run Scan to start the first analysis.
               </div>
             </div>
-          </motion.div>
+          </div>
         )}
-        
+
         {/* Analyzing banner */}
         {analyzing && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="glass-panel rounded-xl p-4 bg-blue-500/10 border-blue-500/20"
+          <div
+            role="status"
+            className="flex items-start gap-3 rounded-xl border border-primary/30 bg-primary/5 p-4"
           >
-            <div className="flex items-center gap-3">
-              <div className="animate-spin rounded-full h-5 w-5 border-2 border-blue-500 border-t-transparent"></div>
-              <div>
-                <div className="font-semibold text-blue-500">Analyzing Repository</div>
-                <div className="text-sm text-muted-foreground">
-                  AI agents are analyzing your code. This may take a few minutes...
-                </div>
+            <span className="mt-1.5 h-2 w-2 shrink-0 animate-pulse rounded-full bg-primary" aria-hidden="true" />
+            <div>
+              <div className="font-medium text-foreground">Analyzing repository</div>
+              <div className="text-sm text-muted-foreground">
+                AI agents are reviewing your code. This can take a few minutes.
               </div>
             </div>
-          </motion.div>
+          </div>
         )}
-        
-        {/* Score cards */}
-        {coverage.analyzed != null && coverage.analyzed > 0 && (
-          <p className="text-sm text-muted-foreground -mb-2">
-            {coverage.eligible != null && coverage.eligible > coverage.analyzed ? (
-              <>
-                Scores are based on the <span className="font-medium text-foreground">{coverage.analyzed}</span> most
-                important of <span className="font-medium text-foreground">{coverage.eligible}</span> source files
-              </>
-            ) : (
-              <>
-                Scores are based on all <span className="font-medium text-foreground">{coverage.analyzed}</span> source
-                files
-              </>
-            )}
-            {coverage.commit && (
-              <>
-                {" "}at commit <code className="font-mono text-xs">{coverage.commit.slice(0, 7)}</code>
-              </>
-            )}
-            .
-          </p>
-        )}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-          {scoreData.map((item, index) => (
-            <motion.div
-              key={item.name}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.05 }}
-              className="glass-panel rounded-xl p-4 hover:shadow-lg transition-all"
-            >
-              <div className="flex items-center justify-between mb-3">
-                <div
-                  className="w-10 h-10 rounded-lg flex items-center justify-center"
-                  style={{ backgroundColor: `${scoreColor(item.score)}20` }}
-                >
-                  <item.icon
-                    className="h-5 w-5"
-                    style={{ color: scoreColor(item.score) }}
-                  />
-                </div>
-                {item.change !== 0 && (
-                  <div
-                    className={`flex items-center gap-1 text-xs font-medium ${
-                      item.change > 0 ? "text-success" : "text-destructive"
-                    }`}
-                  >
-                    {item.change > 0 ? (
-                      <ArrowUpRight className="h-3 w-3" />
-                    ) : (
-                      <ArrowDownRight className="h-3 w-3" />
-                    )}
-                    {Math.abs(item.change)}%
-                  </div>
-                )}
-              </div>
-              <div className="text-2xl font-bold" style={{ color: scoreColor(item.score) }}>
-                {item.score}
-              </div>
-              <div className="text-sm text-muted-foreground">{item.name}</div>
-            </motion.div>
-          ))}
+
+        {/* Score tiles */}
+        <div className="space-y-2">
+          {coverage.analyzed != null && coverage.analyzed > 0 && (
+            <p className="text-sm text-muted-foreground">
+              {coverage.eligible != null && coverage.eligible > coverage.analyzed ? (
+                <>
+                  Scores are based on the <span className="font-medium text-foreground">{coverage.analyzed}</span> most
+                  important of <span className="font-medium text-foreground">{coverage.eligible}</span> source files
+                </>
+              ) : (
+                <>
+                  Scores are based on all <span className="font-medium text-foreground">{coverage.analyzed}</span> source
+                  files
+                </>
+              )}
+              {coverage.commit && (
+                <>
+                  {" "}at commit <code className="font-mono text-xs">{coverage.commit.slice(0, 7)}</code>
+                </>
+              )}
+              .
+            </p>
+          )}
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
+            {scoreData.map((item) => (
+              <StatTile
+                key={item.name}
+                label={item.name}
+                score={item.score}
+                icon={item.icon}
+                className={item.className}
+              />
+            ))}
+          </div>
+          <Link to="/docs#scores" className="inline-block text-sm text-link hover:underline">
+            About scores
+          </Link>
         </div>
 
         {/* Charts row */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           {/* Trend chart */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            className="lg:col-span-2 glass-panel rounded-xl p-6"
-          >
-            <h3 className="text-lg font-semibold mb-4">Score Trend</h3>
-            {/* A trend needs at least two points. With one it drew a single dot
-                floating in an empty grid, which reads as a broken chart rather
-                than as "not enough data yet". */}
-            {trendData.length > 1 ? (
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={trendData}>
-                    <defs>
-                      <linearGradient
-                        id="colorScore"
-                        x1="0"
-                        y1="0"
-                        x2="0"
-                        y2="1"
-                      >
-                        <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3} />
-                        <stop
-                          offset="95%"
-                          stopColor="#06b6d4"
-                          stopOpacity={0}
-                        />
-                      </linearGradient>
-                    </defs>
-                    <XAxis
-                      dataKey="date"
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
-                    />
-                    <YAxis
-                      domain={[0, 100]}
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: "8px",
-                      }}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="score"
-                      stroke="#06b6d4"
-                      strokeWidth={2}
-                      fillOpacity={1}
-                      fill="url(#colorScore)"
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <div className="h-64 flex flex-col items-center justify-center gap-2 text-muted-foreground">
-                {trendData.length === 1 ? (
-                  <>
-                    <div
-                      className="text-4xl font-bold"
-                      style={{ color: scoreColor(trendData[0].score) }}
-                    >
-                      {trendData[0].score}
-                    </div>
-                    <p className="text-sm">
-                      First scan on {trendData[0].date}. Run another to see the trend.
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-sm">No analysis history yet. Run your first analysis!</p>
-                )}
-              </div>
-            )}
-          </motion.div>
+          <section className="glass-panel rounded-xl p-6 lg:col-span-2" aria-labelledby="score-trend-heading">
+            <h3 id="score-trend-heading" className="mb-4 text-lg font-semibold">
+              Score trend
+            </h3>
+            <ScoreTrendChart
+              data={trendData}
+              seriesLabel="Overall score"
+              ariaLabel={`Overall score over the last ${trendData.length} analyses`}
+              singlePointMessage={(point) => `First scan on ${point.date}. Run another to see the trend.`}
+              emptyMessage="No analysis history yet. Run your first analysis to start the trend."
+            />
+          </section>
 
           {/* Issues by severity */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.4 }}
-            className="glass-panel rounded-xl p-6"
-          >
-            <h3 className="text-lg font-semibold mb-4">Issues by Severity</h3>
+          <section className="glass-panel rounded-xl p-6" aria-labelledby="severity-heading">
+            <h3 id="severity-heading" className="mb-4 text-lg font-semibold">
+              Issues by severity
+            </h3>
             {/* A donut shows proportion. With only one severity present it drew
                 a complete ring - visually "100% critical", which is alarming and
                 says nothing. Below two categories, the count is the honest
                 rendering. */}
             {stats.total > 0 && severityData.filter(d => d.value > 0).length < 2 ? (
-              <>
-                <div className="h-48 flex flex-col items-center justify-center gap-1">
-                  {severityData.filter(d => d.value > 0).map((item) => (
-                    <div key={item.name} className="flex flex-col items-center">
-                      <div className="text-5xl font-bold" style={{ color: item.color }}>
-                        {item.value}
-                      </div>
-                      <div className="text-sm text-muted-foreground mt-1">
-                        {item.name.toLowerCase()} {item.value === 1 ? 'issue' : 'issues'}
-                      </div>
+              <div className="flex h-48 flex-col items-center justify-center gap-1">
+                {severityData.filter(d => d.value > 0).map((item) => (
+                  <div key={item.name} className="flex flex-col items-center">
+                    <div className="text-5xl font-semibold tabular-nums" style={{ color: item.color }}>
+                      {item.value}
                     </div>
-                  ))}
-                </div>
-                <div className="grid grid-cols-2 gap-2 mt-4">
-                  {severityData.map((item) => (
-                    <div key={item.name} className="flex items-center justify-between text-sm">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }} />
-                        <span className="text-muted-foreground">{item.name}</span>
-                      </div>
-                      <span className="font-medium">{item.value}</span>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      {item.name.toLowerCase()} {item.value === 1 ? 'issue' : 'issues'}
                     </div>
-                  ))}
-                </div>
-              </>
-            ) : stats.total > 0 ? (
-              <>
-                <div className="h-48">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={severityData.filter(d => d.value > 0)}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={50}
-                        outerRadius={70}
-                        paddingAngle={5}
-                        dataKey="value"
-                      >
-                        {severityData.filter(d => d.value > 0).map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: "hsl(var(--card))",
-                          border: "1px solid hsl(var(--border))",
-                          borderRadius: "8px",
-                        }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="grid grid-cols-2 gap-2 mt-4">
-                  {severityData.map((item) => (
-                    <div key={item.name} className="flex items-center gap-2">
-                      <div
-                        className="w-3 h-3 rounded-full"
-                        style={{ backgroundColor: item.color }}
-                      />
-                      <span className="text-sm text-muted-foreground">{item.name}</span>
-                      <span className="text-sm font-medium ml-auto">{item.value}</span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <div className="h-48 flex items-center justify-center text-muted-foreground">
-                <div className="text-center">
-                  <CheckCircle2 className="h-12 w-12 mx-auto mb-2 text-green-500/50" />
-                  <p className="text-sm">No issues found</p>
-                </div>
+                  </div>
+                ))}
               </div>
+            ) : stats.total > 0 ? (
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={severityData.filter(d => d.value > 0)}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={50}
+                      outerRadius={70}
+                      paddingAngle={3}
+                      dataKey="value"
+                    >
+                      {severityData.filter(d => d.value > 0).map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: "hsl(var(--popover))",
+                        border: "1px solid hsl(var(--border))",
+                        borderRadius: "8px",
+                        color: "hsl(var(--popover-foreground))",
+                        fontSize: 12,
+                      }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <EmptyState icon={CheckCircle2} title="No issues found" className="h-48 py-0" />
             )}
-          </motion.div>
+            {stats.total > 0 && (
+              <dl className="mt-4 grid grid-cols-2 gap-2">
+                {severityData.map((item) => (
+                  <div key={item.name} className="flex items-center gap-2 text-sm">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} aria-hidden="true" />
+                    <dt className="text-muted-foreground">{item.name}</dt>
+                    <dd className="ml-auto font-medium tabular-nums">{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </section>
         </div>
 
-        {/* Analysis History */}
+        {/* Analysis history */}
         {analysisHistory.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.45 }}
-            className="glass-panel rounded-xl p-6"
-          >
-            <h3 className="text-lg font-semibold mb-4">Analysis History</h3>
-            <div className="space-y-3">
+          <section className="glass-panel rounded-xl p-6" aria-labelledby="history-heading">
+            <h3 id="history-heading" className="mb-4 text-lg font-semibold">
+              Analysis history
+            </h3>
+            <ol className="space-y-2">
               {analysisHistory.slice(0, 5).map((analysis, index) => (
-                <div
-                  key={analysis.id}
-                  className="flex items-center justify-between p-4 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors"
-                >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
+                <li key={analysis.id}>
+                  <Link
+                    to={`/dashboard/${repoId}?analysis_id=${analysis.id}`}
+                    className="block rounded-lg border border-border p-3 transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                       <span className="text-sm font-medium">
                         {analysis.completed_at
                           ? new Date(analysis.completed_at).toLocaleString()
                           : 'In progress'}
                       </span>
-                      <span className="text-xs px-2 py-1 rounded-full bg-primary/10 text-primary">
-                        Run #{analysisHistory.length - index}
+                      <span className="text-xs text-muted-foreground">
+                        Run {analysisHistory.length - index}
                       </span>
                     </div>
-                    <div className="flex items-center gap-4 text-sm">
-                      <div className="flex items-center gap-1">
-                        <span className="text-muted-foreground">Overall:</span>
-                        <span className="font-medium" style={{ color: '#06b6d4' }}>
-                          {analysis.overall_score || 0}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Shield className="h-3 w-3 text-green-500" />
-                        <span className="font-medium">{analysis.security_score || 0}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Code2 className="h-3 w-3 text-blue-500" />
-                        <span className="font-medium">{analysis.quality_score || 0}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <GitBranch className="h-3 w-3 text-purple-500" />
-                        <span className="font-medium">{analysis.architecture_score || 0}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <AlertTriangle className="h-3 w-3 text-orange-500" />
-                        <span className="font-medium">
-                          {analysis.total_issues || 0} {(analysis.total_issues || 0) === 1 ? 'issue' : 'issues'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                    <HistoryScores analysis={analysis} />
+                  </Link>
+                </li>
               ))}
-            </div>
+            </ol>
             {analysisHistory.length > 5 && (
-              <div className="text-center mt-4">
-                <span className="text-sm text-muted-foreground">
-                  Showing 5 of {analysisHistory.length} analyses
-                </span>
-              </div>
+              <p className="mt-4 text-center text-sm text-muted-foreground">
+                Showing 5 of {analysisHistory.length} analyses
+              </p>
             )}
-          </motion.div>
+          </section>
         )}
 
         {/* Recent issues */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.5 }}
-          className="glass-panel rounded-xl p-6"
-        >
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold">Recent Issues</h3>
-            <a href={`/dashboard/${repoId}/issues`} className="text-sm text-primary hover:underline">
+        <section className="glass-panel rounded-xl p-6" aria-labelledby="recent-heading">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 id="recent-heading" className="text-lg font-semibold">
+              Recent issues
+            </h3>
+            <Link to={issuesHref} className="text-sm text-link hover:underline">
               View all
-            </a>
+            </Link>
           </div>
-          <div className="space-y-3">
-            {recentIssues.map((issue) => (
-              <div
-                key={issue.id}
-                className="flex items-center gap-4 p-3 bg-muted/30 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer"
-              >
-                <div
-                  className={`p-2 rounded-lg ${
-                    issue.severity === "critical" || issue.severity === "high"
-                      ? "bg-destructive/10"
-                      : "bg-warning/10"
-                  }`}
-                >
-                  <AlertTriangle
-                    className={`h-4 w-4 ${
-                      issue.severity === "critical"
-                        ? "text-destructive"
-                        : issue.severity === "high"
-                        ? "text-orange-500"
-                        : issue.severity === "medium"
-                        ? "text-warning"
-                        : "text-success"
-                    }`}
+          {recentIssues.length > 0 ? (
+            <ul className="space-y-2">
+              {recentIssues.map((issue) => (
+                <li key={issue.id}>
+                  <FindingRow
+                    variant="compact"
+                    finding={issue}
+                    href={`${issuesHref}?finding=${encodeURIComponent(String(issue.id))}`}
                   />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm font-medium truncate">
-                      {issue.file}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      Line {issue.line}
-                    </span>
-                  </div>
-                  <p className="text-sm text-muted-foreground truncate">
-                    {issue.message}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`text-xs px-2 py-1 rounded-full border ${severityColors[issue.severity]}`}
-                  >
-                    {issue.severity}
-                  </span>
-                  <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">
-                    {issue.type}
-                  </span>
-                </div>
-              </div>
-            ))}
-              {recentIssues.length === 0 && (
-                <div className="text-center py-8 text-muted-foreground">
-                  <p className="text-sm">No recent issues found for this repository.</p>
-                </div>
-              )}
-          </div>
-        </motion.div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyState title="No recent issues" body="Findings from the latest analysis appear here." className="py-8" />
+          )}
+        </section>
       </div>
     </DashboardLayout>
+  );
+}
+
+const HISTORY_SCORES: { key: string; label: string }[] = [
+  { key: "overall_score", label: "Overall" },
+  { key: "security_score", label: "Security" },
+  { key: "quality_score", label: "Quality" },
+  { key: "architecture_score", label: "Architecture" },
+];
+
+/** "Overall 72 · Security 75 · Quality 79 · Architecture 80 · 12 issues", each score in its band's colour. */
+function HistoryScores({ analysis }: { analysis: Record<string, any> }) {
+  const issues = analysis.total_issues || 0;
+  return (
+    <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground">
+      {HISTORY_SCORES.map(({ key, label }) => {
+        const value = analysis[key];
+        return (
+          <span key={key} className="whitespace-nowrap">
+            {label}{" "}
+            <span className={`font-medium tabular-nums ${scoreTextClass(value)}`}>{value ?? "–"}</span>
+            <span aria-hidden="true" className="ml-1.5">·</span>
+          </span>
+        );
+      })}
+      <span className="whitespace-nowrap">
+        {issues} {issues === 1 ? 'issue' : 'issues'}
+      </span>
+    </p>
   );
 }
