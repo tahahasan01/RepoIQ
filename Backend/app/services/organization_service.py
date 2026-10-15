@@ -14,14 +14,13 @@ class OrganizationService:
         self,
         name: str,
         owner_id: str,
-        plan_type: str = "free"
     ) -> Dict[str, Any]:
         """Create a new organization."""
         try:
             result = (await run_blocking(self.db.table("organizations").insert({
                 "name": name,
                 "owner_id": owner_id,
-                "plan_type": plan_type
+                "plan_type": "free"
             }).execute))
             
             if result.data:

@@ -55,6 +55,8 @@ async def resolve_github_token_for_user(user_id: str) -> str:
     user = await AuthService().get_user(user_id)
     if not user:
         raise GitHubTokenUnavailable("User not found")
+    if not user.get("github_connected"):
+        raise GitHubTokenUnavailable("GitHub is disconnected for this account. Reconnect it to continue.")
 
     if github_app.is_enabled():
         installation_id = user.get("github_installation_id")

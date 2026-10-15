@@ -530,7 +530,7 @@ Accuracy over volume. An empty issues array is an acceptable answer."""
                     "category": issue.get("category", "uncategorized"),
                     "impact": "high",
                     "effort": "low"
-})
+                })
         
         medium_term = []
         for issue in high_issues[:10]:
@@ -539,7 +539,7 @@ Accuracy over volume. An empty issues array is an acceptable answer."""
                 "category": issue.get("category", "uncategorized"),
                 "impact": "high",
                 "effort": "medium"
-})
+            })
         
         long_term = []
         architecture_issues = [i for i in issues if i.get("agent_type") == "architecture"]
@@ -549,7 +549,7 @@ Accuracy over volume. An empty issues array is an acceptable answer."""
                 "category": issue.get("category", "uncategorized"),
                 "impact": "medium",
                 "effort": "high"
-})
+            })
         
         return {
             "priority_order": ["critical", "high", "medium", "low"],

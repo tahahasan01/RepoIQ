@@ -24,16 +24,38 @@ async def send_chat_message(
             detail="Repository not found"
         )
     
+    # Files to discuss pass the same checks as the Files page: no traversal, no
+    # .env / keys. Reading them needs a GitHub token; without one the chat
+    # still answers from the analysis context instead of failing.
+    from app.api.routes.github import validate_file_path
+    from app.services.github_token import GitHubTokenUnavailable, resolve_github_token_for_user
+
+    context_files = [validate_file_path(p) for p in (message_data.context_files or [])]
+    github_token = None
+    if context_files:
+        try:
+            github_token = await resolve_github_token_for_user(current_user["id"])
+        except GitHubTokenUnavailable:
+            github_token = None
+
     try:
-        response = await chat_service.send_message(
-            repo_id=repo["id"],
+        return await chat_service.send_message(
+            repo=repo,
             user_id=current_user["id"],
             message=message_data.message,
-            context_files=message_data.context_files
+            context_files=context_files,
+            github_token=github_token,
         )
-        
-        return response
+    except HTTPException:
+        raise
     except Exception as e:
+        from app.services.llm_budget import LLMBudgetExceeded
+
+        if isinstance(e, LLMBudgetExceeded):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Daily AI usage limit reached. It resets within 24 hours.",
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=safe_detail(e)

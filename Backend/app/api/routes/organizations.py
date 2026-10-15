@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from loguru import logger
-from typing import List, Dict, Any
-from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field
 from app.api.dependencies import get_current_user
 from app.services.organization_service import OrganizationService
 from app.api.errors import safe_detail
@@ -9,14 +9,15 @@ from app.api.errors import safe_detail
 router = APIRouter(prefix="/organizations", tags=["Organizations"])
 
 
+# No plan_type: every organization is on the free plan until billing exists.
+# It was client-writable, so anyone could mark their organization "enterprise".
+# A client still sending it has the field ignored.
 class OrganizationCreate(BaseModel):
-    name: str
-    plan_type: str = "free"
+    name: str = Field(..., min_length=1, max_length=100)
 
 
 class OrganizationUpdate(BaseModel):
-    name: str = None
-    plan_type: str = None
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -28,18 +29,19 @@ async def create_organization(
     try:
         service = OrganizationService()
         organization = await service.create_organization(
-            name=org_data.name,
+            name=org_data.name.strip(),
             owner_id=current_user["id"],
-            plan_type=org_data.plan_type
         )
-        
+
         if not organization:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Failed to create organization"
             )
-        
+
         return organization
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating organization: {e}")
         raise HTTPException(
@@ -101,7 +103,7 @@ async def update_organization(
     """Update organization (only owner can update)."""
     try:
         service = OrganizationService()
-        updates = {k: v for k, v in org_data.dict().items() if v is not None}
+        updates = {k: v.strip() for k, v in org_data.model_dump().items() if v is not None}
         
         if not updates:
             raise HTTPException(

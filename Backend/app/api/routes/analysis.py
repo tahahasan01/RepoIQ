@@ -5,6 +5,7 @@ from app.services.repository_service import RepositoryService
 from app.tasks.analysis_tasks import auto_fix_issues_task
 from app.api.dependencies import get_current_user, get_github_token
 from app.api.errors import safe_detail
+from app.core.concurrency import run_blocking
 from app.services import analysis_registry
 from app.services.analysis_dispatch import dispatch_analysis
 
@@ -299,8 +300,9 @@ async def cancel_analysis(
                 detail="Access denied"
             )
         
-        # Only cancel if in progress
-        if analysis["status"] not in ["in_progress", "starting"]:
+        # Only cancel if not finished. "pending" is an analysis waiting in the
+        # queue; the worker checks the flag before doing any work.
+        if analysis["status"] not in ["pending", "in_progress", "starting"]:
             return {
                 "message": f"Analysis is already {analysis['status']}, cannot cancel",
                 "status": analysis["status"]
@@ -479,7 +481,9 @@ async def get_architecture_diagram(
     try:
         # Get file list from GitHub
         github_service = GitHubService(github_token)
-        files = await github_service.get_repository_files(repo["full_name"])
+        files = await run_blocking(
+            github_service.get_repository_files, repo["full_name"], repo["default_branch"]
+        )
         
         if not files:
             raise HTTPException(

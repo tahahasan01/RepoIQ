@@ -359,14 +359,24 @@ class QueryBuilder:
             if not rows:
                 raise QueryError("insert with no rows")
 
-            columns = list(rows[0].keys())
-            placeholders = sql.SQL(", ").join(
-                sql.SQL("({})").format(
-                    sql.SQL(", ").join(sql.Placeholder() for _ in columns)
-                )
-                for _ in rows
-            )
-            params = [_adapt_write(row.get(c)) for row in rows for c in columns]
+            # Every column any row mentions, in first-seen order. A row that
+            # omits a column gets that column's DEFAULT, not NULL: columns used
+            # to come from the first row only and a missing key was bound as
+            # None, so a batch of uneven rows wrote explicit NULLs - which a
+            # NOT NULL column with a default rejects outright.
+            columns = list(dict.fromkeys(c for row in rows for c in row))
+            params = []
+            row_sql = []
+            for row in rows:
+                values = []
+                for c in columns:
+                    if c in row:
+                        values.append(sql.Placeholder())
+                        params.append(_adapt_write(row[c]))
+                    else:
+                        values.append(sql.SQL("DEFAULT"))
+                row_sql.append(sql.SQL("({})").format(sql.SQL(", ").join(values)))
+            placeholders = sql.SQL(", ").join(row_sql)
 
             query = sql.SQL("INSERT INTO {t} ({cols}) VALUES {vals}").format(
                 t=table,

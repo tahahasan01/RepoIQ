@@ -9,6 +9,7 @@ from app.api.dependencies import get_current_user, get_github_token
 from app.services.auth_service import AuthService
 from app.core.logging import get_logger
 from app.api.errors import safe_detail
+from app.core.concurrency import run_blocking
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/github", tags=["GitHub"])
@@ -201,11 +202,20 @@ async def get_file_content(
 
 @router.get("/user/info")
 async def get_github_user_info(
+    current_user: dict = Depends(get_current_user),
     github_token: str = Depends(get_github_token)
 ):
     try:
         github_service = create_github_service(github_token)
-        user_info = github_service.get_user_info()
+        # GitHub App mode: an installation token gets 403 from GET /user, so
+        # answer from the profile stored at sign-in instead.
+        if github_service._is_installation_token():
+            return {
+                "username": current_user.get("github_username"),
+                "name": current_user.get("full_name"),
+                "avatar_url": current_user.get("avatar_url"),
+            }
+        user_info = await run_blocking(github_service.get_user_info)
         return user_info
     except Exception as e:
         raise HTTPException(
@@ -220,9 +230,13 @@ async def disconnect_github(
     """Disconnect the user's GitHub account by clearing stored tokens and username."""
     auth_service = AuthService()
     try:
+        # github_installation_id too: in GitHub App mode tokens are minted from
+        # it, so leaving it set kept every repository reachable after
+        # "Disconnect". Uninstalling the app itself is done on GitHub.
         await auth_service.update_user(current_user["id"], {
             "github_connected": False,
             "github_access_token": None,
+            "github_installation_id": None,
             "github_username": None,
             "avatar_url": None
         })

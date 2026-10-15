@@ -33,9 +33,11 @@ settings = get_settings()
 
 GITHUB_API = "https://api.github.com"
 
-# Installation tokens last an hour. Refresh with a margin so a token cannot
-# expire mid-analysis.
-_TOKEN_TTL_SECONDS = 3300  # 55 minutes
+# Installation tokens last an hour. A cached one is reused for 40 minutes, so
+# any token handed out has at least 20 minutes left - more than an analysis
+# (10-minute budget) plus its follow-ups need. At 55 minutes a token issued
+# from cache could expire partway through a run.
+_TOKEN_TTL_SECONDS = 2400  # 40 minutes
 _INSTALLATION_TOKEN_KEY = "github:app:token:{installation_id}"
 
 
@@ -295,4 +297,7 @@ async def get_user_installation_id(user_token: str) -> Optional[str]:
         if str(installation.get("app_id")) == str(settings.GITHUB_APP_ID):
             return str(installation["id"])
 
+    if settings.GITHUB_APP_ID:
+        # Installations exist, none of them ours: the app is not installed.
+        return None
     return str(installations[0]["id"])

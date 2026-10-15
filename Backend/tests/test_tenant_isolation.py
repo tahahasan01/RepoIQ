@@ -45,6 +45,10 @@ ACKNOWLEDGED_GLOBAL_QUERIES = {
     # Gated by an explicit ownership walk immediately above the query:
     # issue -> analysis -> repository, rejecting when repo.user_id != user_id.
     ("ownership_service.py", "issue_blame", "get_issue_blame"),
+    # Cross-tenant by design and read-only: which users independently have this
+    # GitHub repository, to decide who commits may be attributed to. Selects
+    # user_id only; nothing about those users' rows is returned or written.
+    ("repository_insights.py", "repositories", "refresh_repository_insights"),
 }
 
 

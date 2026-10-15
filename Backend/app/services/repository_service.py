@@ -103,6 +103,11 @@ class RepositoryService:
                     "size": repo["size"],
                     "last_synced": now,
                     "updated_at": now,
+                    # GitHub's activity timestamp, which is what the list is
+                    # ordered by. updated_at is when RepoIQ wrote the row, and a
+                    # sync writes every row at once.
+                    "github_updated_at": repo.get("updated_at"),
+                    "github_updated_at": repo.get("updated_at"),
                 }
                 for repo in repos
             ]
@@ -281,7 +286,7 @@ class RepositoryService:
             result = (await run_blocking(self.db.table("repositories")\
                 .select("*")\
                 .eq("user_id", user_id)\
-                .order("updated_at", desc=True)\
+                .order("github_updated_at", desc=True)\
                 .limit(per_page)\
                 .offset(offset)\
                 .execute))

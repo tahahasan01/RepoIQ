@@ -173,7 +173,7 @@ class TestDisabledByDefault:
     async def test_token_resolution_still_decrypts_the_stored_token(self):
         from app.services import github_token
 
-        user = {"id": "u1"}
+        user = {"id": "u1", "github_connected": True}
         with patch("app.services.auth_service.AuthService") as auth_cls:
             auth_cls.return_value.get_user = AsyncMock(return_value=user)
             auth_cls.return_value.get_stored_github_token = AsyncMock(return_value="stored-token")
@@ -326,7 +326,7 @@ class TestInstallationTokens:
 
         with patch("app.services.auth_service.AuthService") as auth_cls:
             auth_cls.return_value.get_user = AsyncMock(
-                return_value={"id": "u1", "github_installation_id": None}
+                return_value={"id": "u1", "github_installation_id": None, "github_connected": True}
             )
             with pytest.raises(github_token.GitHubTokenUnavailable, match="install"):
                 await github_token.resolve_github_token_for_user("u1")
@@ -339,7 +339,7 @@ class TestInstallationTokens:
 
         with patch("app.services.auth_service.AuthService") as auth_cls:
             auth_cls.return_value.get_user = AsyncMock(
-                return_value={"id": "u1", "github_installation_id": "42"}
+                return_value={"id": "u1", "github_installation_id": "42", "github_connected": True}
             )
             with patch.object(
                 github_app, "get_installation_token", AsyncMock(return_value="ghs_tok")

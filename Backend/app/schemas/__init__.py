@@ -156,8 +156,9 @@ class AnalysisHistoryResponse(BaseModel):
 
 
 class ChatMessageRequest(BaseModel):
-    message: str
-    context_files: Optional[List[str]] = None
+    message: str = Field(..., min_length=1, max_length=8000)
+    # At most three are read; more is a client bug, not a bigger prompt.
+    context_files: Optional[List[str]] = Field(None, max_length=3)
 
 
 class ChatMessageResponse(BaseModel):
