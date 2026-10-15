@@ -298,15 +298,14 @@ async def liveness_check():
 async def get_metrics(_: bool = Depends(require_admin)):
     """Get application metrics. Requires X-Admin-Key."""
     from app.services.token_optimizer import get_token_optimizer
-    from app.services.cache_service import get_analysis_cache
-    
+    from app.services.redis_service import get_redis_service
+
     try:
         optimizer = get_token_optimizer()
-        cache = get_analysis_cache()
-        
+
         return {
             "token_usage": optimizer.get_usage_stats(days=7),
-            "cache_stats": cache.get_cache_stats()
+            "cache_stats": get_redis_service().get_stats()
         }
     except Exception as e:
         logger.error(f"Failed to get metrics: {e}")
@@ -323,22 +322,13 @@ async def cache_stats(_: bool = Depends(require_admin)):
     Requires X-Admin-Key.
     """
     from app.services.redis_service import get_redis_service
-    from app.services.cache_service import get_analysis_cache
-    
+
     try:
-        redis_service = get_redis_service()
-        analysis_cache = get_analysis_cache()
-        
-        # Get Redis stats
-        redis_stats = redis_service.get_stats()
-        
-        # Get analysis cache stats
-        analysis_stats = analysis_cache.get_cache_stats() if hasattr(analysis_cache, 'get_cache_stats') else {}
-        
+        redis_stats = get_redis_service().get_stats()
+
         return {
             "status": "healthy",
             "redis": redis_stats,
-            "analysis_cache": analysis_stats,
             "performance_summary": {
                 "overall_hit_rate": redis_stats.get("hit_rate", 0),
                 "total_requests": redis_stats.get("total_requests", 0),

@@ -170,7 +170,7 @@ Evaluate the architecture and identify improvement areas."""
     def _generate_recommendations(self, issues: List[Dict[str, Any]]) -> List[str]:
         recommendations = []
         
-        categories = set(issue["category"] for issue in issues)
+        categories = set(issue.get("category", "uncategorized") for issue in issues)
         
         if "missing_tests" in categories:
             recommendations.append("Implement comprehensive test coverage (aim for >80%)")

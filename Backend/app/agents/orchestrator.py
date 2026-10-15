@@ -320,7 +320,7 @@ and carry on reviewing normally.
 
 Look for:
 
-🔴 SECURITY (CRITICAL - Find these!):
+🔴 SECURITY:
 - SQL injection: ANY string concatenation/f-string/format in queries
 - Hardcoded passwords, API keys, tokens
 - Missing input validation
@@ -329,7 +329,7 @@ Look for:
 - XSS vulnerabilities
 - Missing authentication/authorization
 
-⚠️ CODE QUALITY (Find at least 3-5):
+⚠️ CODE QUALITY:
 - Long functions (>50 lines)
 - Deep nesting (>3 levels)
 - Code duplication
@@ -354,6 +354,13 @@ Look for:
 - Missing timeouts on requests
 - N+1 query problems
 - Missing pagination
+
+📝 DOCUMENTATION (use a category containing "documentation" or "comment"):
+- Public functions, classes or endpoints whose behaviour is not evident and
+  that have no docstring or comment (category: missing_documentation)
+- Comments or docstrings that contradict what the code does
+  (category: misleading_comment)
+- Do NOT report trivial or self-explanatory code for lacking comments.
 
 ACCURACY RULES:
 - Report only issues you can point to in the code above. Every finding must name
@@ -520,39 +527,43 @@ Accuracy over volume. An empty issues array is an acceptable answer."""
             if issue.get("auto_fixable"):
                 quick_wins.append({
                     "issue": issue.get("message", issue.get("description", "No description")),
-                    "category": issue["category"],
+                    "category": issue.get("category", "uncategorized"),
                     "impact": "high",
                     "effort": "low"
-                })
+})
         
         medium_term = []
         for issue in high_issues[:10]:
             medium_term.append({
                 "issue": issue.get("message", issue.get("description", "No description")),
-                "category": issue["category"],
+                "category": issue.get("category", "uncategorized"),
                 "impact": "high",
                 "effort": "medium"
-            })
+})
         
         long_term = []
         architecture_issues = [i for i in issues if i.get("agent_type") == "architecture"]
         for issue in architecture_issues[:5]:
             long_term.append({
                 "issue": issue.get("message", issue.get("description", "No description")),
-                "category": issue["category"],
+                "category": issue.get("category", "uncategorized"),
                 "impact": "medium",
                 "effort": "high"
-            })
+})
         
         return {
             "priority_order": ["critical", "high", "medium", "low"],
             "quick_wins": quick_wins,
             "medium_term": medium_term,
             "long_term": long_term,
+            # Counts of what the roadmap covers. This used to multiply those
+            # counts by 5, 3 and 10 and present the result as projected
+            # "improvement" - numbers with nothing behind them.
             "estimated_impact": {
-                "security_improvement": len([i for i in quick_wins + medium_term if "security" in i.get("category", "").lower()]) * 5,
-                "quality_improvement": len([i for i in quick_wins + medium_term if "quality" in i.get("category", "").lower()]) * 3,
-                "maintainability_improvement": len(long_term) * 10
+                "critical_issues": len(critical_issues),
+                "high_issues": len(high_issues),
+                "architecture_issues": len(architecture_issues),
+                "auto_fixable": len([i for i in issues if i.get("auto_fixable")]),
             }
         }
     

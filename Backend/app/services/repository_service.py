@@ -5,9 +5,11 @@ from app.db.postgres import get_service_db
 from app.services.github_service import create_github_service
 from app.services.redis_service import get_redis_service
 from app.core.concurrency import run_blocking
+from app.core.config import get_settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+settings = get_settings()
 
 
 class RepositoryService:
@@ -64,38 +66,29 @@ class RepositoryService:
     
     async def sync_repositories(self, user_id: str, github_token: str) -> List[Dict[str, Any]]:
         """
-        Optimized repository sync using batch operations.
-        Reduces N+1 queries by batch-checking existing repos.
+        Bring this user's repository rows in line with what GitHub shows them.
+
+        DATA LOSS (fixed): this fetched at most 100 repositories and then pruned
+        every row it had not seen. Rows cascade to analyses, issues and chat, so
+        an account with more than 100 repositories lost the data for the rest on
+        every sync. It now lists everything up to GITHUB_SYNC_MAX_REPOS, and
+        prunes only when GitHub says the listing is complete.
         """
         try:
             github_service = create_github_service(github_token)
             # PERF: PyGithub is synchronous and paginates over the network. On the
             # event loop this stalls every other in-flight request for the whole
             # sync, which for a large account is seconds.
-            repos = await run_blocking(github_service.get_repositories, per_page=100)
-            
+            repos, complete = await run_blocking(
+                github_service.list_all_repositories, settings.GITHUB_SYNC_MAX_REPOS
+            )
+
             if not repos:
                 return []
-            
-            # OPTIMIZATION: Batch fetch all existing repos for this user in ONE query
-            github_repo_ids = [repo["id"] for repo in repos]
-            existing_result = await run_blocking(
-                lambda: self.db.table("repositories")
-                .select("id, github_repo_id")
-                .eq("user_id", user_id)
-                .in_("github_repo_id", github_repo_ids)
-                .execute()
-            )
-            
-            # Build lookup map for O(1) access
-            existing_map = {r["github_repo_id"]: r["id"] for r in (existing_result.data or [])}
-            
-            synced_repos = []
-            to_insert = []
-            to_update = []
-            
-            for repo in repos:
-                repo_data = {
+
+            now = datetime.utcnow().isoformat()
+            rows = [
+                {
                     "user_id": user_id,
                     "github_repo_id": repo["id"],
                     "name": repo["name"],
@@ -108,38 +101,22 @@ class RepositoryService:
                     "default_branch": repo["default_branch"],
                     "is_private": repo["private"],
                     "size": repo["size"],
-                    "last_synced": datetime.utcnow().isoformat()
+                    "last_synced": now,
+                    "updated_at": now,
                 }
-                
-                if repo["id"] in existing_map:
-                    # Update existing
-                    to_update.append((existing_map[repo["id"]], repo_data))
-                else:
-                    # Insert new
-                    to_insert.append(repo_data)
-            
-            # PERF: one thread hop for the whole write batch, not one per row.
-            # The update loop issues a sequential round trip per repository - for
-            # an account with 100 repos that is 100 blocking calls, and on the
-            # event loop it froze every other request for the duration.
-            def _write_batch():
-                written = []
-                if to_insert:
-                    result = self.db.table("repositories").insert(to_insert).execute()
-                    written.extend(result.data or [])
+                for repo in repos
+            ]
 
-                for repo_id, repo_data in to_update:
-                    result = self.db.table("repositories").update(repo_data).eq("id", repo_id).execute()
-                    if result.data:
-                        written.append(result.data[0])
-                return written
-
-            synced_repos.extend(await run_blocking(_write_batch))
-
-            if to_insert:
-                logger.info(f"✅ Batch inserted {len(to_insert)} new repositories")
-            if to_update:
-                logger.info(f"✅ Updated {len(to_update)} existing repositories")
+            # One statement for the whole batch. UNIQUE (user_id, github_repo_id)
+            # makes this an insert-or-update; it replaces an insert plus one
+            # sequential UPDATE round trip per existing repository.
+            result = await run_blocking(
+                lambda: self.db.table("repositories")
+                .upsert(rows, on_conflict="user_id,github_repo_id")
+                .execute()
+            )
+            synced_repos = result.data or []
+            logger.info(f"Synced {len(synced_repos)} repositories")
 
             # SECURITY: drop repositories the user can no longer see.
             #
@@ -149,8 +126,17 @@ class RepositoryService:
             # the app are "is there a repositories row with your user_id", so a
             # stale row kept granting access to cached file contents and analysis
             # results for a repository the user no longer has any right to.
-            await self._prune_revoked_repositories(user_id, github_repo_ids)
-            
+            #
+            # Only from a COMPLETE listing: a repository missing from a partial
+            # one is not revoked, it is just past the limit.
+            if complete:
+                await self._prune_revoked_repositories(user_id, [r["id"] for r in repos])
+            else:
+                logger.warning(
+                    f"Repository listing truncated at {settings.GITHUB_SYNC_MAX_REPOS}; "
+                    "skipping revoked-repository pruning for this sync"
+                )
+
             # Invalidate every cached page for this user.
             #
             # This used to enumerate pages 1-5 at per_page 30 and 6 only - so a
@@ -160,12 +146,12 @@ class RepositoryService:
             # block Redis.
             self.redis.delete(f"db:repos:{user_id}")
             self.redis.invalidate(f"db:repos:{user_id}:page:*")
-            
+
             return synced_repos
         except Exception as e:
             logger.error(f"Repository sync failed: {str(e)}")
             raise
-    
+
     async def _prune_revoked_repositories(
         self, user_id: str, visible_github_ids: List[int]
     ) -> int:

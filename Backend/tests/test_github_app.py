@@ -445,7 +445,7 @@ class TestAppModeRepositoryLoading:
         import inspect
         from app.services.github_service import GitHubService
 
-        source = inspect.getsource(GitHubService.get_repositories)
+        source = inspect.getsource(GitHubService.list_all_repositories)
         assert "_is_installation_token()" in source
         assert "_get_installation_repositories" in source
 

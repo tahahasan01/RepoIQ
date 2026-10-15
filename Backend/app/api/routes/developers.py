@@ -3,10 +3,24 @@ from loguru import logger
 from typing import List, Dict, Any, Optional
 from app.api.dependencies import get_current_user, get_github_token
 from app.services.developer_analytics_service import DeveloperAnalyticsService
-from app.services.ownership_service import OwnershipService
+from app.services.ownership_service import OwnershipService, DEFAULT_ORPHAN_DAYS
 from app.api.errors import safe_detail
 
 router = APIRouter(prefix="/developers", tags=["Developers"])
+
+
+def _server_error(e: Exception, what: str) -> HTTPException:
+    logger.error(f"Error {what}: {type(e).__name__}: {e}")
+    return HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=safe_detail(e))
+
+
+async def _require_repository(repo_id: str, user_id: str) -> Dict[str, Any]:
+    from app.services.repository_service import RepositoryService
+
+    repo = await RepositoryService().get_repository(repo_id, user_id)
+    if not repo:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+    return repo
 
 
 @router.get("/performance/{user_id}", response_model=Dict[str, Any])
@@ -16,41 +30,33 @@ async def get_developer_performance(
     period_days: int = Query(30, ge=1, le=365),
     current_user: dict = Depends(get_current_user)
 ) -> Dict[str, Any]:
-    """Get developer performance metrics."""
+    """
+    A developer's contribution totals.
+
+    SECURITY: another person's figures are visible only to someone who shares
+    an organization with them. This previously checked access only when
+    repository_id was passed, so omitting it returned anyone's metrics to any
+    signed-in user.
+    """
     try:
-        # Users can only view their own performance or if they have access to the repository
-        if user_id != current_user["id"] and repository_id:
-            from app.services.repository_service import RepositoryService
-            repo_service = RepositoryService()
-            repo = await repo_service.get_repository(repository_id, current_user["id"])
-            if not repo:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You don't have access to this repository"
-                )
-        
-        service = DeveloperAnalyticsService()
-        performance = await service.get_developer_performance(
-            user_id=user_id,
-            repository_id=repository_id,
-            period_days=period_days
+        if user_id != current_user["id"]:
+            from app.services.organization_service import OrganizationService
+
+            colleagues = await OrganizationService().get_colleague_ids(current_user["id"])
+            if user_id not in colleagues:
+                # 404, not 403: whether a user id exists is not the caller's business.
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Developer not found")
+
+        if repository_id:
+            repository_id = (await _require_repository(repository_id, current_user["id"]))["id"]
+
+        return await DeveloperAnalyticsService().get_developer_performance(
+            user_id=user_id, repository_id=repository_id, period_days=period_days
         )
-        
-        if not performance:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Developer performance data not found"
-            )
-        
-        return performance
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting developer performance: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_detail(e)
-        )
+        raise _server_error(e, "getting developer performance")
 
 
 @router.get("/organization/{org_id}", response_model=List[Dict[str, Any]])
@@ -59,70 +65,78 @@ async def get_organization_developers(
     period_days: int = Query(30, ge=1, le=365),
     current_user: dict = Depends(get_current_user)
 ) -> List[Dict[str, Any]]:
-    """Get all developers in an organization with their metrics."""
+    """All developers in an organization the caller belongs to, with totals."""
     try:
-        service = DeveloperAnalyticsService()
-        developers = await service.get_organization_developers(
-            organization_id=org_id,
-            user_id=current_user["id"],
-            period_days=period_days
+        return await DeveloperAnalyticsService().get_organization_developers(
+            organization_id=org_id, user_id=current_user["id"], period_days=period_days
         )
-        return developers
     except Exception as e:
-        logger.error(f"Error getting organization developers: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_detail(e)
-        )
+        raise _server_error(e, "getting organization developers")
 
 
 @router.get("/repositories/{repo_id}/contributors", response_model=List[Dict[str, Any]])
 async def get_repository_contributors(
     repo_id: str,
+    period_days: int = Query(90, ge=1, le=365),
     current_user: dict = Depends(get_current_user)
 ) -> List[Dict[str, Any]]:
-    """Get all contributors to a repository."""
+    """Contributors to a repository, busiest first."""
     try:
-        service = DeveloperAnalyticsService()
-        contributors = await service.get_repository_contributors(repo_id, current_user["id"])
-        return contributors
-    except Exception as e:
-        logger.error(f"Error getting repository contributors: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_detail(e)
+        await _require_repository(repo_id, current_user["id"])
+        return await DeveloperAnalyticsService().get_repository_contributors(
+            repo_id, current_user["id"], period_days
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _server_error(e, "getting repository contributors")
 
 
-@router.post("/repositories/{repo_id}/track-contributions")
-async def track_repository_contributions(
+@router.post("/repositories/{repo_id}/insights/refresh")
+async def refresh_repository_insights(
     repo_id: str,
     current_user: dict = Depends(get_current_user),
     github_token: str = Depends(get_github_token)
 ) -> Dict[str, Any]:
-    """Track developer contributions for a repository."""
+    """
+    Recompute contributions, code ownership and issue blame now.
+
+    These refresh automatically after every analysis; this is for a repository
+    analysed before that existed, or after a burst of commits. It reads the
+    files the latest analysis reviewed, so it needs one.
+
+    Replaces /track-contributions and /analyze-ownership, which could never
+    succeed (both treated a dict as a PyGithub repository object) and checked
+    no ownership at all.
+    """
+    from app.core.concurrency import run_blocking
+    from app.db.postgres import get_service_db
+    from app.services.repository_insights import refresh_repository_insights as refresh
+
     try:
-        service = DeveloperAnalyticsService()
-        success = await service.track_developer_contributions(
-            repository_id=repo_id,
-            github_token=github_token
-        )
-        
-        if not success:
+        repo = await _require_repository(repo_id, current_user["id"])
+        db = get_service_db()
+        latest = (await run_blocking(
+            db.table("analysis_results").select("id").eq("repository_id", repo["id"])
+            .eq("status", "completed").order("completed_at", desc=True).limit(1).execute
+        )).data
+        if not latest:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Failed to track contributions"
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Analyze this repository first - insights are built from the files an analysis reviewed.",
             )
-        
-        return {"success": True, "repository_id": repo_id}
+
+        issues = (await run_blocking(
+            db.table("issues").select("file_path").eq("analysis_id", latest[0]["id"]).execute
+        )).data or []
+        paths = sorted({i["file_path"] for i in issues if i.get("file_path")})
+
+        summary = await refresh(repo, github_token, latest[0]["id"], paths)
+        return {"success": True, "repository_id": repo["id"], **summary}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error tracking contributions: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_detail(e)
-        )
+        raise _server_error(e, "refreshing repository insights")
 
 
 @router.get("/repositories/{repo_id}/ownership", response_model=Dict[str, List[Dict[str, Any]]])
@@ -130,17 +144,14 @@ async def get_repository_ownership(
     repo_id: str,
     current_user: dict = Depends(get_current_user)
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Get code ownership map for a repository."""
+    """Code ownership map: file path -> owners, largest share first."""
     try:
-        service = OwnershipService()
-        ownership = await service.get_repository_ownership(repo_id, current_user["id"])
-        return ownership
+        await _require_repository(repo_id, current_user["id"])
+        return await OwnershipService().get_repository_ownership(repo_id, current_user["id"])
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error getting repository ownership: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_detail(e)
-        )
+        raise _server_error(e, "getting repository ownership")
 
 
 @router.get("/repositories/{repo_id}/ownership/health", response_model=Dict[str, Any])
@@ -148,17 +159,14 @@ async def get_ownership_health(
     repo_id: str,
     current_user: dict = Depends(get_current_user)
 ) -> Dict[str, Any]:
-    """Get ownership health scores for a repository."""
+    """Ownership health for a repository."""
     try:
-        service = OwnershipService()
-        health = await service.get_ownership_health(repo_id, current_user["id"])
-        return health
+        await _require_repository(repo_id, current_user["id"])
+        return await OwnershipService().get_ownership_health(repo_id, current_user["id"])
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error getting ownership health: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_detail(e)
-        )
+        raise _server_error(e, "getting ownership health")
 
 
 @router.get("/issues/{issue_id}/blame", response_model=List[Dict[str, Any]])
@@ -166,64 +174,24 @@ async def get_issue_blame(
     issue_id: str,
     current_user: dict = Depends(get_current_user)
 ) -> List[Dict[str, Any]]:
-    """Get blame information for an issue."""
+    """Who introduced the line a finding points at."""
     try:
-        service = OwnershipService()
-        blame = await service.get_issue_blame(issue_id, current_user["id"])
-        return blame
+        return await OwnershipService().get_issue_blame(issue_id, current_user["id"])
     except Exception as e:
-        logger.error(f"Error getting issue blame: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_detail(e)
-        )
+        raise _server_error(e, "getting issue blame")
 
 
 @router.get("/repositories/{repo_id}/orphaned-code", response_model=List[Dict[str, Any]])
 async def get_orphaned_code(
     repo_id: str,
-    days_threshold: int = Query(90, ge=1, le=365),
+    days_threshold: int = Query(DEFAULT_ORPHAN_DAYS, ge=1, le=365),
     current_user: dict = Depends(get_current_user)
 ) -> List[Dict[str, Any]]:
-    """Get files with no active owner (orphaned code)."""
+    """Files no current owner has committed to within the threshold."""
     try:
-        service = OwnershipService()
-        orphaned = await service.get_orphaned_code(repo_id, current_user["id"], days_threshold)
-        return orphaned
-    except Exception as e:
-        logger.error(f"Error getting orphaned code: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_detail(e)
-        )
-
-
-@router.post("/repositories/{repo_id}/analyze-ownership")
-async def analyze_code_ownership(
-    repo_id: str,
-    current_user: dict = Depends(get_current_user),
-    github_token: str = Depends(get_github_token)
-) -> Dict[str, Any]:
-    """Analyze code ownership for a repository."""
-    try:
-        service = OwnershipService()
-        success = await service.analyze_code_ownership(
-            repository_id=repo_id,
-            github_token=github_token
-        )
-        
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Failed to analyze code ownership"
-            )
-        
-        return {"success": True, "repository_id": repo_id}
+        await _require_repository(repo_id, current_user["id"])
+        return await OwnershipService().get_orphaned_code(repo_id, current_user["id"], days_threshold)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error analyzing code ownership: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_detail(e)
-        )
+        raise _server_error(e, "getting orphaned code")

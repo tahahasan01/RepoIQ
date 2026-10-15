@@ -145,30 +145,8 @@ async def search_users(
         db = get_service_db()
         search_term = f"%{escape_like(cleaned)}%"
 
-        # Build the set of user ids the caller is allowed to see: everyone who
-        # belongs to a team in an organisation the caller belongs to, plus the
-        # owners of those organisations.
-        org_service = OrganizationService()
-        orgs = await org_service.list_user_organizations(current_user["id"])
-        org_ids = [o["id"] for o in orgs]
-
-        if not org_ids:
-            return []
-
-        visible_ids = {o["owner_id"] for o in orgs if o.get("owner_id")}
-
-        teams_result = await run_blocking(
-            db.table("teams").select("id").in_("organization_id", org_ids).execute
-        )
-        team_ids = [t["id"] for t in (teams_result.data or [])]
-
-        if team_ids:
-            members_result = await run_blocking(
-                db.table("team_members").select("user_id").in_("team_id", team_ids).execute
-            )
-            visible_ids.update(m["user_id"] for m in (members_result.data or []))
-
-        visible_ids.discard(current_user["id"])
+        # Only people the caller shares an organisation with are visible.
+        visible_ids = await OrganizationService().get_colleague_ids(current_user["id"])
         if not visible_ids:
             return []
 

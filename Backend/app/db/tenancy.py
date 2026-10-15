@@ -29,8 +29,10 @@ raises in development and CI and logs an error in production, so the class of bu
 behind C-2 (any team member could read any repository) fails a test rather than
 shipping.
 
-The RLS policies are deliberately left in place. They cost nothing while unused
-and become the real enforcement the day option (a) happens.
+Since the move to plain PostgreSQL the application connects as a single role
+and no RLS policies exist (the Supabase-era ones referenced auth.uid(), which
+plain Postgres does not have). If per-request database roles are ever
+introduced, policies can be added as a migration then.
 """
 from typing import Any, Optional, Set
 
@@ -71,6 +73,9 @@ OWNERSHIP_COLUMNS: Set[str] = {
     "repository_id",
     "analysis_id",
     "webhook_id",
+    # An explicit list of issue ids, taken from a query that was itself scoped
+    # (e.g. the issues of one analysis) - the same standing as analysis_id.
+    "issue_id",
     "id",
 }
 

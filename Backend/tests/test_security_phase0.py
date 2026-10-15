@@ -354,7 +354,7 @@ class TestLikeWildcardEscaping:
         from app.api.routes import users
 
         source = inspect.getsource(users.search_users)
-        assert "list_user_organizations" in source
+        assert "get_colleague_ids" in source
         assert 'in_("id", list(visible_ids))' in source
 
 

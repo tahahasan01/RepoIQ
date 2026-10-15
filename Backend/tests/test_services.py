@@ -150,56 +150,6 @@ class TestRepositoryService:
             assert result is not None
 
 
-class TestCacheService:
-    """Tests for cache service."""
-    
-    def test_generate_cache_key(self):
-        """Test cache key generation."""
-        from app.services.cache_service import AnalysisCacheService
-        
-        with patch('app.services.cache_service.Redis') as mock_redis_class:
-            mock_redis = MagicMock()
-            mock_redis.ping.return_value = True
-            mock_redis_class.from_url.return_value = mock_redis
-            
-            with patch('app.services.cache_service.settings') as mock_settings:
-                mock_settings.REDIS_URL = "redis://localhost:6379/0"
-                
-                service = AnalysisCacheService(redis_client=mock_redis)
-                
-                key1 = service._generate_cache_key("repo_1", "abc123", ["file1.py", "file2.py"])
-                key2 = service._generate_cache_key("repo_1", "abc123", ["file2.py", "file1.py"])  # Different order
-                key3 = service._generate_cache_key("repo_1", "def456", ["file1.py", "file2.py"])  # Different commit
-                
-                # Same files (sorted) should produce same key
-                assert key1 == key2
-                
-                # Different commit should produce different key
-                assert key1 != key3
-    
-    def test_cache_analysis(self):
-        """Test caching analysis results."""
-        from app.services.cache_service import AnalysisCacheService
-        
-        mock_redis = MagicMock()
-        mock_redis.ping.return_value = True
-        
-        with patch('app.services.cache_service.settings') as mock_settings:
-            mock_settings.REDIS_URL = "redis://localhost:6379/0"
-            
-            service = AnalysisCacheService(redis_client=mock_redis)
-            service.redis_available = True
-            
-            result = service.cache_analysis(
-                repo_id="repo_1",
-                results={"score": 85, "issues": []},
-                commit_sha="abc123"
-            )
-            
-            assert result == True
-            mock_redis.setex.assert_called_once()
-
-
 class TestGitHubService:
     """Tests for GitHub service."""
     

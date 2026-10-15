@@ -182,53 +182,6 @@ async def get_installation_token(installation_id: str) -> str:
     return token
 
 
-async def list_installation_repositories(installation_id: str) -> list:
-    """
-    Repositories this installation was actually granted.
-
-    The OAuth path lists everything the user can see; a GitHub App only ever sees
-    what was selected at install time, so repository sync must ask the
-    installation rather than the user.
-    """
-    token = await get_installation_token(installation_id)
-
-    repositories = []
-    page = 1
-
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-        while True:
-            response = await client.get(
-                f"{GITHUB_API}/installation/repositories",
-                params={"per_page": 100, "page": page},
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            )
-            if response.status_code != 200:
-                raise GitHubAppError(
-                    f"Could not list installation repositories (HTTP {response.status_code})"
-                )
-
-            body = response.json()
-            batch = body.get("repositories", [])
-            repositories.extend(batch)
-
-            if len(batch) < 100:
-                break
-            page += 1
-
-            # Bound the walk: a pathological installation must not spin forever.
-            if page > 50:
-                logger.warning(
-                    f"Installation {installation_id} has more than 5000 repositories; truncating"
-                )
-                break
-
-    return repositories
-
-
 def install_url(state: str) -> str:
     """
     Where to send a user who has NOT installed the app yet.

@@ -275,10 +275,15 @@ class TestAnalysisCacheIsKeyedOnTheCommit:
         assert "commit_sha = None  # TODO" not in source
         assert "get_default_branch_sha" in source
 
-    def test_no_cache_lookup_without_a_sha(self):
-        """Without a SHA there is no safe key, so it must analyse fresh."""
+    def test_no_whole_analysis_cache(self):
+        """
+        The commit-keyed whole-analysis cache was removed: its hit path saved
+        scores but no issues, and per-file blob-SHA caching already makes an
+        unchanged re-analysis free. The SHA is still recorded on the result.
+        """
         source = (BACKEND / "app/tasks/analysis_tasks.py").read_text(encoding="utf-8")
-        assert "if commit_sha else None" in source
+        assert "get_cached_analysis" not in source
+        assert '"commit_sha": commit_sha' in source
 
     def test_github_service_exposes_head_sha(self):
         from app.services.github_service import GitHubService

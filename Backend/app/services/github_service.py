@@ -1,5 +1,5 @@
 from github import Github, GithubException
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from app.core.logging import get_logger
 from app.core.config import get_settings
 from app.services.redis_service import get_redis_service
@@ -10,6 +10,24 @@ from functools import wraps
 
 settings = get_settings()
 logger = get_logger(__name__)
+
+_BLAME_QUERY = """
+query($owner: String!, $name: String!, $expression: String!, $path: String!) {
+  repository(owner: $owner, name: $name) {
+    object(expression: $expression) {
+      ... on Commit {
+        blame(path: $path) {
+          ranges {
+            startingLine
+            endingLine
+            commit { committedDate author { user { login } } }
+          }
+        }
+      }
+    }
+  }
+}
+"""
 
 
 def _is_empty_repository(exc: GithubException) -> bool:
@@ -155,26 +173,30 @@ class GitHubService:
         """
         return bool(self.access_token) and self.access_token.startswith("ghs_")
 
-    def _get_installation_repositories(self, per_page: int = 30) -> List[Dict[str, Any]]:
+    def _rest_headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    def _get_installation_repositories(self, limit: int) -> Tuple[List[Dict[str, Any]], bool]:
         """
         Repositories this installation was granted, via /installation/repositories.
 
         A GitHub App only ever sees the repositories the user selected at install
         time, so there is no "all repos for this user" to enumerate - the
-        installation itself is the scope.
+        installation itself is the scope. Returns (repositories, complete).
         """
         repos: List[Dict[str, Any]] = []
+        total = None
         page = 1
 
-        while len(repos) < per_page:
+        while len(repos) < limit:
             response = httpx.get(
                 "https://api.github.com/installation/repositories",
-                params={"per_page": min(100, per_page - len(repos)), "page": page},
-                headers={
-                    "Authorization": f"Bearer {self.access_token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
+                params={"per_page": 100, "page": page},
+                headers=self._rest_headers(),
                 timeout=30.0,
             )
             if response.status_code != 200:
@@ -184,16 +206,17 @@ class GitHubService:
                     None,
                 )
 
-            batch = response.json().get("repositories", [])
-            if not batch:
-                break
-
+            body = response.json()
+            total = body.get("total_count", total)
+            batch = body.get("repositories", [])
             repos.extend(self._format_installation_repository(r) for r in batch)
             if len(batch) < 100:
                 break
             page += 1
 
-        return repos[:per_page]
+        repos = repos[:limit]
+        complete = total is None or len(repos) >= total
+        return repos, complete
 
     @staticmethod
     def _format_installation_repository(repo: Dict[str, Any]) -> Dict[str, Any]:
@@ -216,58 +239,117 @@ class GitHubService:
         }
 
     @retry_with_backoff(max_retries=3, base_delay=1.0)
-    def get_repositories(self, page: int = 1, per_page: int = 30) -> List[Dict[str, Any]]:
+    def list_all_repositories(self, limit: int) -> Tuple[List[Dict[str, Any]], bool]:
+        """
+        Every repository this token can see, up to `limit`.
+
+        Returns (repositories, complete). `complete` is False when the account
+        has more than `limit` repositories, and callers must then treat the list
+        as partial. Sync deletes rows for repositories it did not see, and it
+        used to see at most 100 - so any account with more lost the rest, with
+        their analyses, issues and chat, on every sync.
+
+        Not cached: a sync is the user asking for fresh data.
+        """
         # GitHub App mode: an installation token cannot call GET /user, so the
-        # whole get_user().get_repos() path 403s. Verified against live GitHub:
+        # get_user().get_repos() path 403s. Verified against live GitHub:
         # without this branch, sync returns zero repositories and the dashboard
         # is empty after a successful login.
         if self._is_installation_token():
-            cache_key = f"github:installrepos:{hash(self.access_token) & 0xffffffff}:{page}:{per_page}"
-            cached = self.redis.get(cache_key)
-            if cached:
-                return cached
+            repos, complete = self._get_installation_repositories(limit)
+            logger.info(f"Fetched {len(repos)} repositories from the installation (complete={complete})")
+            return repos, complete
 
-            repos = self._get_installation_repositories(per_page=per_page)
-            # Short TTL: the user can change which repositories are granted at
-            # any time from GitHub, and that must show up quickly.
-            self.redis.set(cache_key, repos, ttl=300)
-            logger.info(f"✅ Fetched {len(repos)} repositories from the installation")
-            return repos
+        if not self._check_rate_limit():
+            raise GithubException(403, {"message": "Rate limit exceeded"}, None)
 
         if not self.user:
             self.user = self.client.get_user()
-        
-        # Check Redis cache for repositories list (10 min TTL - balanced freshness)
-        cache_key = f"github:repos:{self.user.login}:{page}:{per_page}"
-        cached_repos = self.redis.get(cache_key)
-        if cached_repos:
-            logger.debug(f"✓ Redis cache hit for repositories: {self.user.login}")
-            return cached_repos
-        
-        # Check rate limit before making API calls
-        if not self._check_rate_limit():
-            raise GithubException(403, {"message": "Rate limit exceeded"}, None)
-        
-        repos = []
-        try:
-            logger.debug(f"⚡ Fetching repositories from GitHub for: {self.user.login}")
-            # Use pagination efficiently - get only what we need
-            paginated_repos = self.user.get_repos(sort="updated", direction="desc")
-            
-            # Iterate with early exit
-            for repo in paginated_repos:
-                repos.append(self._format_repository(repo))
-                if len(repos) >= per_page:
-                    break
-            
-            # Cache for 10 minutes (balanced between freshness and performance)
-            self.redis.set(cache_key, repos, ttl=600)
-            logger.info(f"✅ Fetched {len(repos)} repositories for {self.user.login}")
-            return repos
-        except GithubException as e:
-            logger.error(f"Failed to fetch repositories: {str(e)}")
-            raise
-    
+
+        repos: List[Dict[str, Any]] = []
+        complete = True
+        for repo in self.user.get_repos(sort="updated", direction="desc"):
+            if len(repos) >= limit:
+                complete = False
+                break
+            repos.append(self._format_repository(repo))
+
+        logger.info(f"Fetched {len(repos)} repositories for {self.user.login} (complete={complete})")
+        return repos, complete
+
+    def get_contributor_weekly_stats(self, full_name: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Weekly commits, additions and deletions per author, in ONE request.
+
+        GET /repos/{owner}/{repo}/stats/contributors. The previous approach
+        walked every commit and read commit.stats, which costs one API request
+        per commit. Returns None while GitHub is still computing the statistics
+        (HTTP 202) - ask again shortly - and [] for an empty repository.
+        """
+        response = httpx.get(
+            f"https://api.github.com/repos/{full_name}/stats/contributors",
+            headers=self._rest_headers(),
+            timeout=30.0,
+        )
+        if response.status_code == 202:
+            return None
+        if response.status_code == 204:
+            return []
+        if response.status_code != 200:
+            raise GithubException(
+                response.status_code, {"message": "Could not read contributor statistics"}, None
+            )
+
+        stats = []
+        for entry in response.json() or []:
+            author = entry.get("author") or {}
+            stats.append({
+                "login": author.get("login"),
+                "weeks": [
+                    {"week_start": w["w"], "additions": w["a"], "deletions": w["d"], "commits": w["c"]}
+                    for w in entry.get("weeks", [])
+                ],
+            })
+        return stats
+
+    def get_file_blame(self, full_name: str, branch: str, path: str) -> List[Dict[str, Any]]:
+        """
+        Line ranges of a file with the author and date of the commit behind each.
+
+        The REST API has no blame endpoint (PyGithub has no get_blame), so this
+        is GraphQL. Returns [{"start", "end", "login", "committed_at"}]; login is
+        None for commits whose author has no GitHub account.
+        """
+        owner, name = full_name.split("/", 1)
+        response = httpx.post(
+            "https://api.github.com/graphql",
+            json={"query": _BLAME_QUERY, "variables": {
+                "owner": owner, "name": name, "expression": branch, "path": path,
+            }},
+            headers=self._rest_headers(),
+            timeout=30.0,
+        )
+        if response.status_code != 200:
+            raise GithubException(response.status_code, {"message": "Blame request failed"}, None)
+
+        body = response.json()
+        if body.get("errors"):
+            raise GithubException(422, {"message": str(body["errors"][0].get("message"))}, None)
+
+        commit = ((body.get("data") or {}).get("repository") or {}).get("object") or {}
+        ranges = ((commit.get("blame") or {}).get("ranges")) or []
+        result = []
+        for r in ranges:
+            c = r.get("commit") or {}
+            user = ((c.get("author") or {}).get("user")) or {}
+            result.append({
+                "start": r["startingLine"],
+                "end": r["endingLine"],
+                "login": user.get("login"),
+                "committed_at": c.get("committedDate"),
+            })
+        return result
+
     def get_repository(self, repo_id: int) -> Dict[str, Any]:
         try:
             repo = self.client.get_repo(repo_id)

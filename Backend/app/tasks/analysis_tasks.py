@@ -4,10 +4,9 @@ from app.agents.orchestrator import AgentOrchestrator
 from app.services.repository_service import RepositoryService
 from app.services.github_service import create_github_service
 from app.services.token_optimizer import get_token_optimizer
-from app.services.cache_service import get_analysis_cache
 from app.services.toon_service import get_toon_service
-from app.tasks.cache_warming import warm_cache_on_analysis_completion
 from app.services.incremental_analysis import partition_files, record_batch_findings
+from app.services.redis_service import get_redis_service
 from app.core.concurrency import run_blocking
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -46,15 +45,6 @@ class AnalysisCancelled(Exception):
         self.analysis_id = analysis_id
         super().__init__(f"Analysis {analysis_id} was cancelled by the user")
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-async def _warm_cache_background(analysis_id: str, repo_id: str, user_id: str, github_token: str):
-    """Background task for cache warming - doesn't block main response."""
-    try:
-        await warm_cache_on_analysis_completion(analysis_id, repo_id, user_id, github_token)
-        logger.info(f"✅ Background cache warming completed for analysis {analysis_id}")
-    except Exception as e:
-        logger.warning(f"Background cache warming failed (non-critical): {e}")
 
 
 # Synchronous version without Celery/Redis
@@ -178,7 +168,6 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     repo_service = RepositoryService()
     orchestrator = AgentOrchestrator(user_id=user_id)
     token_optimizer = get_token_optimizer()
-    cache_service = get_analysis_cache()
     toon_service = get_toon_service()
     
     await repo_service.update_analysis(analysis_id, {
@@ -195,12 +184,14 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     
     github_service = create_github_service(github_token)
     
-    # Check cache first
-    # CORRECTNESS: key the cache on the commit being analysed.
+    # Record which commit this analysis reviewed.
     #
-    # This was `commit_sha = None`, so every analysis of a repository hit the
-    # same cache entry regardless of what had changed - re-running after a push
-    # returned the PREVIOUS commit's findings and reported them as current.
+    # There used to be a second, whole-analysis cache keyed on this SHA. It was
+    # redundant - per-file findings are cached by blob SHA (incremental
+    # analysis), so re-analysing unchanged code already costs no model calls -
+    # and it was broken: a cache hit wrote the scores and counts onto the new
+    # analysis but never saved its issues, so the UI showed "16 issues" over an
+    # empty list.
     commit_sha = None
     try:
         commit_sha = await run_blocking(
@@ -209,37 +200,8 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
             repo["default_branch"],
         )
     except Exception as e:
-        # No SHA means no safe cache key: analyse fresh rather than risk
-        # returning stale findings for a different commit.
-        logger.warning(f"Could not resolve commit SHA, skipping analysis cache: {e}")
+        logger.warning(f"Could not resolve commit SHA: {e}")
 
-    cached_result = cache_service.get_cached_analysis(repo_id, commit_sha) if commit_sha else None
-    if cached_result:
-        logger.info(f"Using cached analysis for repo {repo_id}")
-        # Update DB with cached results
-        from datetime import datetime
-        await repo_service.update_analysis(analysis_id, {
-            "status": "completed",
-            "overall_score": cached_result["overall_score"],
-            "security_score": cached_result["security_score"],
-            "quality_score": cached_result["quality_score"],
-            "architecture_score": cached_result["architecture_score"],
-            "documentation_score": cached_result.get("documentation_score", 100),
-            "total_issues": cached_result["total_issues"],
-            "critical_issues": cached_result["critical_issues"],
-            "high_issues": cached_result["high_issues"],
-            "medium_issues": cached_result["medium_issues"],
-            "low_issues": cached_result["low_issues"],
-            "files_analyzed": cached_result["files_analyzed"],
-            "completed_at": datetime.utcnow().isoformat()
-        })
-        # Invalidate history cache so new analysis shows immediately
-        from app.services.redis_service import get_redis_service
-        redis = get_redis_service()
-        redis.delete(f"db:history:{repo_id}")
-        logger.info(f"🗑️ Invalidated history cache for repo: {repo_id} (cached analysis path)")
-        return cached_result
-    
     # ── Cancellation checkpoint 2: before fetching files from GitHub ──
     _check_cancelled(analysis_id)
     
@@ -254,7 +216,6 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
         logger.info(f"✅ Successfully fetched {len(files)} files from GitHub")
         
         # IMPORTANT: Cache files for instant loading on Files page
-        from app.services.redis_service import get_redis_service
         redis = get_redis_service()
         redis.set(f"files:list:{repo_id}", files, ttl=3600)
         logger.info(f"⚡ Pre-cached {len(files)} files for instant dashboard loading")
@@ -491,10 +452,7 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
     
     # Save results to DB
     await repo_service.save_issues(analysis_id, analysis_result["issues"])
-    
-    roadmap = await orchestrator.generate_improvement_roadmap(analysis_result["issues"])
-    await repo_service.save_improvement_roadmap(repo_id, roadmap)
-    
+
     from datetime import datetime
     await repo_service.update_analysis(analysis_id, {
         "status": "completed",
@@ -502,7 +460,7 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
         "security_score": analysis_result["security_score"],
         "quality_score": analysis_result["quality_score"],
         "architecture_score": analysis_result["architecture_score"],
-        "documentation_score": analysis_result.get("documentation_score", 100),
+        "documentation_score": analysis_result["documentation_score"],
         "total_issues": analysis_result["total_issues"],
         "critical_issues": analysis_result["critical_issues"],
         "high_issues": analysis_result["high_issues"],
@@ -510,51 +468,38 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
         "low_issues": analysis_result["low_issues"],
         "files_analyzed": analysis_result["files_analyzed"],
         # Sample-size disclosure: files_eligible is how many code files the
-        # repository actually has, files_analyzed is how many were read.
+        # repository actually has, files_analyzed is how many were read, and
+        # files_reused how many of those came from the per-file cache.
         "files_eligible": files_eligible,
+        "files_reused": files_reused,
+        "commit_sha": commit_sha,
         "completed_at": datetime.utcnow().isoformat()
     })
-    
+
     await repo_service.update_repository(repo_id, user_id, {
         "last_analyzed": datetime.utcnow().isoformat()
     })
-    
-    # CRITICAL: Invalidate API response cache for /results endpoint
-    # The cache middleware caches this endpoint for 60 min, but we need fresh data after analysis
-    redis_service = cache_service.redis
-    # Delete ALL cached /results responses for this repo (we don't know the exact cache key due to user hash)
-    cache_pattern = f"api:response:*repositories/{repo_id}/results*"
+
+    # Invalidate history cache IMMEDIATELY so the new analysis shows in history.
     try:
-        # Use scan to find and delete matching keys
-        for key in redis_service.redis_client.scan_iter(match=cache_pattern):
-            redis_service.redis_client.delete(key)
-            logger.info(f"🗑️ Invalidated cached API response: {key.decode() if isinstance(key, bytes) else key}")
-    except Exception as e:
-        logger.warning(f"Failed to invalidate API cache (non-critical): {e}")
-    
-    # CRITICAL: Invalidate history cache IMMEDIATELY so new analysis shows in history modal
-    try:
-        redis_service.delete(f"db:history:{repo_id}")
-        logger.info(f"🗑️ Invalidated history cache for repo: {repo_id}")
+        get_redis_service().delete(f"db:history:{repo_id}")
     except Exception as e:
         logger.warning(f"Failed to invalidate history cache (non-critical): {e}")
-    
-    # Cache the results (7 days - analysis rarely changes unless code changes)
-    file_paths = [f["path"] for f in code_files]
-    cache_service.cache_analysis(
-        repo_id,
-        analysis_result,
-        commit_sha,
-        file_paths,
-        ttl=3600 * 24 * 7  # 7 days
+
+    # The analysis is complete and visible from here on. Everything below adds
+    # to it, and none of it may turn a finished review into a failed one.
+    await _run_followups(
+        repo=repo,
+        github_token=github_token,
+        analysis_id=analysis_id,
+        issues=analysis_result["issues"],
+        analysed_paths=[f["path"] for f in code_files_full],
+        orchestrator=orchestrator,
+        repo_service=repo_service,
     )
-    
-    # Warm cache in BACKGROUND (non-blocking) for faster response
-    asyncio.create_task(_warm_cache_background(analysis_id, repo_id, user_id, github_token))
-    logger.info("Cache warming started in background")
-    
+
     logger.info(f"✓ Analysis complete: {len(code_files)} files, {analysis_result['total_issues']} issues found")
-    
+
     return {
         "analysis_id": analysis_id,
         "status": "completed",
@@ -565,6 +510,40 @@ async def _run_analysis_internal(repo_id: str, user_id: str, github_token: str, 
             "architecture": analysis_result["architecture_score"]
         }
     }
+
+
+# Each follow-up gets its own budget, so a slow GitHub call cannot hold a
+# worker for long after the analysis itself is done.
+_FOLLOWUP_TIMEOUT_SECONDS = 120
+
+
+async def _run_followups(
+    repo, github_token, analysis_id, issues, analysed_paths, orchestrator, repo_service
+) -> None:
+    """
+    Post-analysis work, each step best-effort and awaited.
+
+    Awaited, not fired with asyncio.create_task: under Celery the task body runs
+    inside asyncio.run(), which cancels anything still pending when it returns.
+    The cache-warming task launched that way never completed in a worker.
+    """
+    from app.services.repository_insights import mark_resolved_issues, refresh_repository_insights
+
+    async def roadmap():
+        await repo_service.save_improvement_roadmap(
+            repo["id"], await orchestrator.generate_improvement_roadmap(issues)
+        )
+
+    steps = [
+        ("improvement roadmap", roadmap),
+        ("resolved-issue detection", lambda: mark_resolved_issues(repo["id"], analysis_id, analysed_paths)),
+        ("developer insights", lambda: refresh_repository_insights(repo, github_token, analysis_id, analysed_paths)),
+    ]
+    for name, step in steps:
+        try:
+            await asyncio.wait_for(step(), timeout=_FOLLOWUP_TIMEOUT_SECONDS)
+        except Exception as e:
+            logger.warning(f"Post-analysis {name} failed (analysis unaffected): {type(e).__name__}: {e}")
 
 
 @celery_app.task(name="auto_fix_issues")

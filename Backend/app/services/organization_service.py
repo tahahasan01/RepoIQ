@@ -57,6 +57,31 @@ class OrganizationService:
             logger.error(f"Error getting organization: {e}")
             return None
 
+    async def get_colleague_ids(self, user_id: str) -> set:
+        """
+        Everyone the user shares an organization with: the owners of, and the
+        members of any team in, each organization the user belongs to. Excludes
+        the user. This is the boundary for seeing another person's data.
+        """
+        orgs = await self.list_user_organizations(user_id)
+        org_ids = [o["id"] for o in orgs]
+        if not org_ids:
+            return set()
+
+        colleagues = {o["owner_id"] for o in orgs if o.get("owner_id")}
+        teams = (await run_blocking(
+            self.db.table("teams").select("id").in_("organization_id", org_ids).execute
+        )).data or []
+        team_ids = [t["id"] for t in teams]
+        if team_ids:
+            members = (await run_blocking(
+                self.db.table("team_members").select("user_id").in_("team_id", team_ids).execute
+            )).data or []
+            colleagues.update(m["user_id"] for m in members)
+
+        colleagues.discard(user_id)
+        return colleagues
+
     async def list_user_organizations(self, user_id: str) -> List[Dict[str, Any]]:
         """List all organizations a user belongs to (as owner or member)."""
         try:

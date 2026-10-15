@@ -115,6 +115,16 @@ class Settings(BaseSettings):
     # Nothing bounded LLM spend before this.
     LLM_DAILY_TOKEN_BUDGET_PER_USER: int = 2_000_000
     
+    # Developer insights refreshed after each analysis: how many weeks of
+    # contribution history to keep current, and how many files to blame (files
+    # with findings first). Each blamed file is one GitHub GraphQL request.
+    INSIGHTS_WEEKS: int = 12
+    INSIGHTS_MAX_BLAME_FILES: int = 40
+
+    # Most repositories one sync will list.Above this the listing is partial,
+    # and sync then skips pruning rows for repositories it did not see.
+    GITHUB_SYNC_MAX_REPOS: int = 1000
+
     # Redis configuration
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_MAX_CONNECTIONS: int = 50
