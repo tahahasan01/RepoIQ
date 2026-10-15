@@ -1,6 +1,13 @@
 from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File
-from app.schemas import UserResponse, UserUpdate, PasswordChange
+from app.schemas import (
+    PasswordChange,
+    UserResponse,
+    UserSettingsResponse,
+    UserSettingsUpdate,
+    UserUpdate,
+)
 from app.services.auth_service import AuthService
+from app.services.user_settings_service import get_user_settings, update_user_settings
 from app.api.dependencies import get_current_user
 from app.api.errors import safe_detail
 from app.core.concurrency import run_blocking
@@ -35,6 +42,52 @@ async def update_profile(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=safe_detail(e)
+        )
+
+
+@router.get("/me/settings", response_model=UserSettingsResponse)
+async def get_my_settings(current_user: dict = Depends(get_current_user)):
+    """
+    The caller's notification preferences.
+
+    Response 200: {"email_notifications": bool, "security_alerts": bool,
+                   "weekly_digest": bool, "alert_score_threshold": int (0-100),
+                   "auto_analyze_new_repos": bool, "updated_at": ISO 8601 | null}
+    A user who never saved gets the defaults with updated_at null.
+
+    These are preferences read by the alert checks; storing them does not by
+    itself send anything (there is no email or Slack delivery in this backend).
+    """
+    try:
+        return await get_user_settings(current_user["id"])
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=safe_detail(e, "Failed to load settings", context="get_my_settings"),
+        )
+
+
+@router.put("/me/settings", response_model=UserSettingsResponse)
+async def update_my_settings(
+    update: UserSettingsUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Partially update the caller's notification preferences.
+
+    Request: any subset of {"email_notifications": bool, "security_alerts": bool,
+             "weekly_digest": bool, "alert_score_threshold": int 0-100,
+             "auto_analyze_new_repos": bool}. Omitted fields are unchanged.
+    Response 200: the full settings, as GET /users/me/settings.
+    422 for a wrong type (strict: "true" or 1 is not a bool), a threshold
+    outside 0-100, an explicit null, or an unknown field.
+    """
+    try:
+        return await update_user_settings(current_user["id"], update.changes())
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=safe_detail(e, "Failed to save settings", context="update_my_settings"),
         )
 
 
