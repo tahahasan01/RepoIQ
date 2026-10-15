@@ -169,16 +169,36 @@ class OrganizationService:
             return False
 
     async def get_organization_repositories(self, org_id: str, user_id: str) -> List[Dict[str, Any]]:
-        """Get all repositories assigned to teams in this organization."""
+        """
+        Repositories assigned to the organization's teams that this user may see.
+
+        SECURITY: the owner sees every assigned repository; anyone else sees
+        those assigned to teams they are on (member or manager). This listed
+        every team's repositories to every member of the organization, and it
+        feeds the executive views, so members could also read other teams'
+        scores and risk areas.
+        """
         try:
             # Verify user has access to org
             org = await self.get_organization(org_id, user_id)
             if not org:
                 return []
-            
-            # Get all teams in organization
-            teams_result = (await run_blocking(self.db.table("teams").select("id").eq("organization_id", org_id).execute))
-            team_ids = [t["id"] for t in (teams_result.data or [])]
+
+            teams_result = (await run_blocking(
+                self.db.table("teams").select("id, manager_id").eq("organization_id", org_id).execute
+            ))
+            teams = teams_result.data or []
+            if org["owner_id"] == user_id:
+                team_ids = [t["id"] for t in teams]
+            else:
+                mine = (await run_blocking(
+                    self.db.table("team_members").select("team_id")
+                    .in_("team_id", [t["id"] for t in teams] or ["00000000-0000-0000-0000-000000000000"])
+                    .eq("user_id", user_id).execute
+                )).data or []
+                team_ids = sorted(
+                    {m["team_id"] for m in mine} | {t["id"] for t in teams if t.get("manager_id") == user_id}
+                )
             
             if not team_ids:
                 return []

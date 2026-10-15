@@ -43,9 +43,13 @@ class TeamComparisonService:
             else:
                 teams = await team_service.list_organization_teams(organization_id, user_id)
             
+            # Only teams the caller is on (or all, for the organization owner):
+            # another team's metrics are computed from repositories shared with
+            # that team, not with the caller.
+            teams = [t for t in teams if await team_service.is_on_team(t, user_id)]
             if not teams:
                 return []
-            
+
             # Get metrics for each team
             team_metrics = []
             for team in teams:

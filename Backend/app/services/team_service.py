@@ -63,6 +63,30 @@ class TeamService:
     def __init__(self):
         self.db = get_service_db()  # Uses service_db to bypass RLS for admin operations
 
+    async def is_on_team(self, team: Dict[str, Any], user_id: str) -> bool:
+        """
+        True for the team's members, its manager, and its organization's owner.
+
+        SECURITY: this - not get_team - is the test for seeing what is assigned
+        to a team. get_team admits anyone in the organization, and a repository's
+        owner shares it with the team they assign it to, not with every team in
+        the company.
+        """
+        if not user_id:
+            return False
+        if team.get("manager_id") == user_id:
+            return True
+        member = (await run_blocking(
+            self.db.table("team_members").select("id")
+            .eq("team_id", team["id"]).eq("user_id", user_id).execute
+        )).data
+        if member:
+            return True
+        org = (await run_blocking(
+            self.db.table("organizations").select("owner_id").eq("id", team["organization_id"]).execute
+        )).data
+        return bool(org) and org[0]["owner_id"] == user_id
+
     async def _is_team_admin(self, team: Dict[str, Any], user_id: str) -> bool:
         """
         True if user_id may administer this team (add/remove members, change roles).
@@ -729,10 +753,10 @@ class TeamService:
             return False
 
     async def get_team_repositories(self, team_id: str, user_id: str) -> List[Dict[str, Any]]:
-        """Get all repositories assigned to a team."""
+        """Repositories assigned to a team, for people on it (see is_on_team)."""
         try:
             team = await self.get_team(team_id, user_id)
-            if not team:
+            if not team or not await self.is_on_team(team, user_id):
                 return []
             
             assignments_result = (await run_blocking(self.db.table("repository_assignments").select("repository_id").eq("team_id", team_id).execute))
