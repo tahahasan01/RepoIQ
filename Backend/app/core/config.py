@@ -241,9 +241,9 @@ class Settings(BaseSettings):
     # one nothing is scheduled at all, which is how alerts went unchecked
     # before the schedule existed.
     ALERT_CHECK_INTERVAL_SECONDS: int = 3600
-    # A latest-analysis overall_score below this raises a quality alert
-    # (severity "high" below 50, "medium" otherwise).
-    ALERT_QUALITY_THRESHOLD: int = 70
+    # The quality-alert score threshold is per user (user_settings
+    # .alert_score_threshold, Settings > Notifications); the deployment-wide
+    # ALERT_QUALITY_THRESHOLD it replaced overrode every user's choice.
 
     RATE_LIMIT_PER_MINUTE: int = 60
 

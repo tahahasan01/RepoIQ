@@ -89,7 +89,8 @@ class TestAlertsAreStored:
         assert rows["security_vulnerability"]["details"]["vulnerability_count"] == 1
         assert rows["quality_threshold"]["severity"] == "high"
         assert rows["quality_threshold"]["details"]["score"] == 40
-        assert rows["quality_threshold"]["details"]["threshold"] == 70
+        # The settings-page default: nobody in Acme has saved a threshold.
+        assert rows["quality_threshold"]["details"]["threshold"] == 60
         assert all(a["repository_id"] == org["repo"]["id"] for a in rows.values())
         assert all(a["details"]["analysis_id"] == analysis["id"] for a in rows.values())
         # Not in audit_logs any more.
@@ -132,7 +133,7 @@ class TestAlertsAreStored:
 class TestDeduplication:
 
     def test_rechecking_the_same_analysis_creates_nothing_new(self, db, org):  # noqa: F811
-        _analysis(db, org["repo"], overall_score=60, critical_issues=1)
+        _analysis(db, org["repo"], overall_score=55, critical_issues=1)
 
         first = _check(org["id"])
         second = _check(org["id"])

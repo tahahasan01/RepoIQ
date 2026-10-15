@@ -16,7 +16,8 @@ Alert object (every endpoint below returns this shape):
         # by type:
         "critical_issues": 3,                              # critical_issues
         "vulnerability_count": 2, "security_score": 41,    # security_vulnerability
-        "score": 62, "threshold": 70                       # quality_threshold
+        "score": 62, "threshold": 70                       # quality_threshold;
+                                                           # threshold is the reader's own
       },
       "acknowledged": false,
       "acknowledged_at": "ISO-8601" | null,
@@ -84,7 +85,8 @@ async def check_alerts(
           "organization_id": "uuid",
           "alerts_found": 4,     # conditions currently true
           "alerts_created": 1,   # of those, newly raised by this check
-          "alerts": [Alert, ...] # the newly raised ones
+          "alerts": [Alert, ...] # the newly raised ones the caller's
+                                 # notification settings ask for
         }
     404 when the caller is not a member of the organisation.
     """
@@ -105,11 +107,17 @@ async def check_alerts(
         )
 
     # The check runs over the whole organization; the answer only describes
-    # repositories this caller may see (see AlertService.visible_repository_ids).
-    if org.get("owner_id") != current_user["id"]:
-        visible = set(await AlertService().visible_repository_ids(org_id, current_user["id"]))
-        alerts = [a for a in result.get("alerts", []) if a.get("repository_id") in visible]
-        result = {"alerts_created": len(alerts), "alerts": alerts}
+    # repositories this caller may see (see AlertService.visible_repository_ids)
+    # and alerts their own notification settings ask for (alert_service.wanted_by).
+    # The owner keeps the organization-wide counts.
+    service = AlertService()
+    alerts = result.get("alerts", [])
+    is_owner = org.get("owner_id") == current_user["id"]
+    if not is_owner:
+        visible = set(await service.visible_repository_ids(org_id, current_user["id"]))
+        alerts = [a for a in alerts if a.get("repository_id") in visible]
+    alerts = await service.alerts_for_user(alerts, current_user["id"])
+    result = {**result, "alerts": alerts} if is_owner else {"alerts_created": len(alerts), "alerts": alerts}
 
     return {"success": True, "organization_id": org_id, **result}
 

@@ -12,7 +12,7 @@ must match the column defaults in the migration (tests/test_user_settings.py
 checks that), so a read never has to write.
 """
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from app.core.concurrency import run_blocking
 from app.db.postgres import get_service_db
@@ -47,6 +47,24 @@ async def get_user_settings(user_id: str) -> Dict[str, Any]:
         db.table("user_settings").select("*").eq("user_id", user_id).single().execute
     )
     return _shape(user_id, result.data)
+
+
+async def get_users_settings(user_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    {user_id: get_user_settings(user_id)} for many users in ONE query.
+
+    The alert checks need every organization member's preferences; one read
+    per member would make evaluation grow with headcount.
+    """
+    ids = sorted({uid for uid in user_ids if uid})
+    if not ids:
+        return {}
+    db = get_service_db()
+    rows = (await run_blocking(
+        db.table("user_settings").select("*").in_("user_id", ids).execute
+    )).data or []
+    stored = {row["user_id"]: row for row in rows}
+    return {uid: _shape(uid, stored.get(uid)) for uid in ids}
 
 
 async def update_user_settings(user_id: str, changes: Dict[str, Any]) -> Dict[str, Any]:
