@@ -50,7 +50,7 @@ export function MultiSelectFilter({
         <Button
           variant="outline"
           size="sm"
-          className={cn("gap-2 min-w-[140px] justify-between", className)}
+          className={cn("gap-2 min-w-[7.5rem] justify-between sm:min-w-[140px]", className)}
         >
           <span>
             {label}
@@ -76,9 +76,11 @@ export function MultiSelectFilter({
             return (
               <button
                 key={option}
+                type="button"
+                aria-pressed={isSelected}
                 onClick={() => toggleOption(option)}
                 className={cn(
-                  "w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded hover:bg-muted transition-colors",
+                  "w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   isSelected && "bg-muted"
                 )}
               >
